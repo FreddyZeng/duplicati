@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -40,7 +40,8 @@ namespace Duplicati.CommandLine
             this.Output = output;
             this.QuietConsole = Library.Utility.Utility.ParseBoolOption(options, "quiet-console");
             this.VerboseErrors = Library.Utility.Utility.ParseBoolOption(options, "debug-output");
-            this.FullResults = Library.Utility.Utility.ParseBoolOption(options, "full-results");
+            this.FullResults = Library.Utility.Utility.ParseBoolOption(options, "full-result")
+                || Library.Utility.Utility.ParseBoolOption(options, "full-results");
         }
 
         #region IMessageSink implementation

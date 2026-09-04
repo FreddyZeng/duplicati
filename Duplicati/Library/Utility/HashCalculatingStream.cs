@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -90,7 +90,10 @@ namespace Duplicati.Library.Utility
             if (m_hashbufferLength > 0 && count + m_hashbufferLength > m_hashbuffer.Length)
             {
                 int bytesToUse = m_hashbuffer.Length - m_hashbufferLength;
-                Array.Copy(buffer, m_hashbuffer, bytesToUse);
+                // Append the new bytes (starting at offset) after the existing
+                // fragment in m_hashbuffer, rather than overwriting the fragment
+                // from the start of both buffers.
+                Array.Copy(buffer, offset, m_hashbuffer, m_hashbufferLength, bytesToUse);
                 m_hash.TransformBlock(m_hashbuffer, 0, m_hashbuffer.Length, m_hashbuffer, 0);
                 count -= bytesToUse;
                 offset += bytesToUse;

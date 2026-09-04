@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -38,19 +38,21 @@ class Program
         "win-x86-gui.msi",
         "win-arm64-gui.zip",
         "win-arm64-gui.msi",
-        "win-x64-agent.msi", // Missing window service support
-        "win-arm64-agent.msi", // Missing window service support
+        "win-x64-agent.msi",
+        "win-arm64-agent.msi",
         "win-x64-agent.zip",
         "win-arm64-agent.zip",
 
         "linux-x64-gui.zip",
         "linux-x64-gui.deb",
         "linux-x64-gui.rpm",
+        "linux-x64-gui.appimage",
         "linux-x64-cli.zip",
         "linux-x64-cli.deb",
         "linux-x64-cli.rpm",
         "linux-x64-cli.docker",
-        // "linux-x64-cli.spk", // Need to add new integration with DSM WebUI
+        "linux-x64-cli.spk",
+        "linux-x64-cli.qpkg",
         "linux-x64-agent.zip",
         "linux-x64-agent.deb",
         "linux-x64-agent.rpm",
@@ -58,20 +60,25 @@ class Program
 
         "linux-arm7-gui.zip",
         "linux-arm7-gui.deb",
+        "linux-arm7-gui.appimage",
         "linux-arm7-cli.zip",
         "linux-arm7-cli.deb",
         "linux-arm7-cli.docker",
+        "linux-arm7-cli.spk",
+        "linux-arm7-cli.qpkg",
         "linux-arm7-agent.zip",
         "linux-arm7-agent.deb",
 
         "linux-arm64-gui.zip",
         "linux-arm64-gui.deb",
         "linux-arm64-gui.rpm",
+        "linux-arm64-gui.appimage",
         "linux-arm64-cli.zip",
         "linux-arm64-cli.deb",
         "linux-arm64-cli.rpm",
         "linux-arm64-cli.docker",
-        // "linux-arm64-cli.spk",  // Need to add new integration with DSM WebUI
+        "linux-arm64-cli.spk",
+        "linux-arm64-cli.qpkg",
         "linux-arm64-agent.zip",
         "linux-arm64-agent.deb",
         "linux-arm64-agent.rpm",
@@ -104,11 +111,13 @@ class Program
     {
         try
         {
-            ReturnCode = await new RootCommand("Build tool for Duplicati")
+            var rootCommand = new RootCommand("Build tool for Duplicati")
             {
                 Build.Command.Create(),
                 CreateKey.Command.Create(),
-            }.InvokeAsync(args);
+            };
+
+            ReturnCode = await rootCommand.Parse(args).InvokeAsync();
         }
         catch (Exception ex)
         {

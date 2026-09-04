@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -28,7 +28,7 @@ namespace Duplicati.Library.Backend.Filen;
 /// <summary>
 /// The Filen backend
 /// </summary>
-public class FilenBackend : IStreamingBackend
+public class FilenBackend : IStreamingBackend, IRenameEnabledBackend
 {
     /// <summary>
     /// The two-factor option name
@@ -38,6 +38,10 @@ public class FilenBackend : IStreamingBackend
     /// The move to trash option name
     /// </summary>
     private const string MoveToTrashOption = "move-to-trash";
+    /// <summary>
+    /// The API key option name
+    /// </summary>
+    private const string ApiKeyOption = "api-key";
     /// <summary>
     /// The Filen client instance
     /// </summary>
@@ -58,6 +62,10 @@ public class FilenBackend : IStreamingBackend
     /// The two-factor code, if any
     /// </summary>
     private readonly string? _twoFactorCode;
+    /// <summary>
+    /// The API key, if any
+    /// </summary>
+    private readonly string? _apiKey;
     /// <summary>
     /// Whether to move files to the trash instead of deleting them
     /// </summary>
@@ -85,14 +93,15 @@ public class FilenBackend : IStreamingBackend
     /// <param name="options">The options to use</param>
     public FilenBackend(string url, Dictionary<string, string?> options)
     {
-        var uri = new Utility.Uri(url);
+        var uri = new Utility.RelaxedUri(url);
         _path = uri.HostAndPath;
 
-        _auth = AuthOptionsHelper.Parse(options, uri)
+        _auth = AuthOptionsHelper.Parse(options, uri.Username, uri.Password)
             .RequireCredentials();
 
         _moveToTrash = Utility.Utility.ParseBoolOption(options, MoveToTrashOption);
         _twoFactorCode = options.GetValueOrDefault(TwoFactorOption);
+        _apiKey = options.GetValueOrDefault(ApiKeyOption);
         _timeout = TimeoutOptionsHelper.Parse(options);
     }
 
@@ -109,7 +118,7 @@ public class FilenBackend : IStreamingBackend
             _client = null;
             var httpClient = HttpClientHelper.CreateClient();
             httpClient.Timeout = Timeout.InfiniteTimeSpan;
-            _client = await FilenClient.CreateClientAsync(httpClient, _auth.Username!, _auth.Password!, _twoFactorCode, cancellationToken).ConfigureAwait(false);
+            _client = await FilenClient.CreateClientAsync(httpClient, _auth.Username!, _auth.Password!, _twoFactorCode, _apiKey, cancellationToken).ConfigureAwait(false);
         }
 
         return _client;
@@ -129,9 +138,18 @@ public class FilenBackend : IStreamingBackend
     public IList<ICommandLineArgument> SupportedCommands => [
         .. AuthOptionsHelper.GetOptions(),
         new CommandLineArgument(TwoFactorOption, CommandLineArgument.ArgumentType.String, Strings.FilenBackend.TwoFactorShort, Strings.FilenBackend.TwoFactorLong),
+        new CommandLineArgument(ApiKeyOption, CommandLineArgument.ArgumentType.Password, Strings.FilenBackend.ApiKeyShort, Strings.FilenBackend.ApiKeyLong),
         new CommandLineArgument(MoveToTrashOption, CommandLineArgument.ArgumentType.Boolean, Strings.FilenBackend.MoveToTrashShort, Strings.FilenBackend.MoveToTrashLong),
         .. TimeoutOptionsHelper.GetOptions()
     ];
+
+    /// <summary>
+    /// Gets an API key for the account
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to use</param>
+    /// <returns>The API key</returns>
+    internal async Task<string?> GetApiKey(CancellationToken cancellationToken)
+        => (await GetClientAsync(cancellationToken))?.ApiKey;
 
     /// <summary>
     /// Gets the folder uuid for the folder this backend is working in
@@ -225,8 +243,8 @@ public class FilenBackend : IStreamingBackend
     );
 
     /// <inheritdoc/>
-    public Task TestAsync(CancellationToken cancellationToken)
-        => this.TestReadWritePermissionsAsync(cancellationToken);
+    public Task TestAsync(bool alsoWrite, CancellationToken cancellationToken)
+        => this.TestBackendAsync(alsoWrite, cancellationToken);
 
     /// <inheritdoc/>
     public async Task CreateFolderAsync(CancellationToken cancellationToken)
@@ -253,5 +271,17 @@ public class FilenBackend : IStreamingBackend
     public void Dispose()
     {
         _client?.Dispose();
+    }
+
+    public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+    {
+        var client = await GetClientAsync(cancellationToken).ConfigureAwait(false);
+        var folderUuid = await GetFolderUuid(client, cancellationToken).ConfigureAwait(false);
+        var fileEntry = await client.GetFileEntryAsync(folderUuid, oldname, _timeout.ListTimeout, cancellationToken).ConfigureAwait(false);
+
+        if (fileEntry == null)
+            throw new FileMissingException($"File '{oldname}' not found.");
+
+        await Utility.Utility.WithTimeout(_timeout.ShortTimeout, cancellationToken, ct => client.RenameFileAsync(fileEntry, newname, ct)).ConfigureAwait(false);
     }
 }

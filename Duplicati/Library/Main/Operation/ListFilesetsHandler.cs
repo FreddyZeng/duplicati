@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,7 +22,6 @@
 #nullable enable
 
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Interface;
 
@@ -50,11 +49,11 @@ internal static class ListFilesetsHandler
         // Use a speedy local query
         if (System.IO.File.Exists(options.Dbpath) && !options.NoLocalDb)
         {
-            await using var db = await Database.LocalListDatabase.CreateAsync(options.Dbpath, null, result.TaskControl.ProgressToken)
+            await using var db = await Database.Local.LocalListDatabase.CreateAsync(options.Dbpath, null, result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
             result.Filesets = await db
-                .ListFilesetsExtended(result.TaskControl.ProgressToken)
+                .ListFilesetsExtendedAsync(result.TaskControl.ProgressToken)
                 .ToArrayAsync(cancellationToken: result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
@@ -63,7 +62,7 @@ internal static class ListFilesetsHandler
 
         Logging.Log.WriteInformationMessage(LOGTAG, "NoLocalDatabase", "No local database, accessing remote store");
 
-        var filteredList = ListFilesHandler.ParseAndFilterFilesets(await backendManager.ListAsync(result.TaskControl.ProgressToken).ConfigureAwait(false), options);
+        var filteredList = ListFilesHandler.ParseAndFilterFilesets(await backendManager.ListAsync(null, result.TaskControl.ProgressToken).ConfigureAwait(false), options);
         if (filteredList.Count == 0)
             throw new UserInformationException("No filesets found on remote target", "EmptyRemoteFolder");
 

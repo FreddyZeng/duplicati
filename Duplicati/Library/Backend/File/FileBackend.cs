@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 using Duplicati.Library.Common.IO;
@@ -24,8 +24,6 @@ using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 
 namespace Duplicati.Library.Backend
 {
@@ -34,7 +32,7 @@ namespace Duplicati.Library.Backend
     /// <summary>
     /// The file backend implementation
     /// </summary>
-    public class File : IBackend, IStreamingBackend, IQuotaEnabledBackend, IRenameEnabledBackend
+    public class File : IBackend, IStreamingBackend, IQuotaEnabledBackend, IRenameEnabledBackend, IFolderEnabledBackend
     {
         /// <summary>
         /// The option key for the destination marker file
@@ -119,9 +117,9 @@ namespace Duplicati.Library.Backend
         /// <param name="options">The options for the file backend</param>
         public File(string url, Dictionary<string, string?> options)
         {
-            var uri = new Utility.Uri(url);
+            var uri = new Utility.RelaxedUri(url);
             var path = uri.HostAndPath;
-            var auth = AuthOptionsHelper.Parse(options, uri);
+            var auth = AuthOptionsHelper.Parse(options, uri.Username, uri.Password);
             m_timeouts = TimeoutOptionsHelper.Parse(options);
             m_username = auth.Username;
             m_password = auth.Password;
@@ -243,7 +241,7 @@ namespace Duplicati.Library.Backend
         public string DisplayName => Strings.FileBackend.DisplayName;
 
         /// <inheritdoc />
-        public string ProtocolKey => "file";
+        public virtual string ProtocolKey => "file";
 
         public bool SupportsStreaming => !m_moveFile;
 
@@ -262,6 +260,108 @@ namespace Duplicati.Library.Backend
 
             foreach (var entry in res)
                 yield return entry;
+        }
+
+        /// <summary>
+        /// Resolves a relative sub-path (using '/' or the OS separator) against the
+        /// backend root <see cref="m_path"/>, returning the canonicalized absolute
+        /// filesystem path. The path is constrained to remain within the backend root:
+        /// segments that would escape it (<c>..</c>, absolute paths, or alternate
+        /// roots) are rejected to prevent directory traversal outside the configured
+        /// destination via backend-supplied or caller-supplied names.
+        /// </summary>
+        /// <param name="subPath">The relative sub-path to resolve; null/empty/whitespace returns the backend root.</param>
+        /// <returns>The canonicalized absolute path under <see cref="m_path"/>.</returns>
+        /// <exception cref="DirectoryNotFoundException">Thrown when <paramref name="subPath"/> would resolve to a path outside the backend root.</exception>
+        private string ResolveContainedPath(string? subPath)
+        {
+            if (string.IsNullOrWhiteSpace(subPath))
+                return m_path;
+
+            // Reject absolute or alternate-rooted paths before joining, since
+            // Path.Combine would replace m_path with them rather than append.
+            // On Windows a path like "C:\x" or "\x" is rooted; on Unix "/x" is.
+            if (System.IO.Path.IsPathRooted(subPath))
+                throw new DirectoryNotFoundException($"Refusing to resolve rooted path outside backend root: {subPath}");
+
+            // Normalize separators and trim leading/trailing separators, then reject
+            // any ".." segment. Path.Combine does not collapse "..", so a segment of
+            // ".." would resolve above m_path; rejecting it (rather than relying on a
+            // post-canonicalization check) keeps the intent explicit and cross-platform.
+            var sep = System.IO.Path.DirectorySeparatorChar;
+            var altSep = System.IO.Path.AltDirectorySeparatorChar;
+            var normalized = subPath.Replace(altSep, sep).Trim(sep);
+            var segments = normalized.Split(sep);
+            foreach (var segment in segments)
+                if (segment == "..")
+                    throw new DirectoryNotFoundException($"Refusing to resolve path containing a parent-directory segment ('..') outside backend root: {subPath}");
+
+            var combined = systemIO.PathCombine(m_path, normalized);
+
+            // Final containment guard: canonicalize both sides and verify the result
+            // remains under the backend root. This catches any remaining edge cases
+            // (e.g. symlinks resolved by the OS, or future path shapes).
+            var fullCombined = systemIO.PathGetFullPath(combined);
+            var fullRoot = systemIO.PathGetFullPath(m_path);
+            if (!fullCombined.StartsWith(fullRoot, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                throw new DirectoryNotFoundException($"Refusing to resolve path outside backend root: {subPath}");
+
+            return combined;
+        }
+
+        /// <inheritdoc />
+        public async IAsyncEnumerable<IFileEntry> ListAsync(string? path, [EnumeratorCancellation] CancellationToken cancelToken)
+        {
+            PreAuthenticate();
+
+            if (!systemIO.DirectoryExists(m_path))
+                throw new FolderMissingException(Strings.FileBackend.FolderMissingError(m_path));
+
+            // Resolve the folder to list: the backend root when path is null/empty,
+            // otherwise the subfolder joined onto the backend root. ResolveContainedPath
+            // constrains the result to remain within the backend root (rejecting ".."
+            // and absolute paths) so a caller-supplied or backend-supplied name cannot
+            // list outside the configured destination.
+            var listPath = ResolveContainedPath(path);
+
+            if (!systemIO.DirectoryExists(listPath))
+                throw new FolderMissingException(Strings.FileBackend.FolderMissingError(listPath));
+
+            var res = await Utility.Utility.WithTimeout(m_timeouts.ListTimeout, cancelToken, _ =>
+                systemIO.EnumerateFileEntries(listPath)
+                    .Select(entry => new FileEntry(SanitizeFilename(entry.Name), entry.Size, entry.LastAccess, entry.LastModification, entry.IsFolder, entry.IsArchived))
+            ).ConfigureAwait(false);
+
+            foreach (var entry in res)
+                yield return entry;
+        }
+
+        /// <inheritdoc />
+        public Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken)
+        {
+            PreAuthenticate();
+
+            if (!systemIO.DirectoryExists(m_path))
+                throw new FolderMissingException(Strings.FileBackend.FolderMissingError(m_path));
+
+            // ResolveContainedPath constrains the result to remain within the backend
+            // root (rejecting ".." and absolute paths) so a caller-supplied or
+            // backend-supplied name cannot stat outside the configured destination.
+            var fullPath = ResolveContainedPath(SanitizeFilename(path));
+
+            if (systemIO.FileExists(fullPath))
+            {
+                var fi = new FileInfo(fullPath);
+                return Task.FromResult<IFileEntry?>(new FileEntry(SanitizeFilename(fi.Name), fi.Length, fi.LastAccessTime, fi.LastWriteTime, false, (fi.Attributes & System.IO.FileAttributes.Archive) != 0));
+            }
+
+            if (systemIO.DirectoryExists(fullPath))
+            {
+                var di = new DirectoryInfo(fullPath);
+                return Task.FromResult<IFileEntry?>(new FileEntry(SanitizeFilename(di.Name), 0, di.LastAccessTime, di.LastWriteTime, true, false));
+            }
+
+            return Task.FromResult<IFileEntry?>(null);
         }
 
 #if DEBUG_RETRY
@@ -412,8 +512,8 @@ namespace Duplicati.Library.Backend
         public string Description => Strings.FileBackend.Description;
 
         /// <inheritdoc />
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         /// <inheritdoc />
         public async Task CreateFolderAsync(CancellationToken cancelToken)
@@ -451,72 +551,12 @@ namespace Duplicati.Library.Backend
                 throw new FileMissingException(Strings.FileBackend.FileNotFoundError(ex.Message), ex);
         }
 
-        /// <summary>
-        /// Gets the drive or volume information for the specified path.
-        /// </summary>
-        /// <returns>The drive or volume information, or null if it could not be determined.</returns>
-        private DriveInfo? GetDrive()
-        {
-            string root;
-            if (!OperatingSystem.IsWindows())
-            {
-                string path = Util.AppendDirSeparator(systemIO.PathGetFullPath(m_path));
-
-                // If the built-in .NET DriveInfo works, use it
-                try { return new DriveInfo(path); }
-                catch { }
-
-                root = "/";
-
-                //Find longest common prefix from mounted devices
-                //TODO: Can trick this with symlinks, where the symlink is on one mounted volume,
-                // and the actual storage is on another
-                foreach (var di in DriveInfo.GetDrives())
-                    if (path.StartsWith(Util.AppendDirSeparator(di.Name), StringComparison.Ordinal) && di.Name.Length > root.Length)
-                        root = di.Name;
-            }
-            else
-            {
-                root = systemIO.GetPathRoot(m_path);
-            }
-
-            // On Windows, DriveInfo is only valid for lettered drives. (e.g., not for UNC paths and shares)
-            // So only attempt to get it if we aren't on Windows or if the root starts with a letter.
-            if (!OperatingSystem.IsWindows() || (root.Length > 0 && char.IsLetter(root[0])))
-            {
-                try
-                {
-                    return new DriveInfo(root);
-                }
-                catch (ArgumentException)
-                {
-                    // If there was a problem, fall back to returning null
-                }
-            }
-
-            return null;
-        }
-
         /// <inheritdoc />
-        public Task<IQuotaInfo?> GetQuotaInfoAsync(CancellationToken cancelToken)
+        public virtual Task<IQuotaInfo?> GetQuotaInfoAsync(CancellationToken cancelToken)
         {
-            var driveInfo = this.GetDrive();
-            if (driveInfo != null)
-            {
-                // Check that the total space is above 0, because Mono sometimes reports 0 for unknown file systems
-                // If the drive actually has a total size of 0, this should be obvious immediately due to write errors
-                if (driveInfo.TotalSize > 0)
-                {
-                    return Task.FromResult<IQuotaInfo?>(new QuotaInfo(driveInfo.TotalSize, driveInfo.AvailableFreeSpace));
-                }
-            }
-
-            if (OperatingSystem.IsWindows())
-            {
-                // If we can't get the DriveInfo on Windows, fallback to GetFreeDiskSpaceEx
-                // https://stackoverflow.com/questions/2050343/programmatically-determining-space-available-from-unc-path
-                return Task.FromResult<IQuotaInfo?>(GetDiskFreeSpace(m_path));
-            }
+            var spaceInfo = Utility.Utility.GetFreeSpaceForPath(m_path);
+            if (spaceInfo != null)
+                return Task.FromResult<IQuotaInfo?>(new QuotaInfo(spaceInfo.Value.TotalSpace, spaceInfo.Value.FreeSpace));
 
             return Task.FromResult<IQuotaInfo?>(null);
         }
@@ -534,50 +574,6 @@ namespace Duplicati.Library.Backend
             systemIO.FileMove(source, target);
 
             return Task.CompletedTask;
-        }
-
-        /// <summary>
-        /// Get the disk free space using the Win32 API's GetDiskFreeSpaceEx function.
-        /// </summary>
-        /// <param name="directory">Directory</param>
-        /// <returns>Quota info</returns>
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        [SupportedOSPlatform("windows")]
-        public static QuotaInfo? GetDiskFreeSpace(string directory)
-        {
-            ulong available;
-            ulong total;
-            if (WindowsDriveHelper.GetDiskFreeSpaceEx(directory, out available, out total, out _))
-            {
-                return new QuotaInfo((long)total, (long)available);
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Provides helper methods for working with Windows drives.
-        /// </summary>
-        [SupportedOSPlatform("windows")]
-        private static class WindowsDriveHelper
-        {
-            /// <summary>
-            /// Gets the free disk space for the specified directory using the Win32 API.
-            /// </summary>
-            /// <param name="lpDirectoryName">The directory name to check</param>
-            /// <param name="lpFreeBytesAvailable">The available free bytes</param>
-            /// <param name="lpTotalNumberOfBytes">The total number of bytes</param>
-            /// <param name="lpTotalNumberOfFreeBytes">The total number of free bytes</param>
-            /// <returns></returns>
-            [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public static extern bool GetDiskFreeSpaceEx(
-                string lpDirectoryName,
-                out ulong lpFreeBytesAvailable,
-                out ulong lpTotalNumberOfBytes,
-                out ulong lpTotalNumberOfFreeBytes);
         }
 
         /// <summary>

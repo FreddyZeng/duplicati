@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -21,6 +21,25 @@
 namespace Duplicati.WebserverCore.Dto.V2;
 
 /// <summary>
+/// The type of remote destination
+/// </summary>
+public enum RemoteDestinationType
+{
+    /// <summary>
+    /// Backend
+    /// </summary>
+    Backend,
+    /// <summary>
+    /// Source provider
+    /// </summary>
+    SourceProvider,
+    /// <summary>
+    /// Restore destination provider
+    /// </summary>
+    RestoreDestinationProvider
+}
+
+/// <summary>
 /// The list filesets request DTO
 /// </summary>
 public sealed record DestinationTestRequestDto
@@ -34,6 +53,10 @@ public sealed record DestinationTestRequestDto
     /// The backup ID, if known
     /// </summary>
     public string? BackupId { get; init; }
+    /// <summary>
+    /// The connection string ID, if known
+    /// </summary>
+    public long? ConnectionStringId { get; init; }
 
     /// <summary>
     /// Any additional options to pass to the destination
@@ -43,4 +66,19 @@ public sealed record DestinationTestRequestDto
     /// Whether to automatically create the destination if it does not exist
     /// </summary>
     public required bool AutoCreate { get; init; } = false;
+
+    /// <summary>
+    /// Whether to test read-only access
+    /// </summary>
+    public bool ReadOnlyTest { get; init; } = false;
+
+    /// <summary>
+    /// The type of remote destination
+    /// </summary>
+    public RemoteDestinationType? DestinationType { get; init; }
+
+    /// <summary>
+    /// The source prefix to identify the source provider connection string
+    /// </summary>
+    public string? SourcePrefix { get; init; }
 }

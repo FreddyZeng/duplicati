@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -86,5 +86,32 @@ namespace Duplicati.Library.Backend
         /// <param name="cancelToken">The cancellation token</param>
         /// <returns>>A task representing the asynchronous operation</returns>
         Task AddFileStreamAsync(string bucketName, string keyName, Stream source, CancellationToken cancelToken);
+
+        /// <summary>
+        /// Gets the current object lock expiration timestamp for a remote file, if available.
+        /// </summary>
+        /// <param name="bucketName">The bucket containing the object.</param>
+        /// <param name="keyName">The full object key.</param>
+        /// <param name="cancelToken">The cancellation token.</param>
+        /// <returns>The UTC expiration timestamp if present, otherwise <c>null</c>.</returns>
+        Task<DateTime?> GetObjectLockUntilAsync(string bucketName, string keyName, CancellationToken cancelToken);
+
+        /// <summary>
+        /// Applies or updates the object lock expiration for a remote file.
+        /// </summary>
+        /// <param name="bucketName">The bucket containing the object.</param>
+        /// <param name="keyName">The full object key.</param>
+        /// <param name="lockUntilUtc">The UTC timestamp until which the object should remain locked.</param>
+        /// <param name="cancelToken">The cancellation token.</param>
+        Task SetObjectLockUntilAsync(string bucketName, string keyName, DateTime lockUntilUtc, CancellationToken cancelToken);
+
+        /// <summary>
+        /// Gets the metadata for a single object
+        /// </summary>
+        /// <param name="bucketName">The bucket name</param>
+        /// <param name="keyName">The object key</param>
+        /// <param name="cancellationToken">The cancellation token</param>
+        /// <returns>The file entry, or null if not found</returns>
+        Task<IFileEntry?> GetFileEntryAsync(string bucketName, string keyName, CancellationToken cancellationToken);
     }
 }

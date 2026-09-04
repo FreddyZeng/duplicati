@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -32,9 +32,25 @@ using FileEntry = Duplicati.Library.Common.IO.FileEntry;
 namespace Duplicati.Library.Backend.Backblaze;
 
 /// <summary>
+/// Lock mode options for B2 object lock
+/// </summary>
+public enum B2LockMode
+{
+    /// <summary>
+    /// Governance mode - allows privileged users to bypass retention
+    /// </summary>
+    Governance,
+
+    /// <summary>
+    /// Compliance mode - strict retention that cannot be bypassed
+    /// </summary>
+    Compliance
+}
+
+/// <summary>
 /// Backblaze B2 Backend
 /// </summary>
-public class B2 : IStreamingBackend
+public class B2 : IStreamingBackend, ILockingBackend, IRenameEnabledBackend
 {
     /// <summary>
     /// The option key for specifying the Backblaze B2 account ID
@@ -62,6 +78,11 @@ public class B2 : IStreamingBackend
     private const string B2_CREATE_BUCKET_TYPE_OPTION = "b2-create-bucket-type";
 
     /// <summary>
+    /// The option key for specifying the lock mode for the backend
+    /// </summary>
+    private const string B2_LOCK_MODE_OPTION = "b2-lock-mode";
+
+    /// <summary>
     /// The default bucket type for new buckets - set to private access
     /// </summary>
     private const string DEFAULT_BUCKET_TYPE = "allPrivate";
@@ -70,6 +91,11 @@ public class B2 : IStreamingBackend
     /// The default number of files to retrieve per API request
     /// </summary>
     private const int DEFAULT_PAGE_SIZE = 500;
+
+    /// <summary>
+    /// The default lock mode for the backend
+    /// </summary>
+    private const B2LockMode DEFAULT_LOCK_MODE = B2LockMode.Governance;
 
     /// <summary>
     /// Default retry-after time in seconds for B2 API requests
@@ -105,6 +131,11 @@ public class B2 : IStreamingBackend
     /// Custom download URL for the B2 service, if specified
     /// </summary>
     private readonly string? _downloadUrl;
+
+    /// <summary>
+    /// The lock mode to use for the backend
+    /// </summary>
+    private readonly B2LockMode _lockMode;
 
     /// <summary>
     /// Helper class for handling B2 authentication and API requests
@@ -163,7 +194,7 @@ public class B2 : IStreamingBackend
     /// <param name="options">options to be used in the backend</param>
     public B2(string url, Dictionary<string, string?> options)
     {
-        var uri = new Utility.Uri(url);
+        var uri = new Utility.RelaxedUri(url);
 
         _bucketName = uri.Host ?? "";
         _prefix = Util.AppendDirSeparator("/" + uri.Path, "/");
@@ -171,13 +202,13 @@ public class B2 : IStreamingBackend
         // For B2 we do not use a leading slash
         _prefix = _prefix.TrimStart('/');
 
-        _urlencodedPrefix = string.Join("/", _prefix.Split(new[] { '/' }).Select(x => Utility.Uri.UrlPathEncode(x)));
+        _urlencodedPrefix = string.Join("/", _prefix.Split(new[] { '/' }).Select(x => Utility.UrlEncoding.UrlPathEncode(x)));
 
         _bucketType = DEFAULT_BUCKET_TYPE;
         if (options.TryGetValue(B2_CREATE_BUCKET_TYPE_OPTION, out var option1))
             _bucketType = option1;
 
-        var auth = AuthOptionsHelper.ParseWithAlias(options, uri, B2_ID_OPTION, B2_KEY_OPTION);
+        var auth = AuthOptionsHelper.ParseWithAlias(options, uri.Username, uri.Password, B2_ID_OPTION, B2_KEY_OPTION);
 
         if (!auth.HasUsername)
             throw new UserInformationException(Strings.B2.NoB2UserIDError, "B2MissingUserID");
@@ -196,6 +227,9 @@ public class B2 : IStreamingBackend
 
         _downloadUrl = null;
         if (options.TryGetValue(B2_DOWNLOAD_URL_OPTION, out var option)) _downloadUrl = option;
+
+        // Parse lock mode option, default to Governance
+        _lockMode = Library.Utility.Utility.ParseEnumOption(options, B2_LOCK_MODE_OPTION, DEFAULT_LOCK_MODE);
 
         _httpClient = HttpClientHelper.CreateClient();
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
@@ -298,6 +332,7 @@ public class B2 : IStreamingBackend
             new CommandLineArgument(B2_CREATE_BUCKET_TYPE_OPTION, CommandLineArgument.ArgumentType.String, Strings.B2.B2createbuckettypeDescriptionShort, Strings.B2.B2createbuckettypeDescriptionLong, DEFAULT_BUCKET_TYPE),
             new CommandLineArgument(B2_PAGESIZE_OPTION, CommandLineArgument.ArgumentType.Integer, Strings.B2.B2pagesizeDescriptionShort, Strings.B2.B2pagesizeDescriptionLong, DEFAULT_PAGE_SIZE.ToString()),
             new CommandLineArgument(B2_DOWNLOAD_URL_OPTION, CommandLineArgument.ArgumentType.String, Strings.B2.B2downloadurlDescriptionShort, Strings.B2.B2downloadurlDescriptionLong),
+            new CommandLineArgument(B2_LOCK_MODE_OPTION, CommandLineArgument.ArgumentType.Enumeration, Strings.B2.B2lockmodeDescriptionShort, Strings.B2.B2lockmodeDescriptionLong, DEFAULT_LOCK_MODE.ToString(), null, Enum.GetNames(typeof(B2LockMode))),
             ..TimeoutOptionsHelper.GetOptions()
         ]);
 
@@ -317,7 +352,7 @@ public class B2 : IStreamingBackend
 
             request.Headers.TryAddWithoutValidation("Authorization", uploadUrlData.AuthorizationToken);
             request.Headers.Add("X-Bz-Content-Sha1", sha1);
-            request.Headers.Add("X-Bz-File-Name", _urlencodedPrefix + Utility.Uri.UrlPathEncode(remotename));
+            request.Headers.Add("X-Bz-File-Name", _urlencodedPrefix + Utility.UrlEncoding.UrlPathEncode(remotename));
             request.Content = new StreamContent(timeoutStream);
 
             request.Content.Headers.Add("Content-Type", "application/octet-stream");
@@ -379,9 +414,9 @@ public class B2 : IStreamingBackend
 
         using var request = _filecache != null && _filecache.ContainsKey(remotename)
             ? await _b2AuthHelper.CreateRequestAsync(
-                $"{config.DownloadUrl}/b2api/v1/b2_download_file_by_id?fileId={Utility.Uri.UrlEncode(await GetFileId(remotename, cancellationToken))}", HttpMethod.Get, cancellationToken).ConfigureAwait(false)
+                $"{config.DownloadUrl}/b2api/v1/b2_download_file_by_id?fileId={Utility.UrlEncoding.UrlEncode(await GetFileId(remotename, cancellationToken))}", HttpMethod.Get, cancellationToken).ConfigureAwait(false)
             : await _b2AuthHelper.CreateRequestAsync(
-                $"{config.DownloadUrl}/{_urlencodedPrefix}{Utility.Uri.UrlPathEncode(remotename)}", HttpMethod.Get, cancellationToken).ConfigureAwait(false);
+                $"{config.DownloadUrl}/{_urlencodedPrefix}{Utility.UrlEncoding.UrlPathEncode(remotename)}", HttpMethod.Get, cancellationToken).ConfigureAwait(false);
 
         HttpResponseMessage? response = null;
         try
@@ -405,6 +440,29 @@ public class B2 : IStreamingBackend
         {
             response?.Dispose();
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<DateTime?> GetObjectLockUntilAsync(string remotename, CancellationToken cancellationToken)
+    {
+        var fileId = await GetFileId(remotename, cancellationToken).ConfigureAwait(false);
+        var config = await _b2AuthHelper.GetConfigAsync(cancellationToken).ConfigureAwait(false);
+
+        var response = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken, async ct
+            => await _b2AuthHelper.PostAndGetJsonDataAsync<GetFileInfoResponse>(
+                $"{config.APIUrl}/b2api/v2/b2_get_file_info",
+                new GetFileInfoRequest
+                {
+                    FileId = fileId
+                },
+                ct
+            ).ConfigureAwait(false)
+        ).ConfigureAwait(false);
+
+        if (response?.FileRetention?.Value?.RetainUntilTimestamp is long timestamp && timestamp > 0)
+            return Utility.Utility.EPOCH.AddMilliseconds(timestamp);
+
+        return null;
     }
 
     /// <summary>
@@ -561,12 +619,40 @@ public class B2 : IStreamingBackend
         }
     }
 
+    /// <inheritdoc />
+    public async Task SetObjectLockUntilAsync(string remotename, DateTime lockUntilUtc, CancellationToken cancellationToken)
+    {
+        var fileId = await GetFileId(remotename, cancellationToken).ConfigureAwait(false);
+        var config = await _b2AuthHelper.GetConfigAsync(cancellationToken).ConfigureAwait(false);
+
+        var res = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken, async ct
+            => await _b2AuthHelper.PostAndGetJsonDataAsync<UpdateFileRetentionResponse>(
+                $"{config.APIUrl}/b2api/v2/b2_update_file_retention",
+                new UpdateFileRetentionRequest
+                {
+                    FileId = fileId,
+                    FileName = _prefix + remotename,
+                    FileRetention = new FileRetention
+                    {
+                        Mode = _lockMode.ToString().ToLower(),
+                        RetainUntilTimestamp = (long)(lockUntilUtc.ToUniversalTime() - Utility.Utility.EPOCH).TotalMilliseconds
+                    },
+                    BypassGovernance = false
+                },
+                ct
+            ).ConfigureAwait(false)
+        ).ConfigureAwait(false);
+
+        if (res.FileRetention?.RetainUntilTimestamp == null)
+            throw new Exception("Failed to set object lock, call succeeded but no retention info returned");
+    }
+
     /// <summary>
     /// Performs test with backend (internally it uses the List() command, which by definition means the backend is working)
     /// </summary>
     /// <param name="cancelToken">Cancellation Token</param>
-    public Task TestAsync(CancellationToken cancelToken)
-        => this.TestReadWritePermissionsAsync(cancelToken);
+    public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+        => this.TestBackendAsync(alsoWrite, cancelToken);
 
     /// <summary>
     /// Create remote folder
@@ -615,6 +701,23 @@ public class B2 : IStreamingBackend
         .Select(x => new System.Uri(x).Host)
         .Distinct()
         .ToArray();
+    }
+
+    public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+    {
+        var sourceFileId = await GetFileId(oldname, cancellationToken).ConfigureAwait(false);
+        var config = await _b2AuthHelper.GetConfigAsync(cancellationToken).ConfigureAwait(false);
+
+        // Copy file
+        await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken, async ct =>
+            await _b2AuthHelper.PostAndGetJsonDataAsync<FileEntity>(
+                $"{config.APIUrl}/b2api/v1/b2_copy_file",
+                new CopyFileRequest(sourceFileId, _urlencodedPrefix + Utility.UrlEncoding.UrlPathEncode(newname)),
+                ct).ConfigureAwait(false)
+        ).ConfigureAwait(false);
+
+        // Delete old file
+        await DeleteAsync(oldname, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 using System;
@@ -361,13 +361,30 @@ namespace Duplicati.Library.Main
         void UpdateFile(out string filename, out long filesize, out long fileoffset, out bool filecomplete);
 
         /// <summary>
+        /// Gets the current remote sync destination index (1-based) and total count.
+        /// Returns (0, 0) when not in a remote sync phase.
+        /// </summary>
+        /// <param name="destinationIndex">The 1-based index of the current destination being synced.</param>
+        /// <param name="destinationCount">The total number of destinations to sync.</param>
+        void UpdateRemoteSyncDestination(out int destinationIndex, out int destinationCount);
+
+        /// <summary>
+        /// Gets the estimated time remaining for the current operation, based on the
+        /// total file size versus the processed file size. The throughput signal is
+        /// smoothed with an EWMA (exponentially weighted moving average) to reduce
+        /// jitter from short-term fluctuations. Returns <c>null</c> when no estimate
+        /// is available (e.g. the total size is unknown or no data has been processed yet).
+        /// </summary>
+        TimeSpan? EstimatedTimeToCompletion { get; }
+
+        /// <summary>
         /// Occurs when the phase has changed
         /// </summary>
         event PhaseChangedDelegate PhaseChanged;
     }
 
     /// <summary>
-    /// Interface for updating the backend progress
+    /// Interface for updating the operation progress
     /// </summary>
     internal interface IOperationProgressUpdater
     {
@@ -377,6 +394,13 @@ namespace Duplicati.Library.Main
         void UpdateFileProgress(long offset);
         void UpdatefileCount(long filecount, long filesize, bool done);
         void UpdatefilesProcessed(long count, long size);
+
+        /// <summary>
+        /// Sets the current remote sync destination index and total count.
+        /// </summary>
+        /// <param name="destinationIndex">The 1-based index of the current destination being synced.</param>
+        /// <param name="destinationCount">The total number of destinations to sync.</param>
+        void UpdateRemoteSyncDestination(int destinationIndex, int destinationCount);
     }
 
     internal interface IOperationProgressUpdaterAndReporter : IOperationProgressUpdater, IOperationProgress
@@ -401,6 +425,36 @@ namespace Duplicati.Library.Main
 
         private bool m_countingFiles;
 
+        private int m_remoteSyncDestinationIndex;
+        private int m_remoteSyncDestinationCount;
+
+        /// <summary>
+        /// The time the current phase started, used as the basis for throughput calculations.
+        /// </summary>
+        private DateTime m_phaseStarted;
+
+        /// <summary>
+        /// The EWMA-smoothed throughput in bytes per second. <c>null</c> until the first sample.
+        /// </summary>
+        private double? m_smoothedBytesPerSecond;
+
+        /// <summary>
+        /// The most recent estimated time to completion, or <c>null</c> when no estimate is available.
+        /// </summary>
+        private TimeSpan? m_estimatedTimeToCompletion;
+
+        /// <summary>
+        /// The EWMA smoothing factor (alpha). Higher values weight recent samples more heavily.
+        /// A value around 0.2 gives a moderately smooth signal that still tracks real changes.
+        /// </summary>
+        private const double EwmaAlpha = 0.2;
+
+        /// <summary>
+        /// The minimum throughput, in bytes per second, used to compute an estimate.
+        /// Below this the remaining time would be unreasonably large and not meaningful.
+        /// </summary>
+        private const double MinimumBytesPerSecondForEstimate = 1024;
+
         public event PhaseChangedDelegate PhaseChanged;
 
         public void UpdatePhase(OperationPhase phase)
@@ -414,6 +468,11 @@ namespace Duplicati.Library.Main
                 m_curfilesize = 0;
                 m_curfileoffset = 0;
                 m_curfilecomplete = false;
+                // A new phase has a different work profile, so any throughput and
+                // estimate accumulated so far no longer apply. Reset the EWMA state.
+                m_phaseStarted = DateTime.UtcNow;
+                m_smoothedBytesPerSecond = null;
+                m_estimatedTimeToCompletion = null;
             }
 
             if (prev_phase != phase && PhaseChanged != null)
@@ -457,9 +516,74 @@ namespace Duplicati.Library.Main
         {
             lock (m_lock)
             {
+                var now = DateTime.UtcNow;
+
+                // If no phase start has been recorded yet (e.g. progress reported
+                // before UpdatePhase), anchor the EWMA window to the first sample.
+                if (m_phaseStarted == DateTime.MinValue)
+                    m_phaseStarted = now;
+
+                var elapsedSeconds = (now - m_phaseStarted).TotalSeconds;
+                if (elapsedSeconds > 0)
+                {
+                    // Instantaneous throughput over the whole phase so far.
+                    var instantBytesPerSecond = size / elapsedSeconds;
+
+                    if (!m_smoothedBytesPerSecond.HasValue)
+                        m_smoothedBytesPerSecond = instantBytesPerSecond;
+                    else
+                        m_smoothedBytesPerSecond =
+                            (EwmaAlpha * instantBytesPerSecond) +
+                            ((1.0 - EwmaAlpha) * m_smoothedBytesPerSecond.Value);
+                }
+
                 m_filesprocessed = count;
                 m_filesizeprocessed = size;
                 m_curfilecomplete = true;
+
+                m_estimatedTimeToCompletion = ComputeEstimatedTimeToCompletion();
+            }
+        }
+
+        /// <summary>
+        /// Computes the estimated time to completion from the total size, the processed
+        /// size and the EWMA-smoothed throughput. Returns <c>null</c> when no meaningful
+        /// estimate can be produced.
+        /// </summary>
+        private TimeSpan? ComputeEstimatedTimeToCompletion()
+        {
+            var rate = m_smoothedBytesPerSecond;
+            if (!rate.HasValue || rate.Value < MinimumBytesPerSecondForEstimate)
+                return null;
+
+            // While the file count is still being tallied the total size is incomplete,
+            // so any remaining-time estimate would be misleading.
+            if (m_countingFiles)
+                return null;
+
+            var remaining = m_filesize - m_filesizeprocessed;
+            if (remaining <= 0)
+                return TimeSpan.Zero;
+
+            return TimeSpan.FromSeconds(remaining / rate.Value);
+        }
+
+        public void UpdateRemoteSyncDestination(int destinationIndex, int destinationCount)
+        {
+            lock (m_lock)
+            {
+                m_remoteSyncDestinationIndex = destinationIndex;
+                m_remoteSyncDestinationCount = destinationCount;
+            }
+        }
+
+        /// <inheritdoc />
+        void IOperationProgress.UpdateRemoteSyncDestination(out int destinationIndex, out int destinationCount)
+        {
+            lock (m_lock)
+            {
+                destinationIndex = m_remoteSyncDestinationIndex;
+                destinationCount = m_remoteSyncDestinationCount;
             }
         }
 
@@ -484,6 +608,20 @@ namespace Duplicati.Library.Main
                 filesizeprocessed = m_filesizeprocessed;
                 filecount = m_filecount;
                 countingfiles = m_countingFiles;
+            }
+        }
+
+        /// <summary>
+        /// Gets the EWMA-smoothed estimated time to completion, or <c>null</c> when no
+        /// estimate is available. The estimate is recomputed whenever processed-file
+        /// statistics are updated, based on the total size versus the processed size.
+        /// </summary>
+        public TimeSpan? EstimatedTimeToCompletion
+        {
+            get
+            {
+                lock (m_lock)
+                    return m_estimatedTimeToCompletion;
             }
         }
 

@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 using System;
@@ -26,7 +26,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Duplicati.Library.AutoUpdater;
 using Duplicati.Library.Interface;
-using Duplicati.Library.Modules.Builtin.ResultSerialization;
+using Duplicati.Library.ResultSerialization;
 using Duplicati.Library.Utility;
 
 namespace Duplicati.Library.Modules.Builtin
@@ -40,11 +40,6 @@ namespace Duplicati.Library.Modules.Builtin
         /// The tag used for logging
         /// </summary>
         private static readonly string LOGTAG = Logging.Log.LogTagFromType<ReportHelper>();
-
-        /// <summary>
-        /// The salt used for calculating a backup Id from the remote URL
-        /// </summary>
-        private const string SALT = "DUPL";
 
         /// <summary>
         /// Name of the option used to specify subject
@@ -88,6 +83,11 @@ namespace Duplicati.Library.Modules.Builtin
         /// Name of the option used to specify extra data to include in the report
         /// </summary>
         protected abstract string ExtraDataOptionName { get; }
+
+        /// <summary>
+        /// The option used to disable path redaction in log messages, mirrored from Options.cs
+        /// </summary>
+        protected const string OPTION_ALLOW_PATHS_IN_LOG_MESSAGES = "allow-paths-in-log-messages";
 
         /// <summary>
         /// The default subject or title line
@@ -206,6 +206,11 @@ namespace Duplicati.Library.Modules.Builtin
         private IResultFormatSerializer m_resultFormatSerializer;
 
         /// <summary>
+        /// True if paths are allowed in log messages
+        /// </summary>
+        private bool m_allowPathsInLogMessages;
+
+        /// <summary>
         /// Configures the module
         /// </summary>
         /// <returns><c>true</c>, if module should be used, <c>false</c> otherwise.</returns>
@@ -232,6 +237,7 @@ namespace Duplicati.Library.Modules.Builtin
 
             m_options = commandlineOptions.AsReadOnly();
             m_isConfigured = true;
+            m_allowPathsInLogMessages = Utility.Utility.ParseBoolOption(m_options, OPTION_ALLOW_PATHS_IN_LOG_MESSAGES);
             m_options.TryGetValue(SubjectOptionName, out m_subject);
             m_options.TryGetValue(BodyOptionName, out m_body);
             m_options.TryGetValue(ExtraDataOptionName, out var extraData);
@@ -243,7 +249,7 @@ namespace Duplicati.Library.Modules.Builtin
                 }
                 else
                 {
-                    var values = Utility.Uri.ParseQueryString(extraData);
+                    var values = Utility.UrlEncoding.ParseQueryString(extraData, true);
                     m_extraValues = values.AllKeys
                         .Where(x => !string.IsNullOrWhiteSpace(x))
                         .ToDictionary(key => key, key => values[key]);
@@ -377,6 +383,10 @@ namespace Duplicati.Library.Modules.Builtin
         /// </summary>
         private const string OPERATING_SYSTEM = "operating-system";
         /// <summary>
+        /// The operating system detailed template key
+        /// </summary>
+        private const string OPERATING_SYSTEM_DETAILED = "operating-system-detailed";
+        /// <summary>
         /// The installation type template key
         /// </summary>
         private const string INSTALLATION_TYPE = "installation-type";
@@ -384,6 +394,10 @@ namespace Duplicati.Library.Modules.Builtin
         /// The destination type template key
         /// </summary>
         private const string DESTINATION_TYPE = "destination-type";
+        /// <summary>
+        /// The destination host suffix template key
+        /// </summary>
+        private const string DESTINATION_HOST_SUFFIX = "destination-host-suffix";
         /// <summary>
         /// The next scheduled run template key
         /// </summary>
@@ -406,14 +420,14 @@ namespace Duplicati.Library.Modules.Builtin
         private static readonly IReadOnlySet<string> EXTRA_TEMPLATE_KEYS = new HashSet<string>([
             MACHINE_ID, BACKUP_ID, BACKUP_NAME, MACHINE_NAME,
             OPERATING_SYSTEM, INSTALLATION_TYPE, DESTINATION_TYPE, NEXT_SCHEDULED_RUN,
-            UPDATE_CHANNEL
+            UPDATE_CHANNEL, OPERATING_SYSTEM_DETAILED, DESTINATION_HOST_SUFFIX
         ], StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
-        /// Gets the default value for a template key
+        /// Gets the default value for a template key.
         /// </summary>
-        /// <param name="name">The name of the template key</param>
-        /// <returns>The default value</returns>
+        /// <param name="name">The name of the template key.</param>
+        /// <returns>The default value.</returns>
         private string GetDefaultValue(string name)
         {
             switch (name)
@@ -427,21 +441,28 @@ namespace Duplicati.Library.Modules.Builtin
                 case PARSEDRESULT:
                     return m_parsedresultlevel;
                 case MACHINE_ID:
-                    return DataFolderManager.MachineID;
+                    // Honor an explicit "machine-id" option, falling back to the machine default
+                    return (m_options != null && m_options.TryGetValue(MACHINE_ID, out var machineId) && !string.IsNullOrWhiteSpace(machineId))
+                        ? machineId
+                        : DataFolderManager.GetMachineID(probeOnly: true);
                 case BACKUP_ID:
-                    return Utility.Utility.ByteArrayAsHexString(Utility.Utility.RepeatedHashWithSalt(m_remoteurl, SALT));
+                    return Utility.Utility.CalculateBackupId(m_remoteurl);
                 case BACKUP_NAME:
                     return System.IO.Path.GetFileNameWithoutExtension(Utility.Utility.getEntryAssembly().Location);
                 case MACHINE_NAME:
                     return DataFolderManager.MachineName;
                 case OPERATING_SYSTEM:
                     return UpdaterManager.OperatingSystemName;
+                case OPERATING_SYSTEM_DETAILED:
+                    return OSInfoHelper.PlatformString;
                 case INSTALLATION_TYPE:
                     return UpdaterManager.PackageTypeId;
                 case DESTINATION_TYPE:
                     // Only return the url scheme, as the rest could contain sensitive information
                     var ix = m_remoteurl?.IndexOf("://", StringComparison.OrdinalIgnoreCase) ?? -1;
                     return Utility.Utility.GuessScheme(m_remoteurl) ?? "file";
+                case DESTINATION_HOST_SUFFIX:
+                    return Utility.Utility.GuessHostSuffixSafe(m_remoteurl);
                 case UPDATE_CHANNEL:
                     return UpdaterManager.CurrentChannel.ToString();
                 default:
@@ -521,7 +542,7 @@ namespace Duplicati.Library.Modules.Builtin
         }
 
         /// <summary>
-        /// Gets the filtered set of log lines
+        /// Gets the filtered set of log lines.
         /// </summary>
         protected IEnumerable<string> LogLines
         {
@@ -534,6 +555,9 @@ namespace Duplicati.Library.Modules.Builtin
                     if (m_logstorage.Count > m_maxmimumLogLines)
                         logdata = logdata.Concat(new string[] { $"... and {m_logstorage.Count - m_maxmimumLogLines} more" });
                 }
+
+                if (!m_allowPathsInLogMessages)
+                    logdata = logdata.Select(x => SensitiveDataFilter.RedactPaths(x));
 
                 return logdata;
             }
@@ -596,6 +620,12 @@ namespace Duplicati.Library.Modules.Builtin
                 body = ReplaceTemplate(body, result, exception, false);
                 subject = ReplaceTemplate(subject, result, exception, true);
 
+                if (!m_allowPathsInLogMessages)
+                {
+                    body = SensitiveDataFilter.RedactPaths(body);
+                    subject = SensitiveDataFilter.RedactPaths(subject);
+                }
+
                 SendMessage(subject, body);
             }
             catch (Exception ex)
@@ -614,6 +644,5 @@ namespace Duplicati.Library.Modules.Builtin
             }
 
         }
-
     }
 }

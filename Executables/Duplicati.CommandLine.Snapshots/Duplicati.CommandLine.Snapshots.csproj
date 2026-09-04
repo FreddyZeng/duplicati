@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>The Server Snapshots implementation</Description>
+    <AssemblyName>Duplicati.CommandLine.Snapshots</AssemblyName>
+    <Copyright>Copyright © 2026 Team Duplicati, MIT license</Copyright>
+  </PropertyGroup>
+
+  <!-- Copy in WindowsModules for easier debug, or if we are targeting Windows -->
+  <Import Project="..\..\Duplicati\Library\WindowsModules\WindowsModules.Runtime.targets" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Duplicati\Library\Snapshots\Duplicati.Library.Snapshots.csproj" />
+    <ProjectReference Include="..\..\Duplicati\Library\Crashlog\Duplicati.Library.Crashlog.csproj" />
+  </ItemGroup>
+
+</Project>

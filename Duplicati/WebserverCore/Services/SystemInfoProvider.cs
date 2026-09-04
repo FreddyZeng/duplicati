@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -56,6 +56,18 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
         "v1:subscribe:taskqueue",
         "v1:subscribe:taskcompleted",
         "v1:subscribe:notifications",
+        "v2:system:temp-disk-space",
+        "v1:subscribe:remotecontrol",
+        "v1:ipc:controller",
+        "v2:filesystem:test-filter",
+        "v2:destination:list",
+        "v1:backup:restorecontrolfiles",
+        "v1:backup:sync-mode",
+        "v2:backup:list-broken-files",
+        "v2:backup:purge-broken-files",
+        "v2:backup:purge-files",
+        "v2:backup:delete-versions",
+        "v2:backup:set-version-label",
 
         // "v1:subscribe:scheduler",
     ];
@@ -99,6 +111,11 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
         /// The default URL to present for remote control registration
         /// </summary>
         public required string RemoteControlRegistrationUrl { get; init; }
+
+        /// <summary>
+        /// The default URL to present for remote control dashboard
+        /// </summary>
+        public required string RemoteControlDashboardUrl { get; init; }
 
         /// <summary>
         /// Gets or sets the default update channel.
@@ -166,6 +183,11 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
         public required Library.Interface.ICommandLineArgument[] Options { get; init; }
 
         /// <summary>
+        /// Gets or sets the server-only options.
+        /// </summary>
+        public required Library.Interface.ICommandLineArgument[] ServerOnlyOptions { get; init; }
+
+        /// <summary>
         /// Gets or sets the compression modules.
         /// </summary>
         public required IDynamicModule[] CompressionModules { get; init; }
@@ -184,6 +206,16 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
         /// Gets or sets the generic modules.
         /// </summary>
         public required IDynamicModule[] GenericModules { get; init; }
+
+        /// <summary>
+        /// Gets or sets the source provider modules.
+        /// </summary>
+        public required IDynamicModule[] SourceProviderModules { get; init; }
+
+        /// <summary>
+        /// Gets or sets the restore destination provider modules.
+        /// </summary>
+        public required IDynamicModule[] RestoreDestinationProviderModules { get; init; }
 
         /// <summary>
         /// Gets or sets the web modules.
@@ -249,10 +281,11 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
             ServerVersionName = License.VersionNumbers.VERSION_NAME,
             ServerVersionType = UpdaterManager.SelfVersion.ReleaseType,
             RemoteControlRegistrationUrl = Library.RemoteControl.RegisterForRemote.DefaultRegisterationUrl,
+            RemoteControlDashboardUrl = Library.RemoteControl.RegisterForRemote.DefaultDashboardUrl,
             DefaultUpdateChannel = AutoUpdateSettings.DefaultUpdateChannel.ToString(),
             DefaultUsageReportLevel = Library.UsageReporter.Reporter.DefaultReportLevel,
             OSType = UpdaterManager.OperatingSystemName,
-            OSVersion = Library.UsageReporter.OSInfoHelper.PlatformString,
+            OSVersion = Library.Utility.OSInfoHelper.PlatformString,
             DirectorySeparator = Path.DirectorySeparatorChar,
             PathSeparator = Path.PathSeparator,
             CaseSensitiveFilesystem = Library.Utility.Utility.IsFSCaseSensitive,
@@ -262,10 +295,13 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
             NewLine = Environment.NewLine,
             CLRVersion = Environment.Version.ToString(),
             Options = Server.Serializable.ServerSettings.Options,
+            ServerOnlyOptions = DuplicatiWebserver.ServerOnlyOptions,
             CompressionModules = Server.Serializable.ServerSettings.CompressionModules,
             EncryptionModules = Server.Serializable.ServerSettings.EncryptionModules,
             BackendModules = Server.Serializable.ServerSettings.BackendModules,
             GenericModules = Server.Serializable.ServerSettings.GenericModules,
+            SourceProviderModules = Server.Serializable.ServerSettings.SourceProviderModules,
+            RestoreDestinationProviderModules = Server.Serializable.ServerSettings.RestoreDestinationProviderModules,
             WebModules = Server.Serializable.ServerSettings.WebModules,
             ConnectionModules = Server.Serializable.ServerSettings.ConnectionModules,
             ServerModules = Server.Serializable.ServerSettings.ServerModules,
@@ -332,6 +368,7 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
             ServerVersionName = systeminfo.ServerVersionName,
             ServerVersionType = systeminfo.ServerVersionType,
             RemoteControlRegistrationUrl = systeminfo.RemoteControlRegistrationUrl,
+            RemoteControlDashboardUrl = systeminfo.RemoteControlDashboardUrl,
             StartedBy = applicationSettings.Origin,
             DefaultUpdateChannel = systeminfo.DefaultUpdateChannel,
             DefaultUsageReportLevel = systeminfo.DefaultUsageReportLevel,
@@ -348,6 +385,7 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
             NewLine = systeminfo.NewLine,
             CLRVersion = systeminfo.CLRVersion,
             Options = systeminfo.Options,
+            ServerOnlyOptions = systeminfo.ServerOnlyOptions,
             CompressionModules = systeminfo.CompressionModules,
             EncryptionModules = systeminfo.EncryptionModules,
             BackendModules = systeminfo.BackendModules,
@@ -356,10 +394,14 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
             ConnectionModules = systeminfo.ConnectionModules,
             ServerModules = systeminfo.ServerModules,
             SecretProviderModules = systeminfo.SecretProviderModules,
+            SourceProviderModules = systeminfo.SourceProviderModules,
+            RestoreDestinationProviderModules = systeminfo.RestoreDestinationProviderModules,
             UsingAlternateUpdateURLs = systeminfo.UsingAlternateUpdateURLs,
             LogLevels = systeminfo.LogLevels,
             SpecialFolders = systeminfo.SpecialFolders,
-            APIExtensions = SupportedAPIExtensions.Where(ext => !disabledAPIExtensions.Contains(ext)).ToArray(),
+            APIExtensions = SupportedAPIExtensions
+                .Concat(Proprietary.LoaderHelper.Configuration.LicensedAPIExtensions)
+                .Where(ext => !disabledAPIExtensions.Contains(ext)).ToArray(),
             APIScopes = APIScopes,
             BrowserLocale = new SystemInfoDto.LocaleDto()
             {
@@ -373,6 +415,8 @@ public class SystemInfoProvider(IApplicationSettings applicationSettings, Connec
             DefaultOAuthURL = AuthIdOptionsHelper.DUPLICATI_OAUTH_SERVICE,
             DefaultOAuthURLv2 = AuthIdOptionsHelper.DUPLICATI_OAUTH_SERVICE_NEW,
             PowerModeProviders = systeminfo.PowerModeProviders,
+            LocalLicenseStatus = SystemInfoDto.LicenseStatusDto.Map(Proprietary.LicenseChecker.LicenseHelper.GetLocalLicenseData()),
+            RemoteLicenseStatus = SystemInfoDto.LicenseStatusDto.Map(Proprietary.LicenseChecker.LicenseHelper.GetRemoteLicenseData())
         };
     }
 }

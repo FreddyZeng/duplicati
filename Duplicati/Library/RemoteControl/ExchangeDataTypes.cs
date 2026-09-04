@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -59,7 +59,7 @@ internal enum MessageType
 /// </summary>
 /// <param name="Token">The client token</param>
 /// <param name="PublicKey">The client public key</param>
-/// <param name="Version">The version of the client</param>
+/// <param name="ClientVersion">The version of the client</param>
 /// <param name="ProtocolVersion">The protocol version of the client</param>
 /// <param name="Metadata">The optional metadata to send</param>
 public record AuthMessage(string Token, string PublicKey, string ClientVersion, int ProtocolVersion, Dictionary<string, string?>? Metadata);
@@ -70,7 +70,6 @@ public record AuthMessage(string Token, string PublicKey, string ClientVersion, 
 /// <param name="Accepted">Whether the authentication was accepted</param>
 /// <param name="WillReplaceToken">Whether the token will be replaced</param>
 /// <param name="NewToken">The new token</param>
-/// <param name="SignedChallenge">The signed challenge</param>
 internal sealed record AuthResultMessage(bool? Accepted, bool? WillReplaceToken, string? NewToken);
 
 /// <summary>
@@ -97,6 +96,30 @@ public sealed record ControlRequestMessage(string Command, Dictionary<string, st
     /// </summary>
     public const string ReportUrlKey = "reportingurl";
     /// <summary>
+    /// The key that contains the activity URL
+    /// </summary>
+    public const string ActivityUrlKey = "activityurl";
+    /// <summary>
+    /// The key that contains the client license key
+    /// </summary>
+    public const string ClientLicenseKeyKey = "clientlicensekey";
+    /// <summary>
+    /// The key that contains the dashboard URL
+    /// </summary>
+    public const string DashboardUrlKey = "dashboardurl";
+    /// <summary>
+    /// The key that contains the storage API ID
+    /// </summary>
+    public const string StorageApiIdKey = "storageapiid";
+    /// <summary>
+    /// The key that contains the storage API key
+    /// </summary>
+    public const string StorageApiKeyKey = "storageapikey";
+    /// <summary>
+    /// The key that contains the storage endpoint URL
+    /// </summary>
+    public const string StorageEndpointUrlKey = "storageendpointurl";
+    /// <summary>
     /// The prefix used for backup config keys
     /// </summary>
     public const string BackupConfigKeyPrefix = "backupconfig:";
@@ -104,6 +127,10 @@ public sealed record ControlRequestMessage(string Command, Dictionary<string, st
     /// The key that contains the applied settings version
     /// </summary>
     public const string SettingsVersionKey = "settingsversion";
+    /// <summary>
+    /// The key that contains the refresh settings by key
+    /// </summary>
+    public const string RefreshSettingsByKey = "refreshsettingsby";
 
 }
 /// <summary>

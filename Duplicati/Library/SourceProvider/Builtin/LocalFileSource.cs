@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,7 +20,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 using Duplicati.Library.Interface;
-using Duplicati.Library.Snapshots;
 
 namespace Duplicati.Library.SourceProvider;
 
@@ -33,11 +32,14 @@ public class LocalFileSource(ISnapshotService snapshotService) : ISourceProvider
     /// <inheritdoc/>
     public string MountedPath => string.Empty;
 
-    /// <inheritdoc/>
-    public Task Initialize(CancellationToken cancellationToken) => Task.CompletedTask;
+    /// <inheritdoc />
+    public bool NeedsStoredMetadata => false;
 
     /// <inheritdoc/>
-    public IAsyncEnumerable<ISourceProviderEntry> Enumerate(CancellationToken cancellationToken)
+    public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <inheritdoc/>
+    public IAsyncEnumerable<ISourceProviderEntry> EnumerateAsync(CancellationToken cancellationToken)
         => snapshotService.EnumerateFilesystemEntries().ToAsyncEnumerable();
 
     /// <summary>
@@ -46,8 +48,12 @@ public class LocalFileSource(ISnapshotService snapshotService) : ISourceProvider
     public ISnapshotService SnapshotService => snapshotService;
 
     /// <inheritdoc/>
-    public Task<ISourceProviderEntry?> GetEntry(string path, bool isFolder, CancellationToken cancellationToken)
+    public Task<ISourceProviderEntry?> GetEntryAsync(string path, bool isFolder, CancellationToken cancellationToken)
         => Task.FromResult(snapshotService.GetFilesystemEntry(path, isFolder));
+
+    /// <inheritdoc/>
+    public Task TestAsync(CancellationToken cancellationToken)
+        => snapshotService.DirectoryExists(MountedPath) ? Task.CompletedTask : throw new Exception($"The path {MountedPath} does not exist");
 
     /// <inheritdoc/>
     public void Dispose()

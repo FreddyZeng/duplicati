@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -23,9 +23,7 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using Duplicati.Library.Interface;
-using Duplicati.Library.Main.Database;
-using Duplicati.Library.Utility;
-using System.Threading;
+using Duplicati.Library.Main.Database.Local;
 using System.Threading.Tasks;
 
 namespace Duplicati.Library.Main.Operation
@@ -52,10 +50,10 @@ namespace Duplicati.Library.Main.Operation
                 throw new UserInformationException(string.Format("Database file does not exist: {0}", m_options.Dbpath), "DatabaseFileMissing");
 
             await using var db = await LocalDeleteDatabase.CreateAsync(m_options.Dbpath, "Delete", null, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
-            await Utility.UpdateOptionsFromDb(db, m_options, m_result.TaskControl.ProgressToken)
+            await Utility.UpdateOptionsFromDbAsync(db, m_options, m_result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
-            await Utility.VerifyOptionsAndUpdateDatabase(db, m_options, m_result.TaskControl.ProgressToken)
+            await Utility.VerifyOptionsAndUpdateDatabaseAsync(db, m_options, m_result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
             await DoRunAsync(db, false, false, backendManager).ConfigureAwait(false);
@@ -69,12 +67,12 @@ namespace Duplicati.Library.Main.Operation
         public async Task DoRunAsync(LocalDeleteDatabase db, bool hasVerifiedBackend, bool forceCompact, IBackendManager backendManager)
         {
             if (!hasVerifiedBackend)
-                await FilelistProcessor.VerifyRemoteList(backendManager, m_options, db, m_result.BackendWriter, latestVolumesOnly: true, verifyMode: FilelistProcessor.VerifyMode.VerifyStrict, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+                await FilelistProcessor.VerifyRemoteListAsync(backendManager, m_options, db, m_result.BackendWriter, latestVolumesOnly: true, verifyMode: FilelistProcessor.VerifyMode.VerifyStrict, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
 
             // We collapse the async enumerablo into a array to avoid multiple
             // enumerations (and thus multiple database queries)
             var filesets = await db
-                .FilesetsWithBackupVersion(m_result.TaskControl.ProgressToken)
+                .FilesetsWithBackupVersionAsync(m_result.TaskControl.ProgressToken)
                 .ToArrayAsync(cancellationToken: m_result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
@@ -103,10 +101,51 @@ namespace Duplicati.Library.Main.Operation
             }
             else
             {
+                // If any of the block/index volumes referenced by a candidate fileset are locked,
+                // keep the fileset (we cannot remove it while its dependencies are locked).
+                var nowEpochSeconds = Library.Utility.Utility.NormalizeDateTimeToEpochSeconds(DateTime.UtcNow);
+                var deletionCandidates = new List<IListResultFileset>(versionsToDelete.Count);
+                foreach (var fileset in versionsToDelete)
+                {
+                    var filesetId = await db.GetFilesetIdByTimeAsync(fileset.Time, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+                    if (filesetId <= 0)
+                    {
+                        Logging.Log.WriteWarningMessage(LOGTAG, "FilesetNotFound", null, "Fileset {0} not found in database", fileset.Time);
+                        continue;
+                    }
+
+                    // Skip deleting a fileset if the fileset volume itself is currently locked.
+                    var filesetVolume = await db.GetRemoteVolumeFromFilesetIDAsync(filesetId, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+                    if (HasActiveLock(filesetVolume.LockExpirationTime))
+                    {
+                        Logging.Log.WriteWarningMessage(
+                            LOGTAG,
+                            "SkipDeleteFilesetDueToLockedFilesetVolume",
+                            null,
+                            "Skipping deletion of fileset version {0} ({1}) because the fileset volume has an active lock until {2:u}",
+                            fileset.Version,
+                            fileset.Time,
+                            filesetVolume.LockExpirationTime!.Value
+                        );
+                        continue;
+                    }
+
+                    deletionCandidates.Add(fileset);
+                }
+
+                versionsToDelete = deletionCandidates;
+
+                if (versionsToDelete.Count == 0)
+                {
+                    Logging.Log.WriteInformationMessage(LOGTAG, "NoFilesetsToDelete", "No remote filesets should be deleted");
+                    m_result.SetResults([], m_options.Dryrun);
+                    return;
+                }
+
                 Logging.Log.WriteInformationMessage(LOGTAG, "DeleteRemoteFileset", "Deleting {0} remote fileset(s) ...", versionsToDelete.Count);
 
                 var lst = await db
-                    .DropFilesetsFromTable(
+                    .DropFilesetsFromTableAsync(
                         versionsToDelete
                             .Select(x => x.Time)
                             .ToArray(),
@@ -117,7 +156,7 @@ namespace Duplicati.Library.Main.Operation
 
                 foreach (var f in lst)
                     await db
-                        .UpdateRemoteVolume(f.Key, RemoteVolumeState.Deleting, f.Value, null, m_result.TaskControl.ProgressToken)
+                        .UpdateRemoteVolumeAsync(f.Key, RemoteVolumeState.Deleting, f.Value, null, m_result.TaskControl.ProgressToken)
                         .ConfigureAwait(false);
 
                 if (!m_options.Dryrun)
@@ -127,7 +166,7 @@ namespace Duplicati.Library.Main.Operation
 
                 foreach (var f in lst)
                 {
-                    if (!await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                    if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                     {
                         await backendManager.WaitForEmptyAsync(db, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
                         return;
@@ -171,6 +210,9 @@ namespace Duplicati.Library.Main.Operation
 
             m_result.SetResults(versionsToDelete.Select(v => new Tuple<long, DateTime>(v.Version, v.Time)), m_options.Dryrun);
         }
+
+        private static bool HasActiveLock(DateTime? lockExpirationTime)
+            => lockExpirationTime.HasValue && lockExpirationTime.Value.ToUniversalTime() > DateTime.UtcNow;
     }
 
     public abstract class FilesetRemover

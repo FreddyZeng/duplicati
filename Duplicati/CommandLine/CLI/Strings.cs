@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -34,6 +34,7 @@ namespace Duplicati.CommandLine.Strings
         public static string SupportedBackendsHeader { get { return LC.L(@"Supported backends:"); } }
         public static string SupportedCompressionModulesHeader { get { return LC.L(@"Supported compression modules:"); } }
         public static string SupportedEncryptionModulesHeader { get { return LC.L(@"Supported encryption modules:"); } }
+        public static string SupportedParityModulesHeader { get { return LC.L(@"Supported parity modules:"); } }
         public static string SupportedOptionsHeader { get { return LC.L(@"Supported options:"); } }
         public static string ModuleIsLoadedAutomatically { get { return LC.L(@"Module is loaded automatically. Use --{0} to prevent this.", "disable-module"); } }
         public static string ModuleIsNotLoadedAutomatically { get { return LC.L(@"Module is not loaded automatically Use --{0} to load it.", "enable-module"); } }
@@ -54,6 +55,7 @@ namespace Duplicati.CommandLine.Strings
         public static string QuietConsoleOptionLong { get { return LC.L(@"If this option is set, progress reports and other messages that would normally go to the console will be redirected to the log."); } }
         public static string QuietConsoleOptionShort { get { return LC.L(@"Disable console output"); } }
         public static string SkippingSourceArgumentsOnNonBackupOperation { get { return @"The --source argument was specified in the parameter file, but the current operation is not a backup operation, so the argument is ignored."; } }
+        public static string SkippingTargetArgumentOnTestFilters { get { return @"The --target argument was specified in the parameter file, but the test-filters operation has no target, so the argument is ignored."; } }
         public static string AutoUpdateOptionShort { get { return LC.L(@"Toggle automatic updates"); } }
         public static string AutoUpdateOptionLong { get { return LC.L(@"Set this option if you prefer to have the commandline version automatically update"); } }
         public static string PortableModeOptionShort { get { return LC.L(@"Use portable mode"); } }

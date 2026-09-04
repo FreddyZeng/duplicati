@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -46,9 +46,9 @@ public static class KnownPlugins
     /// Gets all filesystem plugins.
     /// </summary>
     /// <returns>An enumerable of <see cref="IFilesystemPlugin"/> instances.</returns>
-    public static IEnumerable<IFilesystemPlugin> GetPlugins()
+    public static IEnumerable<IFilesystemPlugin> GetPlugins(IReadOnlyDictionary<string, string?> options)
     {
-        yield return new Hyperv();
-        yield return new MSSQL();
+        yield return new Hyperv(options);
+        yield return new MSSQL(options);
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -37,7 +37,7 @@ public static class QuerystringMasking
     /// <summary>
     /// Masks the values in the given URL for any properties listed in protectedProperties.
     /// </summary>
-    /// <param name="url">The URL to mask.</param>
+    /// <param name="urlstring">The URL to mask.</param>
     /// <param name="protectedProperties">The set of property names to mask (case-insensitive).</param>
     /// <returns>>The URL with sensitive properties masked.</returns>
     public static string Mask(string urlstring, IReadOnlySet<string> protectedProperties)
@@ -45,12 +45,12 @@ public static class QuerystringMasking
         if (string.IsNullOrEmpty(urlstring))
             return urlstring;
 
-        var url = new Library.Utility.Uri(urlstring);
+        var url = new Library.Utility.RelaxedUri(urlstring);
         if (string.IsNullOrWhiteSpace(url.Query))
             return urlstring;
 
         var modified = false;
-        var query = Library.Utility.Uri.ParseQueryString(url.Query, false);
+        var query = url.GetEncodedQueryParameters();
         foreach (var k in query.AllKeys)
         {
             if (k is null) continue;
@@ -63,7 +63,7 @@ public static class QuerystringMasking
 
         if (!modified) return urlstring;
 
-        url = url.SetQuery(Library.Utility.Uri.BuildUriQuery(query));
+        url = url.SetQuery(Library.Utility.UrlEncoding.BuildUriQuery(query, true));
         return url.ToString();
     }
 
@@ -74,19 +74,25 @@ public static class QuerystringMasking
     /// <param name="previousUrl">The previous URL to copy unmasked values from.</param>
     /// <returns>The unmasked URL.</returns>
     public static string Unmask(string newUrl, string previousUrl)
+        => Unmask(newUrl, string.IsNullOrEmpty(previousUrl) ? null : [previousUrl]);
+
+    /// <summary>
+    /// Unmasks sensitive properties in the <paramref name="newUrl"/> by copying values from the <paramref name="previousUrls"/>
+    /// using the list as a priority list to find the value.
+    /// </summary>
+    /// <param name="newUrl">The new URL which may contain masked properties.</param>
+    /// <param name="previousUrls">The list of previous URLs to copy unmasked values from, used as a priority list.</param>
+    /// <returns>The unmasked URL.</returns>
+    public static string Unmask(string newUrl, IReadOnlyList<string>? previousUrls)
     {
         if (string.IsNullOrEmpty(newUrl))
             throw new ArgumentException("newUrl is null or empty");
-        if (string.IsNullOrEmpty(previousUrl))
-            throw new ArgumentException("previousUrl is null or empty");
 
-        var newUb = new Library.Utility.Uri(newUrl);
+        var newUb = new Library.Utility.RelaxedUri(newUrl);
         if (string.IsNullOrWhiteSpace(newUb.Query))
             return newUrl;
-        var prevUb = new Library.Utility.Uri(previousUrl);
 
-        var newQuery = Library.Utility.Uri.ParseQueryString(newUb.Query, false);
-        var prevQuery = Library.Utility.Uri.ParseQueryString(prevUb.Query ?? "", false);
+        var newQuery = newUb.GetEncodedQueryParameters();
 
         var modified = false;
         foreach (var key in newQuery.AllKeys)
@@ -97,10 +103,27 @@ public static class QuerystringMasking
             var newValues = GetValuesCaseInsensitive(newQuery, key);
             if (newValues is null || newValues.Length == 0) continue;
 
-            // If any value contains the mask, replace the entire set for that key from the previous URL
+            // If any value contains the mask, replace the entire set for that key from the previous URLs
             if (newValues.Any(v => Connection.IsPasswordPlaceholder(v)))
             {
-                var prevValues = GetValuesCaseInsensitive(prevQuery, key);
+                string[]? prevValues = null;
+
+                // Search through previous URLs in priority order
+                if (previousUrls != null)
+                {
+                    foreach (var previousUrl in previousUrls)
+                    {
+                        if (string.IsNullOrEmpty(previousUrl))
+                            continue;
+
+                        var prevUb = new Library.Utility.RelaxedUri(previousUrl);
+                        var prevQuery = Library.Utility.UrlEncoding.ParseQueryString(prevUb.Query ?? "", false);
+                        prevValues = GetValuesCaseInsensitive(prevQuery, key);
+                        if (prevValues != null && prevValues.Any(x => !Connection.IsPasswordPlaceholder(x)))
+                            break;
+                    }
+                }
+
                 if (prevValues is null || prevValues.Length == 0)
                     throw new InvalidOperationException($"Missing previous value for protected parameter '{key}'.");
 
@@ -116,7 +139,7 @@ public static class QuerystringMasking
         if (!modified)
             return newUrl;
 
-        newUb = newUb.SetQuery(Library.Utility.Uri.BuildUriQuery(newQuery));
+        newUb = newUb.SetQuery(Library.Utility.UrlEncoding.BuildUriQuery(newQuery, true));
 
         return newUb.ToString();
 

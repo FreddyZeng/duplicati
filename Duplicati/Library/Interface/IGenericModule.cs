@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -34,23 +34,8 @@ namespace Duplicati.Library.Interface
     /// All instances where the Configure method is called will be disposed,
     /// if they implement the IDisposable interface as well.
     /// </summary>
-    public interface IGenericModule : IDynamicModule
+    public interface IGenericModule : ICommonModule
     {
-        /// <summary>
-        /// The module key, used to activate or deactivate the module on the commandline
-        /// </summary>
-        string Key { get; }
-
-        /// <summary>
-        /// A localized string describing the module with a friendly name
-        /// </summary>
-        string DisplayName { get; }
-
-        /// <summary>
-        /// A localized description of the module
-        /// </summary>
-        string Description { get; }
-
         /// <summary>
         /// A boolean value that indicates if the module should always be loaded.
         /// If true, the  user can choose to not load the module by entering the appropriate commandline option.

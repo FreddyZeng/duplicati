@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -197,7 +197,7 @@ public class JWTTokenProvider(JWTConfig jWTConfig) : IJWTTokenProvider
         };
     }
 
-    public static async Task ValidateAccessToken(TokenValidatedContext context, ITokenFamilyStore store)
+    public static async Task ValidateAccessTokenAsync(TokenValidatedContext context, ITokenFamilyStore store)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
         var jwtToken = context.SecurityToken as JsonWebToken ?? throw new Exception("Invalid token");
@@ -223,7 +223,7 @@ public class JWTTokenProvider(JWTConfig jWTConfig) : IJWTTokenProvider
 
         if (tokenFamilyClaim.Value != TemporaryFamilyId)
         {
-            var tokenFamily = await store.GetTokenFamily(userIdClaim.Value, tokenFamilyClaim.Value, context.HttpContext.RequestAborted);
+            var tokenFamily = await store.GetTokenFamilyAsync(userIdClaim.Value, tokenFamilyClaim.Value, context.HttpContext.RequestAborted);
             if (tokenFamily == null)
             {
                 context.Fail("Invalid token.");

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -55,7 +55,7 @@ namespace Duplicati.Library.UsageReporter
         public static void Report(string key, string data = null, ReportType type = ReportType.Information)
         {
             if (_eventChannel != null && type >= MaxReportLevel)
-                try { _eventChannel.WriteNoWait(new ReportItem(type, null, key, data)); }
+                try { _eventChannel.WriteNoWait(new ReportItem(type, null, key, SensitiveDataFilter.RedactPaths(data))); }
                 catch { }
         }
 
@@ -80,7 +80,7 @@ namespace Duplicati.Library.UsageReporter
         public static void Report(Exception ex, ReportType type = ReportType.Warning)
         {
             if (_eventChannel != null && type >= MaxReportLevel)
-                try { _eventChannel.WriteNoWait(new ReportItem(type, null, "EXCEPTION", ex.ToString())); }
+                try { _eventChannel.WriteNoWait(new ReportItem(type, null, "EXCEPTION", SensitiveDataFilter.RedactPaths(ex.ToString()))); }
                 catch { }
         }
 
@@ -213,6 +213,10 @@ namespace Duplicati.Library.UsageReporter
         {
             get
             {
+                // Support the DO_NOT_TRACK=1 environment variable
+                if (Environment.GetEnvironmentVariable("DO_NOT_TRACK")?.Trim() == "1")
+                    return true;
+
                 var str = Environment.GetEnvironmentVariable(string.Format(DISABLED_ENVNAME_TEMPLATE, AutoUpdater.AutoUpdateSettings.AppName));
 #if DEBUG
                 // Default to not report crashes etc from debug builds

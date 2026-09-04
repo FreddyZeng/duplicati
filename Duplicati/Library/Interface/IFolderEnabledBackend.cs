@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -28,9 +28,8 @@ using System.Threading.Tasks;
 namespace Duplicati.Library.Interface;
 
 /// <summary>
-/// An interface a backend may implement if it supports streaming operations.
-/// Backends that implement this interface can be throttled and correctly shows 
-/// the progressbar when transferring data.
+/// An interface for backends that support folder operations.
+/// Backends that implement this interface can be used as sources for data.
 /// </summary>
 public interface IFolderEnabledBackend : IBackend
 {
@@ -51,10 +50,12 @@ public interface IFolderEnabledBackend : IBackend
     /// </summary>
     /// <param name="path">The path to get</param>
     /// <param name="cancellationToken">The cancellation token</param>
-    /// <returns>The file or folder entry</returns>
+    /// <returns>The file or folder entry, or null when it does not exist</returns>
     /// <remarks>
     /// The paths returned should be only the filenames or folder names, not the full path.
     /// Folders should end with the operating system's directory separator.
+    /// Null means the entry does not exist: callers pass that straight on, so it must not
+    /// be used to say that the backend cannot answer.
     /// </remarks>
     Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken);
 }

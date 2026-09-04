@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -19,9 +19,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
 // DEALINGS IN THE SOFTWARE.
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
 
 namespace Duplicati.Library.Main
@@ -48,13 +45,13 @@ namespace Duplicati.Library.Main
         {
             if (m_depleted)
                 return 0;
-            
+
             int bytesRead = Duplicati.Library.Utility.Utility.ForceStreamRead(this.m_stream, this.m_buffer, this.m_buffer.Length);
             m_depleted = this.m_buffer.Length > bytesRead;
 
             return bytesRead;
         }
-        
+
         public long Length { get { return m_stream.Length; } }
 
         public void Dispose()

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -31,7 +31,7 @@ namespace Duplicati.Server.Serialization
 
     public enum DuplicatiOperation
     {
-        Backup,
+        BackupOrSync,
         Restore,
         List,
         Remove,
@@ -43,11 +43,17 @@ namespace Duplicati.Server.Serialization
         ListRemote,
         Delete,
         Vacuum,
+        RestoreControlFiles,
         CustomRunner,
         ListFilesets,
         ListFolderContents,
         ListFileVersions,
         SearchEntries,
+        DeleteVersions,
+        ListBrokenFiles,
+        PurgeBrokenFiles,
+        PurgeFiles,
+        SetVersionLabel,
     }
 
     public enum SuggestedStatusIcon
@@ -59,6 +65,21 @@ namespace Duplicati.Server.Serialization
         Active,
         ActivePaused,
         Disconnected
+    }
+
+    /// <summary>
+    /// The kind of operation a backup configuration performs when it runs.
+    /// </summary>
+    public enum OperationType
+    {
+        /// <summary>
+        /// Run a regular encrypted/deduplicating backup (the default).
+        /// </summary>
+        Backup,
+        /// <summary>
+        /// Run the sync handler, mirroring files to the destination
+        /// </summary>
+        Sync
     }
 
 

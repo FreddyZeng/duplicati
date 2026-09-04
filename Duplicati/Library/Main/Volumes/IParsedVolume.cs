@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -31,5 +31,16 @@ namespace Duplicati.Library.Main.Volumes
         string CompressionModule { get; }
         string EncryptionModule { get; }
         Interface.IFileEntry File { get; }
+
+        /// <summary>
+        /// True if this is a parity (error-correction) companion file protecting a data volume.
+        /// The remaining properties still describe the owning data volume.
+        /// </summary>
+        bool IsParity { get; }
+
+        /// <summary>
+        /// The parity module extension (e.g. "par2") if <see cref="IsParity"/> is true, otherwise null.
+        /// </summary>
+        string ParityModule { get; }
     }
 }

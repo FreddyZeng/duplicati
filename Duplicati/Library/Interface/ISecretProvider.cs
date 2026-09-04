@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -29,7 +29,7 @@ namespace Duplicati.Library.Interface;
 /// <summary>
 /// Interface for secret providers
 /// </summary>
-public interface ISecretProvider : IDynamicModule
+public interface ISecretProvider : ICommonModule
 {
     // abstract static Task<T> CreateAsync<T>(string config, CancellationToken cancellationToken)
     //     where T : ISecretProvider;
@@ -49,15 +49,20 @@ public interface ISecretProvider : IDynamicModule
     /// <returns>A dictionary of resolved secrets. The dictionary has all requested keys or the call fails.</returns>
     Task<Dictionary<string, string>> ResolveSecretsAsync(IEnumerable<string> keys, CancellationToken cancellationToken);
     /// <summary>
-    /// The key for the secret provider
+    /// Stores a secret value.
     /// </summary>
-    string Key { get; }
+    /// <param name="key">The secret key.</param>
+    /// <param name="value">The secret value.</param>
+    /// <param name="overwrite">If set to <c>true</c>, existing secrets are overwritten.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    Task SetSecretAsync(string key, string value, bool overwrite, CancellationToken cancellationToken);
     /// <summary>
-    /// The display name of the secret provider
+    /// Indicates whether the secret provider is supported on the current platform.
     /// </summary>
-    string DisplayName { get; }
+    /// <param name="cancellationToken">The cancellation token.</param>
+    Task<bool> IsSupported(CancellationToken cancellationToken);
     /// <summary>
-    /// The description of the secret provider
+    /// Indicates whether the secret provider supports setting secrets.
     /// </summary>
-    string Description { get; }
+    bool IsSetSupported { get; }
 }

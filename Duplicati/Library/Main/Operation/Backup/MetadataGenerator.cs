@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -21,6 +21,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Duplicati.Library.Interface;
 
 namespace Duplicati.Library.Main.Operation.Backup
@@ -32,7 +34,7 @@ namespace Duplicati.Library.Main.Operation.Backup
     {
         private static readonly string METALOGTAG = Logging.Log.LogTagFromType(typeof(MetadataGenerator)) + ".Metadata";
 
-        public static Dictionary<string, string> GenerateMetadata(ISourceProviderEntry entry, System.IO.FileAttributes attributes, Options options)
+        public static async Task<Dictionary<string, string>> GenerateMetadataAsync(ISourceProviderEntry entry, System.IO.FileAttributes attributes, Options options, CancellationToken token)
         {
             try
             {
@@ -40,7 +42,7 @@ namespace Duplicati.Library.Main.Operation.Backup
 
                 if (!options.SkipMetadata)
                 {
-                    metadata = entry.MinorMetadata;
+                    metadata = await entry.GetMinorMetadata(token).ConfigureAwait(false);
                     if (metadata == null)
                         metadata = new Dictionary<string, string>();
 

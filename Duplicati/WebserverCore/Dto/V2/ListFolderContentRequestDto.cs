@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -38,4 +38,10 @@ public sealed record ListFolderContentRequestDto : PaginatedRequest
     /// The time to list the folder contents for
     /// </summary>
     public required string? Time { get; init; }
+
+    /// <summary>
+    /// If true, return extended information
+    /// </summary>
+    public bool? ReturnExtended { get; init; }
+
 }

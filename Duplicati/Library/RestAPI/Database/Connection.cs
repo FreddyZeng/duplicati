@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -21,6 +21,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Duplicati.Server.Serialization.Interface;
 using System.Text;
@@ -34,6 +35,9 @@ using Duplicati.Library.Main.Database;
 using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.RegularExpressions;
+using Duplicati.WebserverCore.Abstractions;
+using System.Text.Json;
+using Duplicati.Library.Common.IO;
 
 #nullable enable
 
@@ -51,7 +55,7 @@ namespace Duplicati.Server.Database
         public readonly object m_lock = new object();
         public const int ANY_BACKUP_ID = -1;
         public const int SERVER_SETTINGS_ID = -2;
-        private readonly Dictionary<string, Backup> m_temporaryBackups = new Dictionary<string, Backup>();
+        private readonly Dictionary<string, (Backup Backup, Schedule? Schedule)> m_temporaryBackups = new();
         private readonly bool m_encryptSensitiveFields;
         private readonly EncryptedFieldHelper.KeyInstance? m_key;
         private IServiceProvider? m_serviceProvider;
@@ -65,6 +69,8 @@ namespace Duplicati.Server.Database
                 .Concat(CompressionLoader.Modules.SelectMany(x => x.SupportedCommands ?? []))
                 .Concat(GenericLoader.Modules.SelectMany(x => x.SupportedCommands ?? []))
                 .Concat(WebLoader.Modules.SelectMany(x => x.SupportedCommands ?? []))
+                .Concat(SourceProviderLoader.Modules.SelectMany(x => x.SupportedCommands ?? []))
+                .Concat(RestoreDestinationProviderLoader.Modules.SelectMany(x => x.SupportedCommands ?? []))
                 .Concat(new Options(new Dictionary<string, string?>()).SupportedCommands)
                 .Where(x => x.Type == Library.Interface.CommandLineArgument.ArgumentType.Password)
                 .SelectMany(x => new string[] { x.Name }.Concat(x.Aliases ?? []))
@@ -74,22 +80,35 @@ namespace Duplicati.Server.Database
                     ServerSettings.CONST.PBKDF_CONFIG,
                     ServerSettings.CONST.REMOTE_CONTROL_CONFIG,
                     ServerSettings.CONST.SERVER_SSL_CERTIFICATE,
-                    ServerSettings.CONST.SERVER_SSL_CERTIFICATEPASSWORD
+                    ServerSettings.CONST.SERVER_SSL_CERTIFICATEPASSWORD,
+                    ServerSettings.CONST.SERVER_CA_CERTIFICATE_KEY,
+                    ServerSettings.CONST.SERVER_CA_CERTIFICATE_PASSWORD,
+                    ServerSettings.CONST.REMOTE_CONTROL_STORAGE_API_KEY,
+                    ServerSettings.CONST.CLIENT_LICENSE_KEY
                 ])
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         public static IReadOnlySet<string> PasswordFieldNames => _encryptedFields;
+
+        private Action m_startOrStopUsageReporter;
 
         public Connection(IDbConnection connection, bool disableFieldEncryption, EncryptedFieldHelper.KeyInstance? key, string dataFolder, Action startOrStopUsageReporter)
         {
             m_dataFolder = dataFolder;
             m_encryptSensitiveFields = !disableFieldEncryption;
             m_key = key;
+            if (m_encryptSensitiveFields && m_key == null)
+                throw new ArgumentNullException(nameof(key), "Key must be provided if encryption is enabled");
+
             m_connection = connection;
             m_errorcmd = m_connection.CreateCommand(@"INSERT INTO ""ErrorLog"" (""BackupID"", ""Message"", ""Exception"", ""Timestamp"") VALUES (@BackupId,@Message,@Exception,@Timestamp)");
+            m_startOrStopUsageReporter = startOrStopUsageReporter;
 
-            this.ApplicationSettings = new ServerSettings(this, startOrStopUsageReporter);
+            this.ApplicationSettings = new ServerSettings(this);
         }
+
+        public void UpdateUsageReporterCallback(Action startOrStopUsageReporter)
+            => m_startOrStopUsageReporter = startOrStopUsageReporter;
 
         /// <summary>
         /// The service provider is used to resolve dependencies
@@ -125,6 +144,10 @@ namespace Duplicati.Server.Database
 
                 this.SetSettings(this.GetSettings(ANY_BACKUP_ID), ANY_BACKUP_ID);
                 this.ApplicationSettings.EncryptedFields = m_encryptSensitiveFields;
+
+                // Also vacuum the database to reclaim space and flush any unencrypted data
+                using var cmd = this.m_connection.CreateCommand("VACUUM");
+                cmd.ExecuteNonQuery();
             }
         }
 
@@ -181,16 +204,18 @@ namespace Duplicati.Server.Database
         public Serializable.ImportExportStructure PrepareBackupForExport(IBackup backup)
         {
             var scheduleId = GetScheduleIDsFromTags(new string[] { "ID=" + backup.ID });
+            var exportBackup = ((Database.Backup)backup).Clone();
+            exportBackup.SetDBPath(GetRelativeDbPath(backup.DBPath));
             return new Serializable.ImportExportStructure()
             {
                 CreatedByVersion = UpdaterManager.SelfVersion.Version ?? "Unknown",
-                Backup = (Database.Backup)backup,
+                Backup = exportBackup,
                 Schedule = scheduleId != null && scheduleId.Any() ? (Schedule?)GetSchedule(scheduleId.First()) : null,
                 DisplayNames = SpecialFolders.GetSourceNames(backup)
             };
         }
 
-        public string RegisterTemporaryBackup(IBackup backup)
+        public string RegisterTemporaryBackup(IBackup backup, ISchedule? schedule)
         {
             lock (m_lock)
             {
@@ -199,9 +224,14 @@ namespace Duplicati.Server.Database
                 if (backup.ID != null)
                     throw new ArgumentException("Backup is already active, cannot make temporary");
 
-                backup.ID = Guid.NewGuid().ToString("D");
-                m_temporaryBackups.Add(backup.ID, (Backup)backup);
-                return backup.ID;
+                // Detach from input
+                var bk = ((Backup)backup).Clone();
+                var sc = ((Schedule?)schedule)?.Clone();
+
+                bk.ID = Guid.NewGuid().ToString("D");
+                m_temporaryBackups.Add(bk.ID, (bk, sc));
+
+                return bk.ID;
             }
         }
 
@@ -211,22 +241,17 @@ namespace Duplicati.Server.Database
                 m_temporaryBackups.Remove(backup.ID);
         }
 
-        public void UpdateTemporaryBackup(IBackup backup)
-        {
-            lock (m_lock)
-                if (m_temporaryBackups.Remove(backup.ID))
-                    m_temporaryBackups.Add(backup.ID, (Backup)backup);
-        }
-
-        public IBackup? GetTemporaryBackup(string id)
+        public (IBackup Backup, ISchedule? Schedule)? GetTemporaryBackup(string id)
         {
             if (string.IsNullOrEmpty(id))
                 return null;
 
             lock (m_lock)
             {
-                m_temporaryBackups.TryGetValue(id, out var b);
-                return b?.Clone();
+                if (!m_temporaryBackups.TryGetValue(id, out var b))
+                    return null;
+
+                return (b.Backup.Clone(), b.Schedule?.Clone());
             }
         }
 
@@ -251,21 +276,26 @@ namespace Duplicati.Server.Database
             lock (m_lock)
             {
                 var tr = transaction ?? m_connection.BeginTransaction();
-                OverwriteAndUpdateDb(
-                    tr,
-                    cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Metadata"" WHERE ""BackupID"" = @Id")
-                        .SetParameterValue("@Id", id),
-                    values ?? new Dictionary<string, string>(),
-                    cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Metadata"" (""BackupID"", ""Name"", ""Value"") VALUES (@BackupId, @Name, @Value)"),
-                    (cmd, f) => cmd.SetParameterValue("@BackupId", id)
-                        .SetParameterValue("@Name", f.Key)
-                        .SetParameterValue("@Value", f.Value)
-                );
-
-                if (transaction == null)
+                try
                 {
-                    tr.Commit();
-                    tr.Dispose();
+                    OverwriteAndUpdateDb(
+                        tr,
+                        cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Metadata"" WHERE ""BackupID"" = @Id")
+                            .SetParameterValue("@Id", id),
+                        values ?? new Dictionary<string, string>(),
+                        cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Metadata"" (""BackupID"", ""Name"", ""Value"") VALUES (@BackupId, @Name, @Value)"),
+                        (cmd, f) => cmd.SetParameterValue("@BackupId", id)
+                            .SetParameterValue("@Name", f.Key)
+                            .SetParameterValue("@Value", f.Value)
+                    );
+
+                    if (transaction == null)
+                        tr.Commit();
+                }
+                finally
+                {
+                    if (transaction == null)
+                        tr.Dispose();
                 }
             }
         }
@@ -290,22 +320,27 @@ namespace Duplicati.Server.Database
             lock (m_lock)
             {
                 var tr = transaction ?? m_connection.BeginTransaction();
-                OverwriteAndUpdateDb(
-                    tr,
-                    cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Filter"" WHERE ""BackupID"" = @Id")
-                        .SetParameterValue("@Id", id),
-                    values,
-                    cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Filter"" (""BackupID"", ""Order"", ""Include"", ""Expression"") VALUES (@Id, @Order, @Include, @Expression)"),
-                    (cmd, f) => cmd.SetParameterValue("@Id", id)
-                        .SetParameterValue("@Order", f.Order)
-                        .SetParameterValue("@Include", f.Include)
-                        .SetParameterValue("@Expression", f.Expression)
-                );
-
-                if (transaction == null)
+                try
                 {
-                    tr.Commit();
-                    tr.Dispose();
+                    OverwriteAndUpdateDb(
+                        tr,
+                        cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Filter"" WHERE ""BackupID"" = @Id")
+                            .SetParameterValue("@Id", id),
+                        values,
+                        cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Filter"" (""BackupID"", ""Order"", ""Include"", ""Expression"") VALUES (@Id, @Order, @Include, @Expression)"),
+                        (cmd, f) => cmd.SetParameterValue("@Id", id)
+                            .SetParameterValue("@Order", f.Order)
+                            .SetParameterValue("@Include", f.Include)
+                            .SetParameterValue("@Expression", f.Expression)
+                    );
+
+                    if (transaction == null)
+                        tr.Commit();
+                }
+                finally
+                {
+                    if (transaction == null)
+                        tr.Dispose();
                 }
             }
         }
@@ -354,45 +389,79 @@ namespace Duplicati.Server.Database
             lock (m_lock)
             {
                 var tr = transaction ?? m_connection.BeginTransaction();
-                if (m_encryptSensitiveFields)
-                    values = values.Select(x => new Setting
-                    {
-                        Filter = x.Filter,
-                        Name = x.Name,
-                        Value = EncryptSensitiveFields(x.Name, x.Value, m_key)
-                    }).ToList();
-
-                OverwriteAndUpdateDb(
-                    tr,
-                    cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Option"" WHERE ""BackupID"" = @Id")
-                        .SetParameterValue("@Id", id),
-                    values,
-                    cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Option"" (""BackupID"", ""Filter"", ""Name"", ""Value"") VALUES (@BackupId, @Filter, @Name, @Value)"),
-                    (cmd, f) =>
-                    {
-                        if (IsPasswordPlaceholder(f.Value))
-                            throw new Exception("Attempted to save a property with the placeholder password");
-
-                        cmd.SetParameterValue("@BackupId", id)
-                            .SetParameterValue("@Filter", f.Filter ?? "")
-                            .SetParameterValue("@Name", f.Name ?? "")
-                            .SetParameterValue("@Value", f.Value ?? "");
-                    }
-                );
-
-                if (transaction == null)
+                try
                 {
-                    tr.Commit();
-                    tr.Dispose();
+                    if (m_encryptSensitiveFields)
+                        values = values.Select(x => new Setting
+                        {
+                            Filter = x.Filter,
+                            Name = x.Name,
+                            Value = EncryptSensitiveFields(x.Name, x.Value, m_key)
+                        }).ToList();
+
+                    OverwriteAndUpdateDb(
+                        tr,
+                        cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Option"" WHERE ""BackupID"" = @Id")
+                            .SetParameterValue("@Id", id),
+                        values,
+                        cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Option"" (""BackupID"", ""Filter"", ""Name"", ""Value"") VALUES (@BackupId, @Filter, @Name, @Value)"),
+                        (cmd, f) =>
+                        {
+                            if (IsPasswordPlaceholder(f.Value))
+                                throw new Exception("Attempted to save a property with the placeholder password");
+
+                            cmd.SetParameterValue("@BackupId", id)
+                                .SetParameterValue("@Filter", f.Filter ?? "")
+                                .SetParameterValue("@Name", f.Name ?? "")
+                                .SetParameterValue("@Value", f.Value ?? "");
+                        }
+                    );
+
+                    if (transaction == null)
+                        tr.Commit();
+                }
+                finally
+                {
+                    if (transaction == null)
+                        tr.Dispose();
                 }
             }
+
+            if (id == SERVER_SETTINGS_ID || id == ANY_BACKUP_ID)
+                SignalSettingsChanged();
         }
+
+        private void SignalSettingsChanged()
+        {
+            var provider = ServiceProvider;
+            if (provider != null)
+            {
+                provider?.GetRequiredService<INotificationUpdateService>()?.IncrementLastDataUpdateId();
+                provider?.GetRequiredService<EventPollNotify>()?.SignalNewEvent();
+                provider?.GetRequiredService<EventPollNotify>()?.SignalServerSettingsUpdated();
+                // If throttle options were changed, update now
+                var currentTask = provider?.GetRequiredService<IQueueRunnerService>()?.GetCurrentTask();
+                if (currentTask != null)
+                    _ = currentTask.UpdateThrottleSpeedsAsync(ApplicationSettings.UploadSpeedLimit, ApplicationSettings.DownloadSpeedLimit);
+                provider?.GetRequiredService<LiveControls>()?.UpdatePowerModeProvider();
+            }
+
+            // In case the usage reporter is enabled or disabled, refresh now
+            m_startOrStopUsageReporter?.Invoke();
+        }
+
 
         internal string?[] GetSources(long id)
         {
             lock (m_lock)
                 return ReadFromDb(
-                    (rd) => ConvertToString(rd, 0),
+                    (rd) =>
+                    {
+                        var s = ConvertToString(rd, 0);
+                        return EncryptedFieldHelper.IsEncryptedString(s)
+                            ? EncryptedFieldHelper.Decrypt(s, m_key)
+                            : s;
+                    },
                     cmd => cmd.SetCommandAndParameters(@"SELECT ""Path"" FROM ""Source"" WHERE ""BackupID"" = @Id")
                         .SetParameterValue("@Id", id))
                     .ToArray();
@@ -403,20 +472,34 @@ namespace Duplicati.Server.Database
             lock (m_lock)
             {
                 var tr = transaction ?? m_connection.BeginTransaction();
-                OverwriteAndUpdateDb(
-                    tr,
-                    cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Source"" WHERE ""BackupID"" = @Id")
-                        .SetParameterValue("@Id", id),
-                    values,
-                    cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Source"" (""BackupID"", ""Path"") VALUES (@BackupId, @Path)"),
-                    (cmd, f) => cmd.SetParameterValue("@BackupId", id)
-                        .SetParameterValue("@Path", f)
-                );
-
-                if (transaction == null)
+                try
                 {
-                    tr.Commit();
-                    tr.Dispose();
+                    OverwriteAndUpdateDb(
+                        tr,
+                        cmd => cmd.SetCommandAndParameters(@"DELETE FROM ""Source"" WHERE ""BackupID"" = @Id")
+                            .SetParameterValue("@Id", id),
+                        values,
+                        cmd => cmd.SetCommandAndParameters(@"INSERT INTO ""Source"" (""BackupID"", ""Path"") VALUES (@BackupId, @Path)"),
+                        (cmd, f) =>
+                        {
+                            if (SourceMasking.IsSpecialSource(f) && UrlContainsPasswordPlaceholder(SourceMasking.ExtractUrl(f)))
+                                throw new Exception("Attempted to save a source with a placeholder password");
+
+                            cmd.SetParameterValue("@BackupId", id)
+                            .SetParameterValue("@Path",
+                                m_encryptSensitiveFields && SourceMasking.IsSpecialSource(f)
+                                    ? EncryptedFieldHelper.Encrypt(f, m_key)
+                                    : f);
+                        }
+                    );
+
+                    if (transaction == null)
+                        tr.Commit();
+                }
+                finally
+                {
+                    if (transaction == null)
+                        tr.Dispose();
                 }
             }
         }
@@ -456,7 +539,7 @@ namespace Duplicati.Server.Database
             if (string.IsNullOrWhiteSpace(id))
                 throw new ArgumentNullException(nameof(id));
 
-            return long.TryParse(id, out long lid) ? GetBackup(lid) : GetTemporaryBackup(id);
+            return long.TryParse(id, out long lid) ? GetBackup(lid) : GetTemporaryBackup(id)?.Backup;
         }
 
         internal IBackup? GetBackup(long id)
@@ -471,9 +554,10 @@ namespace Duplicati.Server.Database
                         Description = ConvertToString(rd, 2),
                         Tags = (ConvertToString(rd, 3) ?? "").Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
                         TargetURL = EncryptedFieldHelper.Decrypt(ConvertToString(rd, 4), m_key),
-                        DBPath = ConvertToString(rd, 5),
+                        DBPath = ResolveDbPath(ConvertToString(rd, 5)),
+                        OperationType = Library.Utility.Utility.ParseEnum(ConvertToString(rd, 6), Serialization.OperationType.Backup),
                     },
-                    cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""Name"", ""Description"", ""Tags"", ""TargetURL"", ""DBPath"" FROM ""Backup"" WHERE ID = @Id")
+                    cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""Name"", ""Description"", ""Tags"", ""TargetURL"", ""DBPath"", ""OperationType"" FROM ""Backup"" WHERE ID = @Id")
                         .SetParameterValue("@Id", id))
                     .FirstOrDefault();
 
@@ -575,6 +659,9 @@ namespace Duplicati.Server.Database
             if (item.Sources == null || item.Sources.Any(x => string.IsNullOrWhiteSpace(x)) || item.Sources.Length == 0)
                 return "Invalid source list";
 
+            if (item.Sources.Any(x => SourceMasking.IsSpecialSource(x) && UrlContainsPasswordPlaceholder(SourceMasking.ExtractUrl(x))))
+                return "Source is password placeholder value";
+
             var disabled_encryption = false;
             var passphrase = string.Empty;
             var gpgAsymmetricEncryption = false;
@@ -642,8 +729,16 @@ namespace Duplicati.Server.Database
                     }
             }
 
-            if (!disabled_encryption && !gpgAsymmetricEncryption && string.IsNullOrWhiteSpace(passphrase))
-                return "Missing passphrase";
+            if (item.OperationType == Serialization.OperationType.Sync)
+            {
+                if (!disabled_encryption)
+                    return "Encryption not allowed for sync operations";
+            }
+            else
+            {
+                if (!disabled_encryption && !gpgAsymmetricEncryption && string.IsNullOrWhiteSpace(passphrase))
+                    return "Missing passphrase";
+            }
 
             if (schedule != null)
             {
@@ -663,6 +758,38 @@ namespace Duplicati.Server.Database
             return null;
         }
 
+        /// <summary>
+        /// Resolves a DB path, converting relative paths to absolute paths based on the data folder.
+        /// </summary>
+        /// <param name="dbPath">The DB path to resolve.</param>
+        /// <returns>The absolute DB path.</returns>
+        private string ResolveDbPath(string? dbPath)
+        {
+            if (string.IsNullOrWhiteSpace(dbPath) || Path.IsPathRooted(dbPath))
+                return dbPath ?? "";
+
+            return Path.GetFullPath(Path.Combine(m_dataFolder, dbPath));
+        }
+
+        /// <summary>
+        /// Converts an absolute DB path to a relative path if it is under the data folder.
+        /// </summary>
+        /// <param name="dbPath">The DB path to convert.</param>
+        /// <returns>The relative DB path if under the data folder, otherwise the original path.</returns>
+        private string GetRelativeDbPath(string? dbPath)
+        {
+            if (string.IsNullOrWhiteSpace(dbPath) || !Path.IsPathRooted(dbPath))
+                return dbPath ?? "";
+
+            var fullDataFolder = Util.AppendDirSeparator(Path.GetFullPath(m_dataFolder));
+            var fullDbPath = Path.GetFullPath(dbPath);
+
+            if (fullDbPath.StartsWith(fullDataFolder, Library.Utility.Utility.ClientFilenameStringComparison))
+                return fullDbPath.Substring(fullDataFolder.Length);
+
+            return dbPath;
+        }
+
         public void UpdateBackupDBPath(IBackup item, string path)
         {
             lock (m_lock)
@@ -671,7 +798,7 @@ namespace Duplicati.Server.Database
                 {
                     using (var cmd = m_connection.CreateCommand(tr, @"UPDATE ""Backup"" SET ""DBPath""= @Dbpath WHERE ""ID""= @Id"))
                     {
-                        cmd.SetParameterValue("@Dbpath", path)
+                        cmd.SetParameterValue("@Dbpath", GetRelativeDbPath(path))
                             .SetParameterValue("@Id", item.ID)
                             .ExecuteNonQuery();
                         tr.Commit();
@@ -691,13 +818,14 @@ namespace Duplicati.Server.Database
                 if (!update && item.DBPath == null)
                 {
                     var folder = m_dataFolder;
-                    if (!System.IO.Directory.Exists(folder))
-                        System.IO.Directory.CreateDirectory(folder);
+                    if (!Directory.Exists(folder))
+                        Directory.CreateDirectory(folder);
 
                     for (var i = 0; i < 100; i++)
                     {
-                        var guess = System.IO.Path.Combine(folder, System.IO.Path.ChangeExtension(CLIDatabaseLocator.GenerateRandomName(), ".sqlite"));
-                        if (!System.IO.File.Exists(guess))
+                        var guess = Path.ChangeExtension(CLIDatabaseLocator.GenerateRandomName(), ".sqlite");
+                        var fullGuess = Path.GetFullPath(Path.Combine(folder, guess));
+                        if (!File.Exists(fullGuess))
                         {
                             ((Backup)item).DBPath = guess;
                             break;
@@ -717,9 +845,9 @@ namespace Duplicati.Server.Database
                         cmd =>
                         {
                             if (update)
-                                cmd.SetCommandAndParameters(@"UPDATE ""Backup"" SET ""Name""=@Name, ""Description""=@Description, ""Tags""=@Tags, ""TargetURL""=@TargetUrl WHERE ""ID""=@Id");
+                                cmd.SetCommandAndParameters(@"UPDATE ""Backup"" SET ""Name""=@Name, ""Description""=@Description, ""Tags""=@Tags, ""TargetURL""=@TargetUrl, ""OperationType""=@OperationType WHERE ""ID""=@Id");
                             else
-                                cmd.SetCommandAndParameters(@"INSERT INTO ""Backup"" (""Name"", ""ExternalID"", ""Description"", ""Tags"", ""TargetURL"", ""DBPath"") VALUES (@Name,@ExternalID,@Description,@Tags,@TargetUrl,@DbPath)");
+                                cmd.SetCommandAndParameters(@"INSERT INTO ""Backup"" (""Name"", ""ExternalID"", ""Description"", ""Tags"", ""TargetURL"", ""DBPath"", ""OperationType"") VALUES (@Name,@ExternalID,@Description,@Tags,@TargetUrl,@DbPath,@OperationType)");
                         },
                         (cmd, n) =>
                         {
@@ -731,12 +859,13 @@ namespace Duplicati.Server.Database
                             cmd.SetParameterValue("@Name", n.Name)
                                 .SetParameterValue("@Description", n.Description ?? "")
                                 .SetParameterValue("@Tags", string.Join(",", n.Tags ?? new string[0]))
-                                .SetParameterValue("@TargetUrl", m_encryptSensitiveFields ? EncryptedFieldHelper.Encrypt(n.TargetURL, m_key) : n.TargetURL);
+                                .SetParameterValue("@TargetUrl", m_encryptSensitiveFields ? EncryptedFieldHelper.Encrypt(n.TargetURL, m_key) : n.TargetURL)
+                                .SetParameterValue("@OperationType", n.OperationType.ToString());
 
                             if (update)
                                 cmd.SetParameterValue("@Id", item.ID);
                             else
-                                cmd.SetParameterValue("@DbPath", n.DBPath)
+                                cmd.SetParameterValue("@DbPath", GetRelativeDbPath(n.DBPath))
                                     .SetParameterValue("@ExternalID", n.ExternalID ?? "");
 
                         });
@@ -758,6 +887,10 @@ namespace Duplicati.Server.Database
                     // Don't update the metadata if no new content is given
                     if (item.Metadata != null)
                         SetMetadata(item.Metadata, id, tr);
+
+                    // Save additional target URLs if present
+                    if (item.AdditionalTargetURLs != null)
+                        SetBackupTargetUrls(id, item.AdditionalTargetURLs, tr);
 
                     if (updateSchedule)
                     {
@@ -920,9 +1053,10 @@ namespace Duplicati.Server.Database
                             Description = ConvertToString(rd, 3),
                             Tags = (ConvertToString(rd, 4) ?? "").Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
                             TargetURL = EncryptedFieldHelper.Decrypt(ConvertToString(rd, 5), m_key),
-                            DBPath = ConvertToString(rd, 6),
+                            DBPath = ResolveDbPath(ConvertToString(rd, 6)),
+                            OperationType = Library.Utility.Utility.ParseEnum(ConvertToString(rd, 7), Serialization.OperationType.Backup),
                         },
-                        cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""Name"", ""ExternalID"", ""Description"", ""Tags"", ""TargetURL"", ""DBPath"" FROM ""Backup"" "))
+                        cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""Name"", ""ExternalID"", ""Description"", ""Tags"", ""TargetURL"", ""DBPath"", ""OperationType"" FROM ""Backup"" "))
                         .ToArray();
 
                     foreach (var n in lst)
@@ -1472,6 +1606,227 @@ namespace Duplicati.Server.Database
                     : fieldValue;
 
             return null;
+        }
+
+        public ConnectionString[] GetConnectionStrings()
+        {
+            lock (m_lock)
+            {
+                return ReadFromDb(cmd =>
+                {
+                    var cs = new ConnectionString();
+                    cs.ID = cmd.GetInt64(0);
+                    cs.Name = cmd.GetString(1);
+                    cs.Description = cmd.GetString(2);
+                    cs.BaseUrl = DecryptSensitiveFields(cmd.GetString(3), m_key) ?? "";
+                    cs.CreatedAt = Library.Utility.Utility.EPOCH.AddSeconds(cmd.GetInt64(4));
+                    cs.UpdatedAt = Library.Utility.Utility.EPOCH.AddSeconds(cmd.GetInt64(5));
+                    return cs;
+                }, cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""Name"", ""Description"", ""BaseUrl"", ""CreatedAt"", ""UpdatedAt"" FROM ""ConnectionString""")).ToArray();
+            }
+        }
+
+        public ConnectionString? GetConnectionString(long id)
+        {
+            lock (m_lock)
+            {
+                return ReadFromDb(cmd =>
+                {
+                    var cs = new ConnectionString();
+                    cs.ID = cmd.GetInt64(0);
+                    cs.Name = cmd.GetString(1);
+                    cs.Description = cmd.GetString(2);
+                    cs.BaseUrl = DecryptSensitiveFields(cmd.GetString(3), m_key) ?? "";
+                    cs.CreatedAt = Library.Utility.Utility.EPOCH.AddSeconds(cmd.GetInt64(4));
+                    cs.UpdatedAt = Library.Utility.Utility.EPOCH.AddSeconds(cmd.GetInt64(5));
+                    return cs;
+                }, cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""Name"", ""Description"", ""BaseUrl"", ""CreatedAt"", ""UpdatedAt"" FROM ""ConnectionString"" WHERE ""ID"" = @ID").SetParameterValue("@ID", id)).FirstOrDefault();
+            }
+        }
+
+        public void AddConnectionString(ConnectionString cs)
+        {
+            lock (m_lock)
+            {
+                cs.CreatedAt = DateTime.UtcNow;
+                cs.UpdatedAt = DateTime.UtcNow;
+                if (UrlContainsPasswordPlaceholder(cs.BaseUrl))
+                    throw new ArgumentException("Connection string base URL contains password placeholder");
+
+                var encryptedUrl = m_encryptSensitiveFields ? EncryptedFieldHelper.Encrypt(cs.BaseUrl, m_key) : cs.BaseUrl;
+
+                using (var cmd = m_connection.CreateCommand())
+                {
+                    cmd.SetCommandAndParameters(@"INSERT INTO ""ConnectionString"" (""Name"", ""Description"", ""BaseUrl"", ""CreatedAt"", ""UpdatedAt"") VALUES (@Name, @Description, @BaseUrl, @CreatedAt, @UpdatedAt)");
+                    cmd.SetParameterValue("@Name", cs.Name);
+                    cmd.SetParameterValue("@Description", cs.Description);
+                    cmd.SetParameterValue("@BaseUrl", encryptedUrl);
+                    cmd.SetParameterValue("@CreatedAt", Library.Utility.Utility.NormalizeDateTimeToEpochSeconds(cs.CreatedAt));
+                    cmd.SetParameterValue("@UpdatedAt", Library.Utility.Utility.NormalizeDateTimeToEpochSeconds(cs.UpdatedAt));
+                    cmd.ExecuteNonQuery();
+                    cs.ID = cmd.ExecuteScalarInt64(@"SELECT last_insert_rowid();");
+                }
+            }
+        }
+
+        public void UpdateConnectionString(ConnectionString cs)
+        {
+            lock (m_lock)
+            {
+                cs.UpdatedAt = DateTime.UtcNow;
+                if (UrlContainsPasswordPlaceholder(cs.BaseUrl))
+                    throw new ArgumentException("Connection string base URL contains password placeholder");
+
+                var encryptedUrl = m_encryptSensitiveFields ? EncryptedFieldHelper.Encrypt(cs.BaseUrl, m_key) : cs.BaseUrl;
+
+                using (var cmd = m_connection.CreateCommand())
+                {
+                    cmd.SetCommandAndParameters(@"UPDATE ""ConnectionString"" SET ""Name"" = @Name, ""Description"" = @Description, ""BaseUrl"" = @BaseUrl, ""UpdatedAt"" = @UpdatedAt WHERE ""ID"" = @ID");
+                    cmd.SetParameterValue("@Name", cs.Name);
+                    cmd.SetParameterValue("@Description", cs.Description);
+                    cmd.SetParameterValue("@BaseUrl", encryptedUrl);
+                    cmd.SetParameterValue("@UpdatedAt", Library.Utility.Utility.NormalizeDateTimeToEpochSeconds(cs.UpdatedAt));
+                    cmd.SetParameterValue("@ID", cs.ID);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void DeleteConnectionString(long id)
+        {
+            lock (m_lock)
+            {
+                using (var cmd = m_connection.CreateCommand())
+                {
+                    cmd.SetCommandAndParameters(@"DELETE FROM ""ConnectionString"" WHERE ""ID"" = @ID");
+                    cmd.SetParameterValue("@ID", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public (string ID, string Name)[] GetBackupsUsingConnectionString(long id)
+        {
+            lock (m_lock)
+            {
+                return ReadFromDb(
+                    cmd => (cmd.GetInt64(0).ToString(), cmd.GetString(1)),
+                    cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""Name"" FROM ""Backup"" WHERE ""ConnectionStringID"" = @ID").SetParameterValue("@ID", id)
+                ).ToArray();
+            }
+        }
+
+        /// <summary>
+        /// Gets the additional target URLs for a backup
+        /// </summary>
+        /// <param name="backupId">The backup ID</param>
+        /// <returns>The list of additional target URLs</returns>
+        internal List<TargetUrlEntry> GetBackupTargetUrls(long backupId)
+        {
+            lock (m_lock)
+            {
+                return ReadFromDb(
+                    (rd) => new TargetUrlEntry()
+                    {
+                        ID = ConvertToInt64(rd, 0),
+                        BackupID = ConvertToInt64(rd, 1),
+                        TargetUrlKey = ConvertToString(rd, 2) ?? "",
+                        TargetUrl = EncryptedFieldHelper.Decrypt(ConvertToString(rd, 3) ?? "", m_key),
+                        Mode = ConvertToString(rd, 4) ?? "inline",
+                        Interval = ConvertToString(rd, 5),
+                        ConnectionStringID = ConvertToInt64(rd, 6),
+                        Options = ParseOptionsJson(ConvertToString(rd, 7)),
+                        CreatedAt = ConvertToDateTime(rd, 8),
+                        UpdatedAt = ConvertToDateTime(rd, 9)
+                    },
+                    cmd => cmd.SetCommandAndParameters(@"SELECT ""ID"", ""BackupID"", ""TargetUrlKey"", ""TargetURL"", ""Mode"", ""Interval"", ""ConnectionStringID"", ""Options"", ""CreatedAt"", ""UpdatedAt"" FROM ""BackupTargetUrl"" WHERE ""BackupID"" = @Id")
+                        .SetParameterValue("@Id", backupId))
+                    .ToList();
+            }
+        }
+
+        /// <summary>
+        /// Parses the options JSON string into a dictionary
+        /// </summary>
+        /// <param name="json">The JSON string</param>
+        /// <returns>The dictionary or null if empty</returns>
+        private static Dictionary<string, object>? ParseOptionsJson(string? json)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(json))
+                    return JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            }
+            catch
+            {
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Sets the additional target URLs for a backup
+        /// </summary>
+        /// <param name="backupId">The backup ID</param>
+        /// <param name="targets">The target URLs to set</param>
+        /// <param name="transaction">The database transaction</param>
+        internal void SetBackupTargetUrls(long backupId, IEnumerable<ITargetUrlEntry> targets, IDbTransaction? transaction = null)
+        {
+            lock (m_lock)
+            {
+                var tr = transaction ?? m_connection.BeginTransaction();
+                try
+                {
+                    // Delete existing entries
+                    using (var cmd = m_connection.CreateCommand(tr))
+                        cmd.SetCommandAndParameters(@"DELETE FROM ""BackupTargetUrl"" WHERE ""BackupID"" = @Id")
+                            .SetParameterValue("@Id", backupId)
+                            .ExecuteNonQuery();
+
+                    // Insert new entries
+                    var now = DateTime.UtcNow;
+                    foreach (var target in targets)
+                    {
+                        if (UrlContainsPasswordPlaceholder(target.TargetUrl))
+                            throw new Exception("Attempted to save a target URL with the password placeholder");
+
+                        var encryptedUrl = m_encryptSensitiveFields
+                            ? EncryptedFieldHelper.Encrypt(target.TargetUrl, m_key)
+                            : target.TargetUrl;
+
+                        var optionsJson = target.Options != null
+                            ? JsonSerializer.Serialize(target.Options)
+                            : null;
+
+                        using (var cmd = m_connection.CreateCommand(tr))
+                        {
+                            cmd.SetCommandAndParameters(@"INSERT INTO ""BackupTargetUrl"" (""BackupID"", ""TargetUrlKey"", ""TargetURL"", ""Mode"", ""Interval"", ""ConnectionStringID"", ""Options"", ""CreatedAt"", ""UpdatedAt"") VALUES (@BackupId, @TargetUrlKey, @TargetUrl, @Mode, @Interval, @ConnectionStringID, @Options, @CreatedAt, @UpdatedAt)");
+                            cmd.SetParameterValue("@BackupId", backupId);
+                            cmd.SetParameterValue("@TargetUrlKey", target.TargetUrlKey);
+                            cmd.SetParameterValue("@TargetUrl", encryptedUrl);
+                            cmd.SetParameterValue("@Mode", target.Mode);
+                            cmd.SetParameterValue("@Interval", target.Interval);
+                            cmd.SetParameterValue("@ConnectionStringID", target.ConnectionStringID);
+                            cmd.SetParameterValue("@Options", optionsJson);
+                            cmd.SetParameterValue("@CreatedAt", Library.Utility.Utility.NormalizeDateTimeToEpochSeconds(now));
+                            cmd.SetParameterValue("@UpdatedAt", Library.Utility.Utility.NormalizeDateTimeToEpochSeconds(now));
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+
+                    if (transaction == null)
+                    {
+                        tr.Commit();
+                        tr.Dispose();
+                    }
+                }
+                catch
+                {
+                    if (transaction == null)
+                        tr.Dispose();
+                    throw;
+                }
+            }
         }
 
         #region IDisposable implementation

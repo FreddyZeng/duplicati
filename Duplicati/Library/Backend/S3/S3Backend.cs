@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 using Duplicati.Library.Common.IO;
@@ -28,10 +28,8 @@ using System.Text.RegularExpressions;
 
 namespace Duplicati.Library.Backend
 {
-    public class S3 : IBackend, IStreamingBackend, IRenameEnabledBackend, IFolderEnabledBackend
+    public class S3 : IBackend, IStreamingBackend, IRenameEnabledBackend, IFolderEnabledBackend, ILockingBackend
     {
-        private static readonly string LOGTAG = Logging.Log.LogTagFromType<S3>();
-
         private const string AUTH_USERNAME_OPTION = "aws-access-key-id";
         private const string AUTH_PASSWORD_OPTION = "aws-secret-access-key";
 
@@ -44,10 +42,11 @@ namespace Duplicati.Library.Backend
         private const string S3_DISABLE_PAYLOAD_SIGNING_OPTION = "s3-disable-payload-signing";
         private const string S3_LIST_API_VERSION_OPTION = "s3-list-api-version";
         private const string S3_RECURSIVE_LIST = "s3-recursive-list";
+        private const string S3_LOCK_MODE_OPTION = "s3-lock-mode";
+        private const string S3_AUTHENTICATION_REGION_OPTION = "s3-authentication-region";
 
         public static readonly Dictionary<string, string?> KNOWN_S3_PROVIDERS = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) {
             { "Amazon S3", "s3.amazonaws.com" },
-            { "MyCloudyPlace (EU)", "s3.mycloudyplace.com" },
             { "Impossible Cloud (US)", "us-west-1.storage.impossibleapi.net" },
             { "Scaleway (Amsterdam, The Netherlands)", "s3.nl-ams.scw.cloud" },
             { "Scaleway (Paris, France)", "s3.fr-par.scw.cloud" },
@@ -55,16 +54,16 @@ namespace Duplicati.Library.Backend
             { "Hosteurope", "cs.hosteurope.de" },
             { "Dunkel", "dcs.dunkel.de" },
             { "DreamHost", "objects.dreamhost.com" },
-            { "dinCloud - Chicago", "d3-ord.dincloud.com" },
-            { "dinCloud - Los Angeles", "d3-lax.dincloud.com" },
             { "Poli Systems - 02 (CH)", "s3-02.polisystems.ch" },
             { "Poli Systems - 03 (CH)", "s3-03.polisystems.ch" },
-            { "IBM COS (S3) Public US", "s3-api.us-geo.objectstorage.softlayer.net" },
+            { "IBM COS (S3) Public US (legacy SoftLayer)", "s3-api.us-geo.objectstorage.softlayer.net" },
+            { "IBM COS (S3) Public US (appdomain)", "s3.us.cloud-object-storage.appdomain.cloud" },
             { "Storadera", "eu-east-1.s3.storadera.com" },
             { "Wasabi US East 1 (N. Virginia)", "s3.wasabisys.com" },
             { "Wasabi US East 2 (N. Virginia)", "s3.us-east-2.wasabisys.com" },
             { "Wasabi US Central 1 (Texas)", "s3.us-central-1.wasabisys.com" },
             { "Wasabi US West 1 (Oregon)", "s3.us-west-1.wasabisys.com" },
+            { "Wasabi US West 2 (San Jose)", "s3.us-west-2.wasabisys.com" },
             { "Wasabi CA Central 1 (Toronto)", "s3.ca-central-1.wasabisys.com" },
             { "Wasabi EU Central 1 (Amsterdam)", "s3.eu-central-1.wasabisys.com" },
             { "Wasabi EU Central 2 (Frankfurt)", "s3.eu-central-2.wasabisys.com" },
@@ -83,15 +82,33 @@ namespace Duplicati.Library.Backend
             { "Infomaniak Public Cloud 1", "s3.pub1.infomaniak.cloud" },
             { "Infomaniak Public Cloud 2", "s3.pub2.infomaniak.cloud" },
             { "さくらのクラウド (Sakura Cloud)", "s3.isk01.sakurastorage.jp" },
-            { "Seagate Lyve - US-East-1", "https://s3.us-east-1.lyvecloud.seagate.com" },
-            { "Seagate Lyve - US-West-1", "https://s3.us-west-1.lyvecloud.seagate.com" },
-            { "Seagate Lyve - AP-Southeast-1", "https://s3.ap-southeast-1.lyvecloud.seagate.com" },
-            { "Seagate Lyve - EU-West-1", "https://s3.eu-west-1.lyvecloud.seagate.com" },
-            { "Seagate Lyve - US-Central-2", "https://s3.us-central-2.lyvecloud.seagate.com" },
+            { "Seagate Lyve - US-East-1", "s3.us-east-1.lyvecloud.seagate.com" },
+            { "Seagate Lyve - US-West-1", "s3.us-west-1.lyvecloud.seagate.com" },
+            { "Seagate Lyve - AP-Southeast-1", "s3.ap-southeast-1.lyvecloud.seagate.com" },
+            { "Seagate Lyve - EU-West-1", "s3.eu-west-1.lyvecloud.seagate.com" },
+            { "Seagate Lyve - US-Central-2", "s3.us-central-2.lyvecloud.seagate.com" },
             { "Mega S4 - Amsterdam", "eu-central-1.s4.mega.io" },
             { "Mega S4 - Bettembourg", "eu-central-2.s4.mega.io" },
             { "Mega S4 - Montreal", "ca-central-1.s4.mega.io" },
-            { "Mega S4 - Vancouver", "ca-west-1.s4.mega.io" }
+            { "Mega S4 - Vancouver", "ca-west-1.s4.mega.io" },
+            { "Mega S4 - Amsterdam (s3)", "s3.eu-amsterdam.megas4.com" },
+            { "Mega S4 - Luxembourg (s3)", "s3.eu-luxembourg.megas4.com" },
+            { "Mega S4 - Paris (s3)", "s3.eu-paris.megas4.com" },
+            { "Mega S4 - Barcelona (s3)", "s3.eu-barcelona.megas4.com" },
+            { "Mega S4 - Montreal (s3)", "s3.ca-montreal.megas4.com" },
+            { "Mega S4 - Vancouver (s3)", "s3.ca-vancouver.megas4.com" },
+            { "Mega S4 - Tokyo (s3)", "s3.ap-tokyo.megas4.com" },
+            { "Rabata US East 1 (Washington)", "s3.us-east-1.rabata.io" },
+            { "Rabata EU West 2 (Netherlands)", "s3.eu-west-2.rabata.io" },
+            { "Internxt US Central 1 (Texas)", "s3.us-central-1.internxt.com" },
+            { "Internxt EU Central 1 (Amsterdam)", "s3.eu-central-1.internxt.com" },
+            { "Cloudflare R2", ".r2.cloudflarestorage.com" },
+            { "Selectel S3 ru-1", "s3.ru-1.storage.selcloud.ru" },
+            { "Selectel S3 ru-3", "s3.ru-3.storage.selcloud.ru" },
+            { "Selectel S3 ru-7", "s3.ru-7.storage.selcloud.ru" },
+            { "Selectel S3 gis-1", "s3.gis-1.storage.selcloud.ru" },
+            { "Selectel S3 uz-2", "s3.uz-2.srvstorage.uz" },
+            { "Selectel S3 kz-1", "s3.kz-1.srvstorage.kz" }
         };
 
         //Updated list: http://docs.amazonwebservices.com/general/latest/gr/rande.html#s3_region
@@ -135,6 +152,23 @@ namespace Duplicati.Library.Backend
 
             // For backwards compatibility, should no longer be used
             { "EU", "eu-west-1" }
+        };
+
+        public static readonly Dictionary<string, string?> DIGITALOCEAN_REGIONS = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "New York (nyc3)", "nyc3" },
+            { "Amsterdam (ams3)", "ams3" },
+            { "Singapore (sgp1)", "sgp1" },
+            { "Frankfurt (fra1)", "fra1" },
+            { "Sydney (syd1)", "syd1" }
+        };
+
+        public static readonly Dictionary<string, string?> HETZNER_REGIONS = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Falkenstein (fsn1)", "fsn1" },
+            { "Nuremberg (nbg1)", "nbg1" },
+            { "Helsinki (hel1)", "hel1" },
+            { "Ashburn, VA (ash)", "ash" }
         };
 
         public static readonly Dictionary<string, string?> DEFAULT_S3_LOCATION_BASED_HOSTS;
@@ -206,14 +240,14 @@ namespace Duplicati.Library.Backend
 
         public S3(string url, Dictionary<string, string?> options)
         {
-            var uri = new Utility.Uri(url);
+            var uri = new Utility.RelaxedUri(url);
             uri.RequireHost();
 
             m_bucket = uri.Host ?? "";
             m_prefix = uri.Path;
             var timeout = TimeoutOptionsHelper.Parse(options);
 
-            var auth = AuthOptionsHelper.ParseWithAlias(options, uri, AUTH_USERNAME_OPTION, AUTH_PASSWORD_OPTION);
+            var auth = AuthOptionsHelper.ParseWithAlias(options, uri.Username, uri.Password, AUTH_USERNAME_OPTION, AUTH_PASSWORD_OPTION);
 
             if (!auth.HasUsername)
                 throw new UserInformationException(Strings.S3Backend.NoAMZUserIDError, "S3NoAmzUserID");
@@ -223,6 +257,7 @@ namespace Duplicati.Library.Backend
             var useSSL = Utility.Utility.ParseBoolOption(options, SSL_OPTION);
             options.TryGetValue(LOCATION_OPTION, out var locationConstraint);
             options.TryGetValue(STORAGECLASS_OPTION, out var storageClass);
+            options.TryGetValue(S3_AUTHENTICATION_REGION_OPTION, out var authenticationRegion);
 
             options.TryGetValue(SERVER_NAME, out var hostname);
             if (string.IsNullOrEmpty(hostname))
@@ -248,6 +283,19 @@ namespace Duplicati.Library.Backend
             if (!options.ContainsKey("s3-ext-forcepathstyle") && !hostname.EndsWith(".amazonaws.com", StringComparison.OrdinalIgnoreCase))
                 options["s3-ext-forcepathstyle"] = "true";
 
+            // Check if hostname is actually an URL
+            if (System.Uri.IsWellFormedUriString(hostname, UriKind.Absolute))
+            {
+                var uriToTest = hostname.Contains("://") ? hostname : "http://" + hostname;
+                var hosturi = new System.Uri(uriToTest);
+                if (hosturi.PathAndQuery.Length > 1)
+                    throw new UserInformationException(Strings.S3Backend.NoPathAllowedInEndpointError, "S3NoPathInEndpoint");
+
+                hostname = hosturi.Authority;
+                if (!options.ContainsKey(SSL_OPTION))
+                    useSSL = hosturi.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
+            }
+
             // Validate that hostname doesn't contain a path
             hostname = hostname.Trim('/').Trim('\\');
             if (hostname.Contains('/') || hostname.Contains('\\'))
@@ -257,15 +305,17 @@ namespace Duplicati.Library.Backend
             var s3ClientOptionValue = options.GetValueOrDefault(S3_CLIENT_OPTION);
 
             (var awsID, var awsKey) = auth.GetCredentials();
+            var lockMode = options.GetValueOrDefault(S3_LOCK_MODE_OPTION, "governance") ?? "governance";
+
             if (string.IsNullOrWhiteSpace(s3ClientOptionValue) || string.Equals(s3ClientOptionValue, "aws", StringComparison.OrdinalIgnoreCase))
             {
                 var disableChunkEncoding = Utility.Utility.ParseBoolOption(options, S3_DISABLE_CHUNK_ENCODING_OPTION);
                 var disablePayloadSigning = Utility.Utility.ParseBoolOption(options, S3_DISABLE_PAYLOAD_SIGNING_OPTION);
-                m_s3Client = new S3AwsClient(awsID, awsKey, locationConstraint, hostname, storageClass, useSSL, disableChunkEncoding, disablePayloadSigning, timeout, options);
+                m_s3Client = new S3AwsClient(awsID, awsKey, locationConstraint, hostname, storageClass, useSSL, disableChunkEncoding, disablePayloadSigning, timeout, options, lockMode, authenticationRegion);
             }
             else if (string.Equals(s3ClientOptionValue, "minio", StringComparison.OrdinalIgnoreCase))
             {
-                m_s3Client = new S3MinioClient(awsID, awsKey, locationConstraint, hostname, storageClass, useSSL, timeout, options);
+                m_s3Client = new S3MinioClient(awsID, awsKey, locationConstraint, hostname, storageClass, useSSL, timeout, options, lockMode, authenticationRegion);
             }
             else
             {
@@ -306,6 +356,24 @@ namespace Duplicati.Library.Backend
             await Connection.AddFileStreamAsync(m_bucket, GetFullKey(remotename), input, cancelToken);
         }
 
+        /// <summary>
+        /// Puts a file with the provided hashes and content length, if supported by the client. This allows for optimized uploads where the hashes are already known and for put'ing files with non-seekable streams. If the client does not support this method, it will fall back to a normal PutAsync without the hashes and length.
+        /// </summary>
+        /// <param name="remotename">The remote filename, relative to the URL.</param>
+        /// <param name="input">The stream to read from.</param>
+        /// <param name="md5">The precomputed MD5 hash of the file.</param>
+        /// <param name="sha256">The precomputed SHA256 hash of the file.</param>
+        /// <param name="length">The length of the file.</param>
+        /// <param name="cancelToken">Token to cancel the operation.</param>
+        /// <returns></returns>
+        public async Task PutWithHashAsync(string remotename, Stream input, string md5, string sha256, long length, CancellationToken cancelToken)
+        {
+            if (Connection is S3AwsClient awsClient)
+                await awsClient.AddFileStreamAsync(m_bucket, GetFullKey(remotename), input, md5, sha256, length, cancelToken).ConfigureAwait(false);
+            else
+                await PutAsync(remotename, input, cancelToken).ConfigureAwait(false);
+        }
+
         /// <inheritdoc/>
         public async Task GetAsync(string remotename, string localname, CancellationToken cancelToken)
         {
@@ -320,6 +388,14 @@ namespace Duplicati.Library.Backend
         /// <inheritdoc/>
         public Task DeleteAsync(string remotename, CancellationToken cancelToken)
             => Connection.DeleteObjectAsync(m_bucket, GetFullKey(remotename), cancelToken);
+
+        /// <inheritdoc/>
+        public Task<DateTime?> GetObjectLockUntilAsync(string remotename, CancellationToken cancelToken)
+            => Connection.GetObjectLockUntilAsync(m_bucket, GetFullKey(remotename), cancelToken);
+
+        /// <inheritdoc/>
+        public Task SetObjectLockUntilAsync(string remotename, DateTime lockUntilUtc, CancellationToken cancelToken)
+            => Connection.SetObjectLockUntilAsync(m_bucket, GetFullKey(remotename), lockUntilUtc, cancelToken);
 
         /// <inheritdoc/>
         public IList<ICommandLineArgument> SupportedCommands
@@ -349,6 +425,8 @@ namespace Duplicati.Library.Backend
                     new CommandLineArgument(S3AwsClient.S3_ARCHIVE_CLASSES_OPTION, CommandLineArgument.ArgumentType.Flags, Strings.S3Backend.S3ArchiveClassesDescriptionShort, Strings.S3Backend.S3ArchiveClassesDescriptionLong, string.Join(",", S3AwsClient.DEFAULT_ARCHIVE_CLASSES.Select(x => x.Value)), null, KNOWN_S3_STORAGE_CLASSES.Select(x => x.Value).WhereNotNullOrWhiteSpace().ToArray()),
                     new CommandLineArgument(S3_LIST_API_VERSION_OPTION, CommandLineArgument.ArgumentType.Enumeration, Strings.S3Backend.DescriptionListApiVersionShort, Strings.S3Backend.DescriptionListApiVersionLong, "v1", null, ["v1", "v2"]),
                     new CommandLineArgument(S3_RECURSIVE_LIST, CommandLineArgument.ArgumentType.Boolean, Strings.S3Backend.DescriptionRecursiveListShort, Strings.S3Backend.DescriptionRecursiveListLong, "false"),
+                    new CommandLineArgument(S3_LOCK_MODE_OPTION, CommandLineArgument.ArgumentType.Enumeration, Strings.S3Backend.DescriptionLockModeShort, Strings.S3Backend.DescriptionLockModeLong, nameof(Amazon.S3.ObjectLockRetentionMode.Governance), null, typeof(Amazon.S3.ObjectLockRetentionMode).GetFields(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public).Select(x => x.Name).ToArray()),
+                    new CommandLineArgument(S3_AUTHENTICATION_REGION_OPTION, CommandLineArgument.ArgumentType.String, Strings.S3Backend.S3AuthenticationRegionDescriptionShort, Strings.S3Backend.S3AuthenticationRegionDescriptionLong),
                     .. TimeoutOptionsHelper.GetOptions(),
                     .. exts
                 ];
@@ -358,8 +436,8 @@ namespace Duplicati.Library.Backend
         public string Description => Strings.S3Backend.Description_v2;
 
         /// <inheritdoc/>
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         /// <inheritdoc/>
         public Task CreateFolderAsync(CancellationToken cancelToken)
@@ -417,6 +495,11 @@ namespace Duplicati.Library.Backend
 
         /// <inheritdoc/>
         public Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult<IFileEntry?>(null);
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return Task.FromResult<IFileEntry?>(new FileEntry(string.Empty) { IsFolder = true });
+
+            return m_s3Client.GetFileEntryAsync(m_bucket, GetFullKey(path), cancellationToken);
+        }
     }
 }

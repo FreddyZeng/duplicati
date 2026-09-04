@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -39,18 +39,33 @@ public interface ISourceProvider : IDisposable
     string MountedPath { get; }
 
     /// <summary>
+    /// Gets a value indicating whether this provider requires that metadata
+    /// content is stored in the database (the "store-metadata-content-in-database" option).
+    /// When a source uses a provider that returns <c>true</c>, the option is
+    /// automatically enabled if the user has not explicitly set it.
+    /// </summary>
+    bool NeedsStoredMetadata { get; }
+
+    /// <summary>
     /// Initializes the provider, if needed
     /// </summary>
     /// <param name="cancellationToken">The cancellation token</param>
     /// <returns>An awaitable task</returns>
-    Task Initialize(CancellationToken cancellationToken);
+    Task InitializeAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Tests the provider connection
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token</param>
+    /// <returns>An awaitable task</returns>
+    Task TestAsync(CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets the root entries
     /// </summary>
     /// <param name="cancellationToken">The cancellation token</param>
     /// <returns>An enumerable of file entries</returns>
-    IAsyncEnumerable<ISourceProviderEntry> Enumerate(CancellationToken cancellationToken);
+    IAsyncEnumerable<ISourceProviderEntry> EnumerateAsync(CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets a specific entry
@@ -59,5 +74,5 @@ public interface ISourceProvider : IDisposable
     /// <param name="isFolder">True if the path is a folder</param>
     /// <param name="cancellationToken">The cancellation token</param>
     /// <returns>The file entry</returns>
-    Task<ISourceProviderEntry?> GetEntry(string path, bool isFolder, CancellationToken cancellationToken);
+    Task<ISourceProviderEntry?> GetEntryAsync(string path, bool isFolder, CancellationToken cancellationToken);
 }

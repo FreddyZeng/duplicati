@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -52,7 +52,11 @@ public class RemoteControl : IEndpointV1
             .RequireAuthorization();
 
         group.MapPost("/remotecontrol/register", ([FromBody] Dto.StartRegistrationInput input, [FromServices] IRemoteControllerRegistration registration, [FromServices] IRemoteController remoteController, CancellationToken cancellationToken)
-            => BeginRegisterMachine(registration, remoteController, input.RegistrationUrl, cancellationToken))
+            => BeginRegisterMachineAsync(registration, remoteController, input.RegistrationUrl, cancellationToken))
+            .RequireAuthorization();
+
+        group.MapPost("/remotecontrol/register/wait", ([FromServices] IRemoteControllerRegistration registration, [FromServices] IRemoteController remoteController, CancellationToken cancellationToken)
+            => WaitForRegistrationAsync(registration, remoteController, cancellationToken))
             .RequireAuthorization();
 
         group.MapDelete("/remotecontrol/register", ([FromServices] IRemoteControllerRegistration registration, [FromServices] IRemoteController remoteController)
@@ -60,17 +64,14 @@ public class RemoteControl : IEndpointV1
             .RequireAuthorization();
     }
 
-    private static async Task<Dto.RemoteControlStatusOutput> BeginRegisterMachine(IRemoteControllerRegistration registration, IRemoteController remoteController, string registrationUrl, CancellationToken cancellationToken)
+    private static async Task<Dto.RemoteControlStatusOutput> BeginRegisterMachineAsync(IRemoteControllerRegistration registration, IRemoteController remoteController, string? registrationUrl, CancellationToken cancellationToken)
     {
         if (remoteController.CanEnable)
             throw new BadRequestException("Existing remote control must be removed before registering");
 
-        if (!registration.IsRegistering && string.IsNullOrWhiteSpace(registrationUrl))
-            throw new BadRequestException("Registration URL must be provided");
-
         var task = registration.IsRegistering
-            ? registration.WaitForRegistration()
-            : registration.RegisterMachine(registrationUrl);
+            ? registration.WaitForRegistrationAsync()
+            : registration.RegisterMachineAsync(registrationUrl ?? throw new BadRequestException("Registration URL must be provided"));
 
         // Wait for registration, or at most 5 seconds
         // Client must poll if the registration is not completed by then
@@ -83,9 +84,29 @@ public class RemoteControl : IEndpointV1
         return GetStatus(registration, remoteController);
     }
 
+    private static async Task<Dto.RemoteControlStatusOutput> WaitForRegistrationAsync(IRemoteControllerRegistration registration, IRemoteController remoteController, CancellationToken cancellationToken)
+    {
+        if (remoteController.CanEnable)
+            throw new BadRequestException("Existing remote control must be removed before waiting for registration");
+
+        if (!registration.IsRegistering)
+            throw new BadRequestException("No ongoing registration to wait for");
+
+        var task = registration.WaitForRegistrationAsync();
+
+        // Wait for registration, or at most 5 seconds
+        await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(4.5), cancellationToken));
+
+        // Rethrow any exceptions
+        if (task.IsCompleted)
+            await task;
+
+        return GetStatus(registration, remoteController);
+    }
+
     private static Dto.RemoteControlStatusOutput EnableRemoteControl(IRemoteControllerRegistration registration, IRemoteController remoteController)
     {
-        remoteController.Enable();
+        remoteController.Enable(true);
         return GetStatus(registration, remoteController);
     }
 
@@ -113,8 +134,8 @@ public class RemoteControl : IEndpointV1
             IsEnabled: remoteController.IsEnabled,
             IsConnected: remoteController.Connected,
             IsRegistering: registration.IsRegistering,
-            IsRegisteringFaulted: registration.IsRegistering && registration.WaitForRegistration().IsFaulted,
-            IsRegisteringCompleted: registration.IsRegistering && registration.WaitForRegistration().IsCompleted,
+            IsRegisteringFaulted: registration.IsRegistering && registration.WaitForRegistrationAsync().IsFaulted,
+            IsRegisteringCompleted: registration.IsRegistering && registration.WaitForRegistrationAsync().IsCompleted,
             RegistrationUrl: registration.RegistrationUrl
         );
 }

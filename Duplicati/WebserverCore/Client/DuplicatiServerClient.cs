@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -77,7 +77,7 @@ public class DuplicatiServerClient : IDisposable
     /// The idea of having a separate Authenticate method is to allow for explicit authentication to avoid getting a 401 result on the server log.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token. Optional, defaults to <see cref="CancellationToken.None"/>.</param>
-    public async Task Authenticate(CancellationToken cancellationToken = default)
+    public async Task AuthenticateAsync(CancellationToken cancellationToken = default)
     {
         await RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -857,6 +857,31 @@ public class DuplicatiServerClient : IDisposable
     public async Task<ResponseEnvelope<DestinationTestResponseDto>> TestDestinationV2Async(DestinationTestRequestDto request, CancellationToken cancellationToken = default)
     {
         return await PostAsync<ResponseEnvelope<DestinationTestResponseDto>>("/api/v2/destination/test", request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // V1 Folder Status Methods
+
+    /// <summary>
+    /// Gets the backup status for all source folders across all backups (V1).
+    /// Used by the Windows Shell Extension to show overlay icons on backed up folders.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token. Optional, defaults to <see cref="CancellationToken.None"/>.</param>
+    /// <returns>The list of folder statuses.</returns>
+    public async Task<FolderStatusDto[]> GetFolderStatusesV1Async(CancellationToken cancellationToken = default)
+    {
+        return await GetAsync<FolderStatusDto[]>("/api/v1/folderstatus", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Gets the backup status for a specific folder path (V1).
+    /// Used by the Windows Shell Extension to show overlay icons on backed up folders.
+    /// </summary>
+    /// <param name="path">The folder path to check.</param>
+    /// <param name="cancellationToken">The cancellation token. Optional, defaults to <see cref="CancellationToken.None"/>.</param>
+    /// <returns>The folder status.</returns>
+    public async Task<FolderStatusDto> GetFolderStatusV1Async(string path, CancellationToken cancellationToken = default)
+    {
+        return await GetAsync<FolderStatusDto>($"/api/v1/folderstatus/{Uri.EscapeDataString(path)}", cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

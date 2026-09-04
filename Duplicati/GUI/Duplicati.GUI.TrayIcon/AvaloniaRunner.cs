@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -34,7 +34,9 @@ using Avalonia.Logging;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Themes.Fluent;
+using Avalonia.Styling;
 using Avalonia.Threading;
+using CoCoL;
 using Duplicati.Library.AutoUpdater;
 using Duplicati.Library.Logging;
 
@@ -46,6 +48,14 @@ namespace Duplicati.GUI.TrayIcon
         private AvaloniaApp? application;
         private bool closed = false;
         private ProcessBasedActionDelay actionDelayer = new ProcessBasedActionDelay();
+        /// <summary>
+        /// The native notification support, if available; created on first use
+        /// </summary>
+        private Library.Interface.INativeNotifier? notifierInstance = null;
+        /// <summary>
+        /// Only attempt to load the notifier once
+        /// </summary>
+        private bool hasAttemptedNotifierLoad = false;
         private IEnumerable<AvaloniaMenuItem> menuItems = Enumerable.Empty<AvaloniaMenuItem>();
         private int _disposed;
         private int _exitCalled;
@@ -55,16 +65,16 @@ namespace Duplicati.GUI.TrayIcon
             base.Init(args);
         }
 
-        protected override Task UpdateUIState(Action action)
-            => RunOnUIThread(action);
+        protected override Task UpdateUIStateAsync(Action action)
+            => RunOnUIThreadAsync(action);
 
 
-        internal Task RunOnUIThread(Action action)
+        internal Task RunOnUIThreadAsync(Action action)
         {
             if (_disposed != 0)
                 return Task.CompletedTask;
 
-            return actionDelayer.ExecuteAction(() =>
+            return actionDelayer.ExecuteActionAsync(() =>
               {
                   try
                   {
@@ -99,7 +109,7 @@ namespace Duplicati.GUI.TrayIcon
 
         protected override void RegisterStatusUpdateCallback()
         {
-            Program.Connection.OnStatusUpdated += this.OnStatusUpdated;
+            Program.Connection.OnStatusUpdated += this.OnStatusUpdatedAsync;
         }
 
         #region implemented abstract members of Duplicati.GUI.TrayIcon.TrayIconBase
@@ -178,6 +188,10 @@ namespace Duplicati.GUI.TrayIcon
 
             if (tcs.Task.IsCompletedSuccessfully)
             {
+                // Check if we need to show the password prompt
+                if (Program.PasswordStorage.NeedsPasswordPrompt)
+                    ShowPasswordPromptAsync(lifetime).FireAndForget();
+
                 actionDelayer.SignalStart();
             }
             else
@@ -194,26 +208,105 @@ namespace Duplicati.GUI.TrayIcon
             }
         }
 
+        private async Task ShowPasswordPromptAsync(IClassicDesktopStyleApplicationLifetime lifetime)
+        {
+            try
+            {
+                var res = await PasswordPrompt.ShowPasswordDialogAsync(isChangePassword: false).ConfigureAwait(false);
+
+                if (!res)
+                {
+                    RunOnUIThreadInternal(() =>
+                    {
+                        try
+                        {
+                            lifetime.Shutdown();
+                        }
+                        catch { }
+                    });
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.WriteErrorMessage(LOGTAG, "PasswordPromptFailed", ex, "Failed to show password prompt");
+                RunOnUIThreadInternal(() =>
+                {
+                    try
+                    {
+                        lifetime.Shutdown();
+                    }
+                    catch { }
+                });
+            }
+        }
+
         protected override IMenuItem CreateMenuItem(string text, MenuIcons icon, Action callback, IList<IMenuItem> subitems)
         {
             return new AvaloniaMenuItem(this, text, icon, callback, subitems);
         }
 
+        private Library.Interface.INativeNotifier? TryLoadNotifier()
+        {
+            if (hasAttemptedNotifierLoad)
+                return notifierInstance;
+
+            // Only try to load the notifier once
+            hasAttemptedNotifierLoad = true;
+
+            // Avalonia's TrayIcon has no notification support of its own, so the
+            // notification is shown with platform specific code
+            try
+            {
+                // The Toast implementation requires Windows 10 build 17763 or later
+                if (OperatingSystem.IsWindows() && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
+                    this.notifierInstance = Library.Snapshots.Windows.WindowsShimLoader.NewNativeNotifier();
+                else if (OperatingSystem.IsMacOS())
+                    this.notifierInstance = new MacOSRumpNotifier();
+                else if (OperatingSystem.IsLinux())
+                    this.notifierInstance = new LinuxDBusNotifier();
+
+                if (this.notifierInstance != null)
+                {
+                    // Clicking the notification opens the status window, same as
+                    // clicking the tray icon. ShowStatusWindow only performs an HTTP
+                    // request and launches the browser, so it is safe to call from
+                    // whatever thread the activation callback arrives on.
+                    this.notifierInstance.NotificationClicked = () => ShowStatusWindow();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.WriteWarningMessage(LOGTAG, "NotificationLoadFailed", ex, "Failed to load notification implementation");
+            }
+
+            return notifierInstance;
+        }
+
         public override void NotifyUser(string title, string message, NotificationType type)
         {
-            //var icon = Win32NativeNotifyIcon.InfoFlags.NIIF_INFO;
-
-            switch (type)
+            try
             {
-                case NotificationType.Information:
-                    //icon = Win32NativeNotifyIcon.InfoFlags.NIIF_INFO;
-                    break;
-                case NotificationType.Warning:
-                    //icon = Win32NativeNotifyIcon.InfoFlags.NIIF_WARNING;
-                    break;
-                case NotificationType.Error:
-                    //icon = Win32NativeNotifyIcon.InfoFlags.NIIF_ERROR;
-                    break;
+                var notifier = TryLoadNotifier();
+                if (notifier == null)
+                    return;
+
+                var level = type switch
+                {
+                    NotificationType.Warning => Library.Interface.NativeNotificationLevel.Warning,
+                    NotificationType.Error => Library.Interface.NativeNotificationLevel.Error,
+                    _ => Library.Interface.NativeNotificationLevel.Information,
+                };
+
+                // The INativeNotifier implementations are non-blocking, so this
+                // is safe to call on the UI thread
+                notifier.Notify(level, title, message);
+            }
+            catch (Exception ex)
+            {
+                // Never let a failed notification take down the tray icon; toasts can
+                // be unavailable (e.g. notifications disabled, missing WinRT support)
+                Log.WriteWarningMessage(LOGTAG, "NotificationFailed", ex, "Failed to show notification: {0}", title);
             }
         }
 
@@ -238,7 +331,7 @@ namespace Duplicati.GUI.TrayIcon
 
         protected override void SetIcon(TrayIcons icon)
         {
-            UpdateUIState(() => this.application?.SetIcon(icon));
+            UpdateUIStateAsync(() => this.application?.SetIcon(icon)).FireAndForget();
         }
 
         protected override void SetMenu(IEnumerable<IMenuItem> items)
@@ -249,7 +342,7 @@ namespace Duplicati.GUI.TrayIcon
             }
             this.menuItems = items.Select(i => (AvaloniaMenuItem)i);
             if (this.application != null)
-                UpdateUIState(() => this.application?.SetMenu(menuItems));
+                UpdateUIStateAsync(() => this.application?.SetMenu(menuItems)).FireAndForget();
         }
 
         public override void Dispose()
@@ -323,14 +416,14 @@ namespace Duplicati.GUI.TrayIcon
         {
             this.Text = text;
             if (nativeMenuItem != null)
-                parent.RunOnUIThread(() => nativeMenuItem.Header = text);
+                parent.RunOnUIThreadAsync(() => nativeMenuItem.Header = text).FireAndForget();
         }
 
         public void SetIcon(MenuIcons icon)
         {
             this.Icon = icon;
             if (nativeMenuItem != null)
-                parent.RunOnUIThread(() => this.UpdateIcon());
+                parent.RunOnUIThreadAsync(() => this.UpdateIcon()).FireAndForget();
         }
 
         /// <summary>
@@ -348,6 +441,8 @@ namespace Duplicati.GUI.TrayIcon
                 MenuIcons.Quit => AvaloniaRunner.LoadBitmap("context-menu-quit.png"),
                 MenuIcons.Pause => AvaloniaRunner.LoadBitmap("context-menu-pause.png"),
                 MenuIcons.Resume => AvaloniaRunner.LoadBitmap("context-menu-resume.png"),
+                MenuIcons.Reconnect => AvaloniaRunner.LoadBitmap("context-menu-reconnect.png"),
+                MenuIcons.ChangePassword => AvaloniaRunner.LoadBitmap("context-menu-change-password.png"),
                 _ => null
             };
         }
@@ -356,7 +451,7 @@ namespace Duplicati.GUI.TrayIcon
         {
             this.Enabled = isEnabled;
             if (nativeMenuItem != null)
-                parent.RunOnUIThread(() => nativeMenuItem.IsEnabled = this.Enabled);
+                parent.RunOnUIThreadAsync(() => nativeMenuItem.IsEnabled = this.Enabled).FireAndForget();
         }
 
         public void SetDefault(bool value)
@@ -370,7 +465,7 @@ namespace Duplicati.GUI.TrayIcon
         {
             this.Hidden = hidden;
             if (nativeMenuItem != null)
-                parent.RunOnUIThread(() => nativeMenuItem.IsVisible = !this.Hidden);
+                parent.RunOnUIThreadAsync(() => nativeMenuItem.IsVisible = !this.Hidden).FireAndForget();
 
         }
         #endregion
@@ -490,6 +585,8 @@ namespace Duplicati.GUI.TrayIcon
 
         public override void OnFrameworkInitializationCompleted()
         {
+            RequestedThemeVariant = ThemeVariant.Default;
+
             Styles.Add(new FluentTheme());
 
             var icon = AvaloniaRunner.LoadIcon("normal.png");

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -20,11 +20,9 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.Security.Principal;
-using Duplicati.Library.Common.IO;
 using Duplicati.Library.Snapshots;
 using Duplicati.Library.Snapshots.Windows;
 using Duplicati.WebserverCore.Dto;
-using Duplicati.WebserverCore.Exceptions;
 
 namespace Duplicati.WebserverCore.Endpoints.V1.FilesystemPlugins;
 
@@ -33,20 +31,25 @@ public class Hyperv : IFilesystemPlugin
     private static readonly string LOGTAG = Duplicati.Library.Logging.Log.LogTagFromType<Hyperv>();
     public string RootName => "%HYPERV%";
 
+    private readonly IReadOnlyDictionary<string, string?> _options;
+
+    public Hyperv(IReadOnlyDictionary<string, string?> options)
+        => _options = options;
+
     public IEnumerable<Dto.TreeNodeDto> GetEntries(string[] pathSegments)
     {
         if (!OperatingSystem.IsWindows())
             return [];
 
-        var hypervUtility = new HyperVUtility();
-        if (!hypervUtility.IsHyperVInstalled || !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
-            return [];
-
         try
         {
+            using var hypervUtility = new HyperVUtility();
+            if (!hypervUtility.IsHyperVInstalled || !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
+                return [];
+
             if (pathSegments.Length == 0)
             {
-                hypervUtility.QueryHyperVGuestsInfo(WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_QUERY_PROVIDER);
+                hypervUtility.QueryHyperVGuestsInfo(Library.Utility.Utility.ParseEnumOption(_options, "snapshot-provider", WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_QUERY_PROVIDER));
                 if (!hypervUtility.Guests.Any())
                     return [];
                 return

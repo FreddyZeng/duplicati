@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,6 +20,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.Reflection;
+using System.Runtime.Versioning;
 using System.Web;
 using Duplicati.Library.Interface;
 using Duplicati.Library.SecretProvider.LibSecret;
@@ -29,8 +30,14 @@ namespace Duplicati.Library.SecretProvider;
 /// <summary>
 /// Secret provider that reads secrets from libsecret on Linux
 /// </summary>
+[SupportedOSPlatform("linux")]
 public class LibSecretLinuxProvider : ISecretProvider
 {
+    /// <summary>
+    /// The default D-Bus service name implementing the freedesktop Secret Service API.
+    /// </summary>
+    public const string DefaultServiceName = "org.freedesktop.secrets";
+
     /// <inheritdoc />
     public string Key => "libsecret";
 
@@ -41,19 +48,47 @@ public class LibSecretLinuxProvider : ISecretProvider
     public string Description => Strings.LibSecretLinuxProvider.Description;
 
     /// <summary>
+    /// Cached support check for libsecret so we only evaluate availability once.
+    /// </summary>
+    private static readonly Lazy<Task<bool>> _isSupported = new(static () =>
+    {
+        if (!OperatingSystem.IsLinux())
+            return Task.FromResult(false);
+        return SecretCollection.IsSupported(DefaultServiceName, CancellationToken.None);
+    });
+
+    /// <inheritdoc />
+    public Task<bool> IsSupported(CancellationToken cancellationToken) => _isSupported.Value;
+
+    /// <inheritdoc />
+    public bool IsSetSupported => true;
+
+    /// <summary>
     /// The configuration for the secret provider
     /// </summary>
     private class LibSecretConfig : ICommandLineArgumentMapper
     {
         /// <summary>
-        /// The collection to use
+        /// The collection to use. When left empty, the canonical default collection is
+        /// resolved via the Secret Service "default" alias. When set to an explicit value
+        /// (including the literal "default"), that collection name is matched literally.
         /// </summary>
-        public string Collection { get; set; } = "default";
+        public string Collection { get; set; } = string.Empty;
 
         /// <summary>
         /// Whether the collection name is case sensitive
         /// </summary>
         public bool CaseSensitive { get; set; }
+
+        /// <summary>
+        /// Whether the collection should automatically be created when storing secrets if it does not exist.
+        /// </summary>
+        public bool NoAutoCreateCollection { get; set; }
+
+        /// <summary>
+        /// The D-Bus service name implementing the freedesktop Secret Service API.
+        /// </summary>
+        public string ServiceName { get; set; } = DefaultServiceName;
 
         /// <summary>
         /// Gets the command line argument description for the given name
@@ -65,6 +100,8 @@ public class LibSecretLinuxProvider : ISecretProvider
             {
                 nameof(Collection) => new CommandLineArgumentDescriptionAttribute() { Name = "collection", Type = CommandLineArgument.ArgumentType.String, ShortDescription = Strings.LibSecretLinuxProvider.CollectionDescriptionShort, LongDescription = Strings.LibSecretLinuxProvider.CollectionDescriptionLong },
                 nameof(CaseSensitive) => new CommandLineArgumentDescriptionAttribute() { Name = "case-sensitive", Type = CommandLineArgument.ArgumentType.Boolean, ShortDescription = Strings.LibSecretLinuxProvider.CaseSensitiveDescriptionShort, LongDescription = Strings.LibSecretLinuxProvider.CaseSensitiveDescriptionLong },
+                nameof(NoAutoCreateCollection) => new CommandLineArgumentDescriptionAttribute() { Name = "no-autocreate-collection", Type = CommandLineArgument.ArgumentType.Boolean, ShortDescription = Strings.LibSecretLinuxProvider.NoAutoCreateCollectionDescriptionShort, LongDescription = Strings.LibSecretLinuxProvider.NoAutoCreateCollectionDescriptionLong },
+                nameof(ServiceName) => new CommandLineArgumentDescriptionAttribute() { Name = "service-name", Type = CommandLineArgument.ArgumentType.String, ShortDescription = Strings.LibSecretLinuxProvider.ServiceNameDescriptionShort, LongDescription = Strings.LibSecretLinuxProvider.ServiceNameDescriptionLong, DefaultValue = DefaultServiceName },
                 _ => null,
             };
 
@@ -96,10 +133,11 @@ public class LibSecretLinuxProvider : ISecretProvider
 
         var args = HttpUtility.ParseQueryString(config.Query);
         _cfg = CommandLineArgumentMapper.ApplyArguments(new LibSecretConfig(), args);
-        if (string.IsNullOrWhiteSpace(_cfg.Collection))
-            throw new UserInformationException("The collection must be specified", "CollectionRequired");
+        if (string.IsNullOrWhiteSpace(_cfg.ServiceName))
+            throw new UserInformationException("The service name must be specified", "ServiceNameRequired");
 
-        _collection = await SecretCollection.CreateAsync(_cfg.Collection, cancellationToken).ConfigureAwait(false);
+        // An empty collection means "resolve the canonical default collection via the alias".
+        _collection = await SecretCollection.CreateAsync(_cfg.Collection, !_cfg.NoAutoCreateCollection, _cfg.ServiceName, cancellationToken).ConfigureAwait(false);
         await _collection.UnlockAsync().ConfigureAwait(false);
     }
 
@@ -111,6 +149,34 @@ public class LibSecretLinuxProvider : ISecretProvider
         if (!OperatingSystem.IsLinux())
             throw new PlatformNotSupportedException("LibSecret is only supported on Linux");
 
-        return _collection.GetSecretsAsync(keys, _cfg.CaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+        return _collection.GetSecretsAsync(keys, _cfg.CaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase, cancellationToken);
     }
+
+    /// <inheritdoc />
+    public async Task SetSecretAsync(string key, string value, bool overwrite, CancellationToken cancellationToken)
+    {
+        if (_cfg is null || _collection is null)
+            throw new InvalidOperationException("The secret provider has not been initialized");
+        if (!OperatingSystem.IsLinux())
+            throw new PlatformNotSupportedException("LibSecret is only supported on Linux");
+
+        var comparer = _cfg.CaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+        await _collection.StoreSecretAsync(key, value, overwrite, comparer, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Checks whether the specified collection exists
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>>True if the collection exists; otherwise false</returns>
+    public async Task<bool> DoesCollectionExist(CancellationToken cancellationToken)
+    {
+        if (_cfg is null)
+            throw new InvalidOperationException("The secret provider has not been initialized");
+        if (!OperatingSystem.IsLinux())
+            throw new PlatformNotSupportedException("LibSecret is only supported on Linux");
+
+        return await SecretCollection.CollectionExists(_cfg.Collection, _cfg.ServiceName, cancellationToken);
+    }
+
 }

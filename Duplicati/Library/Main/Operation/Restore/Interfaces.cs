@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,6 +22,7 @@
 using System;
 using System.Buffers;
 using System.Threading;
+using Duplicati.Library.Interface;
 using Duplicati.Library.Main.Volumes;
 using Duplicati.Library.Utility;
 
@@ -29,6 +30,38 @@ using Duplicati.Library.Utility;
 
 namespace Duplicati.Library.Main.Operation.Restore
 {
+
+    /// <summary>
+    /// Helper for telling a requested shutdown apart from a genuine failure in the restore
+    /// process network.
+    /// </summary>
+    internal static class RestoreCancellation
+    {
+        /// <summary>
+        /// Returns whether the restore is winding down because it was asked to, rather than
+        /// because something failed. Covers both an abort and an orderly stop.
+        /// </summary>
+        /// <param name="taskReader">The task reader whose tokens to consult.</param>
+        /// <returns><c>true</c> if the shutdown was requested.</returns>
+        /// <remarks>
+        /// The tokens are consulted rather than the exception type. A cancellation is not
+        /// identifiable from its exception: <see cref="System.Net.Http.HttpClient"/> reports its
+        /// own request timeouts as <see cref="System.Threading.Tasks.TaskCanceledException"/>, so
+        /// keying off the type would silently reclassify real backend timeouts as a requested
+        /// shutdown. Consulting the token instead follows the existing precedent in
+        /// <c>BackendManager.Handler</c>.
+        ///
+        /// <see cref="Common.ITaskReader.StopToken"/> is consulted because a stop leaves the same
+        /// traces an abort does. It stops the restore with work outstanding, so the invariant
+        /// checks in <c>BlockManager</c> see leftovers; and a download that had already failed
+        /// once is cancelled rather than retried by <c>BackendManager</c>, which is not evidence
+        /// that the backup is broken.
+        /// </remarks>
+        public static bool IsShutdownRequested(Common.ITaskReader taskReader)
+            => taskReader.ProgressToken.IsCancellationRequested
+                || taskReader.TransferToken.IsCancellationRequested
+                || taskReader.StopToken.IsCancellationRequested;
+    }
 
     /// <summary>
     /// Represents the type of block request.
@@ -154,15 +187,16 @@ namespace Duplicati.Library.Main.Operation.Restore
     /// <param name="blockHash">The hash of the block.</param>
     /// <param name="blockSize">The size of the block.</param>
     /// <param name="volumeID">The ID of the volume in which the block is stored remotely.</param>
-    /// <param name="cacheDecrEvict">Flag indicating that this block request should either decrement the block counter for BlockID (for BlockManager) or evict the VolumeID (for VolumeDownloader).</param>
+    /// <param name="requestType">The type of request: a download, or a request to decrement the block counter for BlockID (for BlockManager) / evict the VolumeID (for VolumeDownloader).</param>
     public class BlockRequest(long blockID, long blockOffset, string blockHash, long blockSize, long volumeID, BlockRequestType requestType)
-    { // Total = 77 bytes
+    { // Total = 81 bytes
         public long BlockID { get; } = blockID;
         public long BlockOffset { get; } = blockOffset;
         public string BlockHash { get; } = blockHash;
         public long BlockSize { get; } = blockSize;
         public long VolumeID { get; } = volumeID;
         public BlockRequestType RequestType { get; set; } = requestType;
+        public DateTime TimestampMilliseconds { get; } = DateTime.Now;
     }
 
     /// <summary>
@@ -174,7 +208,11 @@ namespace Duplicati.Library.Main.Operation.Restore
     /// <param name="Hash">The file hash.</param>
     /// <param name="Length">The length of the file.</param>
     /// <param name="BlocksetID">The BlocksetID of the file.</param>
-    public class FileRequest(long ID, string OriginalPath, string TargetPath, string Hash, long Length, long BlocksetID)
+    /// <param name="IsPriorityFile">Whether this is a priority file that should be processed before other files.</param>
+    /// <param name="IsAlternateDataStream">Whether this request is for an alternate data stream that must be restored after its host file/folder.</param>
+    /// <param name="Version">The 0-based backup version index this file is being restored from (0 = newest). Defaults to 0.</param>
+    /// <param name="BackupTimestamp">The timestamp of the backup version this file is being restored from, in UTC. Defaults to <see cref="DateTime.MinValue"/>.</param>
+    public class FileRequest(long ID, string OriginalPath, string TargetPath, string Hash, long Length, long BlocksetID, bool IsPriorityFile = false, bool IsAlternateDataStream = false, long Version = 0, DateTime BackupTimestamp = default)
     {
         public long ID { get; } = ID;
         public string OriginalPath { get; } = OriginalPath;
@@ -182,6 +220,29 @@ namespace Duplicati.Library.Main.Operation.Restore
         public string Hash { get; } = Hash;
         public long Length { get; } = Length;
         public long BlocksetID { get; } = BlocksetID;
+        public bool IsPriorityFile { get; } = IsPriorityFile;
+        public bool IsAlternateDataStream { get; } = IsAlternateDataStream;
+        /// <summary>
+        /// The 0-based backup version index this file is being restored from (0 = newest).
+        /// Used to report the version to <see cref="IRestoreCallbackModule"/> modules.
+        /// </summary>
+        public long Version { get; } = Version;
+        /// <summary>
+        /// The timestamp of the backup version this file is being restored from, in UTC.
+        /// Used to report the backup timestamp to <see cref="IRestoreCallbackModule"/> modules.
+        /// </summary>
+        public DateTime BackupTimestamp { get; } = BackupTimestamp;
+
+        /// <summary>
+        /// Returns a copy of this <see cref="FileRequest"/> with the <see cref="Version"/>
+        /// and <see cref="BackupTimestamp"/> fields set to the supplied values, keeping all
+        /// other fields unchanged.
+        /// </summary>
+        /// <param name="version">The 0-based backup version index to set.</param>
+        /// <param name="backupTimestamp">The backup version timestamp (UTC) to set.</param>
+        /// <returns>A copy of this request with the version and backup timestamp updated.</returns>
+        public FileRequest WithVersion(long version, DateTime backupTimestamp)
+            => new FileRequest(ID, OriginalPath, TargetPath, Hash, Length, BlocksetID, IsPriorityFile, IsAlternateDataStream, version, backupTimestamp);
     }
 
 }

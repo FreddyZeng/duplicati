@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -38,11 +38,11 @@ namespace Duplicati.Library.Main.Operation
         public virtual async Task RunAsync()
         {
             await using var db =
-                await Database.LocalDatabase.CreateLocalDatabaseAsync(m_options.Dbpath, "Vacuum", false, null, m_result.TaskControl.ProgressToken)
+                await Database.Local.LocalDatabase.CreateLocalDatabaseAsync(m_options.Dbpath, "Vacuum", false, null, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
             m_result.OperationProgressUpdater.UpdatePhase(OperationPhase.Vacuum_Running);
             await db.Transaction.CommitAsync("Vacuum", false, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
-            await db.Vacuum(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+            await db.VacuumAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
             m_result.EndTime = DateTime.UtcNow;
         }
     }

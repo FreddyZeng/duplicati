@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -77,6 +77,19 @@ namespace Duplicati.Server.Database
 
                 this.Rule = string.Join(";", parts);
             }
+        }
+
+        public Schedule Clone()
+        {
+            return new Schedule
+            {
+                ID = this.ID,
+                Tags = this.Tags?.ToArray(),
+                Time = this.Time,
+                Repeat = this.Repeat,
+                LastRun = this.LastRun,
+                Rule = this.Rule
+            };
         }
     }
 }

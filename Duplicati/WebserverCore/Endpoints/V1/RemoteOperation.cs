@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,10 +20,9 @@
 // DEALINGS IN THE SOFTWARE.
 using Duplicati.Library.Interface;
 using Duplicati.Library.Main;
-using Duplicati.Library.Utility;
-using Duplicati.Server;
 using Duplicati.Server.Database;
 using Duplicati.WebserverCore.Abstractions;
+using Duplicati.WebserverCore.Endpoints.Shared;
 using Duplicati.WebserverCore.Exceptions;
 using Microsoft.AspNetCore.Mvc;
 using InvalidCertificateException = Duplicati.Library.Utility.SslCertificateValidator.InvalidCertificateException;
@@ -32,7 +31,7 @@ namespace Duplicati.WebserverCore.Endpoints.V1
 {
     public class RemoteOperation : IEndpointV1
     {
-        private record RemoteOperationInput(string path, string? backupId);
+        private record RemoteOperationInput(string path, string? backupId, long? connectionStringId, string? sourcePrefix);
 
         public static void Map(RouteGroupBuilder group)
         {
@@ -40,138 +39,76 @@ namespace Duplicati.WebserverCore.Endpoints.V1
                 => ExecuteDbPath(input.path))
                 .RequireAuthorization();
 
-            group.MapPost("/remoteoperation/test", ([FromServices] Connection connection, [FromServices] IApplicationSettings applicationSettings, [FromQuery] bool? autocreate, [FromBody] RemoteOperationInput input, CancellationToken cancelToken)
-                => ExecuteTest(connection, applicationSettings, input.path, input.backupId, autocreate ?? false, cancelToken))
+            group.MapPost("/remoteoperation/test", ([FromServices] Connection connection, [FromServices] IApplicationSettings applicationSettings, [FromQuery] bool? autocreate, [FromQuery] bool? readOnlyTest, [FromQuery] Dto.V2.RemoteDestinationType? type, [FromBody] RemoteOperationInput input, CancellationToken cancelToken)
+                => ExecuteTestAsync(connection, applicationSettings, input.path, input.backupId, input.connectionStringId, input.sourcePrefix, autocreate ?? false, readOnlyTest ?? false, type ?? Dto.V2.RemoteDestinationType.Backend, cancelToken))
                 .RequireAuthorization();
 
-            group.MapPost("/remoteoperation/create", ([FromServices] Connection connection, [FromBody] RemoteOperationInput input, CancellationToken cancelToken)
-                => ExecuteCreate(connection, input.path, input.backupId, cancelToken))
+            group.MapPost("/remoteoperation/create", ([FromServices] Connection connection, [FromServices] IApplicationSettings applicationSettings, [FromBody] RemoteOperationInput input, CancellationToken cancelToken)
+                => ExecuteCreateAsync(connection, applicationSettings, input.path, input.backupId, input.connectionStringId, cancelToken))
                 .RequireAuthorization();
         }
 
         private static Dto.GetDbPathDto ExecuteDbPath(string uri)
         {
-            var path = CLIDatabaseLocator.GetDatabasePathForCLI(uri, null, false, false);
+            var path = CLIDatabaseLocator.GetDatabasePathForCLI(uri, null, false, false, false);
             return new Dto.GetDbPathDto(!string.IsNullOrWhiteSpace(path), path);
         }
 
-        private static Dictionary<string, string?> ParseUrlOptions(Connection connection, Library.Utility.Uri uri)
+        private static async Task ExecuteTestAsync(Connection connection, IApplicationSettings applicationSettings, string maskedurl, string? backupId, long? connectionStringId, string? sourcePrefix, bool autoCreate, bool readOnlyTest, Dto.V2.RemoteDestinationType type, CancellationToken cancelToken)
         {
-            var qp = uri.QueryParameters;
-
-            var opts = Runner.GetCommonOptions(connection);
-            foreach (var k in qp.Keys.Cast<string>())
-                opts[k] = qp[k];
-
-            return opts;
-        }
-
-        private static IEnumerable<IGenericModule> ConfigureModules(IDictionary<string, string?> opts)
-        {
-            var modules = Library.DynamicLoader.GenericLoader.Modules.OfType<IConnectionModule>()
-                .Select(x => Library.DynamicLoader.GenericLoader.GetModule(x.Key))
-                .WhereNotNull()
-                .ToArray();
-
-            foreach (var n in modules)
-                n.Configure(opts);
-
-            return modules;
-        }
-        private record TupleDisposeWrapper(IBackend Backend, IEnumerable<IGenericModule> Modules) : IDisposable
-        {
-            public void Dispose()
-            {
-                Backend.Dispose();
-                foreach (var n in Modules)
-                    if (n is IDisposable disposable)
-                        disposable.Dispose();
-            }
-        }
-
-        private static async Task<TupleDisposeWrapper> GetBackend(Connection connection, IApplicationSettings applicationSettings, string url, CancellationToken cancelToken)
-        {
-            var uri = new Library.Utility.Uri(url);
-            var opts = ParseUrlOptions(connection, uri);
-
-            var tmp = new[] { uri };
-            await SecretProviderHelper.ApplySecretProviderAsync([], tmp, opts, Library.Utility.TempFolder.SystemTempPath, applicationSettings.SecretProvider, cancelToken);
-            url = tmp[0].ToString();
-
-            var modules = ConfigureModules(opts);
-            var backend = Library.DynamicLoader.BackendLoader.GetBackend(url, new Dictionary<string, string>());
-            return new TupleDisposeWrapper(backend, modules);
-        }
-
-        private static Exception GetInnerException<T>(Exception ex) where T : Exception
-        {
-            var original = ex;
-            while (true)
-            {
-                if (ex == null)
-                    return original;
-
-                if (ex is T)
-                    return (T)ex;
-
-                if (ex.InnerException == null)
-                    throw new ArgumentNullException(nameof(ex.InnerException));
-
-                ex = ex.InnerException;
-            }
-        }
-
-        private static string UnmaskUrl(Connection connection, string maskedurl, string? backupId)
-        {
-            var previousUrl = !string.IsNullOrWhiteSpace(backupId) ? connection.GetBackup(backupId)?.TargetURL : null;
-            var unmasked = string.IsNullOrWhiteSpace(previousUrl)
-                ? maskedurl
-                : QuerystringMasking.Unmask(maskedurl, previousUrl);
-
-            if (Connection.UrlContainsPasswordPlaceholder(unmasked))
-                throw new ArgumentException("Unmasked URL contains password placeholder");
-
-            return unmasked;
-        }
-
-        private static async Task ExecuteTest(Connection connection, IApplicationSettings applicationSettings, string maskedurl, string? backupId, bool autoCreate, CancellationToken cancelToken)
-        {
-            TupleDisposeWrapper? wrapper = null;
-
             try
             {
-                var url = UnmaskUrl(connection, maskedurl, backupId);
-                wrapper = await GetBackend(connection, applicationSettings, url, cancelToken);
-
-                using (var b = wrapper.Backend)
+                if (type == Dto.V2.RemoteDestinationType.SourceProvider)
                 {
-                    try { await b.TestAsync(cancelToken).ConfigureAwait(false); }
-                    catch (Exception ex) when (GetInnerException<FolderMissingException>(ex) is FolderMissingException)
+                    using var wrapper = await SharedRemoteOperation.GetSourceProviderForTestingAsync(connection, applicationSettings, maskedurl, null, backupId, connectionStringId ?? -1, sourcePrefix, cancelToken);
+                    using (var s = wrapper.SourceProvider)
+                        await s.TestAsync(cancelToken).ConfigureAwait(false);
+                }
+                else if (type == Dto.V2.RemoteDestinationType.RestoreDestinationProvider)
+                {
+                    using var wrapper = await SharedRemoteOperation.GetRestoreDestinationProviderForTestingAsync(connection, applicationSettings, maskedurl, null, backupId, connectionStringId ?? -1, sourcePrefix, cancelToken);
+                    using (var r = wrapper.RestoreDestinationProvider)
+                        await r.Test(cancelToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    using var wrapper = await SharedRemoteOperation.GetBackendAsync(connection, applicationSettings, maskedurl, null, backupId, connectionStringId ?? -1, cancelToken);
+                    using (var b = wrapper.Backend)
                     {
-                        if (!autoCreate)
-                            throw;
+                        try { await b.TestAsync(!readOnlyTest, cancelToken).ConfigureAwait(false); }
+                        catch (Exception ex) when (SharedRemoteOperation.GetInnerException<FolderMissingException>(ex) is FolderMissingException)
+                        {
+                            if (!autoCreate || readOnlyTest)
+                                throw;
 
-                        await b.CreateFolderAsync(cancelToken).ConfigureAwait(false);
-                        await b.TestAsync(cancelToken).ConfigureAwait(false);
+                            try
+                            {
+                                await b.CreateFolderAsync(cancelToken).ConfigureAwait(false);
+                            }
+                            catch (FolderAreadyExistedException)
+                            {
+                                // The folder is already there, which is the desired outcome
+                            }
+
+                            await b.TestAsync(!readOnlyTest, cancelToken).ConfigureAwait(false);
+                        }
                     }
-
-                    return;
                 }
             }
-            catch (Exception ex) when (GetInnerException<FolderMissingException>(ex) is FolderMissingException)
+            catch (Exception ex) when (SharedRemoteOperation.GetInnerException<FolderMissingException>(ex) is FolderMissingException)
             {
                 if (autoCreate)
                     throw new ServerErrorException("error-creating-folder");
                 throw new ServerErrorException("missing-folder");
             }
-            catch (Exception ex) when (GetInnerException<InvalidCertificateException>(ex) is InvalidCertificateException icex)
+            catch (Exception ex) when (SharedRemoteOperation.GetInnerException<InvalidCertificateException>(ex) is InvalidCertificateException icex)
             {
                 if (string.IsNullOrWhiteSpace(icex.Certificate))
                     throw new ServerErrorException(icex.Message);
                 else
                     throw new ServerErrorException("incorrect-cert:" + icex.Certificate);
             }
-            catch (Exception ex) when (GetInnerException<Library.Utility.HostKeyException>(ex) is Library.Utility.HostKeyException hex)
+            catch (Exception ex) when (SharedRemoteOperation.GetInnerException<Library.Utility.HostKeyException>(ex) is Library.Utility.HostKeyException hex)
             {
                 if (string.IsNullOrWhiteSpace(hex.ReportedHostKey))
                     throw new ServerErrorException(hex.Message);
@@ -188,19 +125,15 @@ namespace Duplicati.WebserverCore.Endpoints.V1
             {
                 throw new ServerErrorException(ex.Message);
             }
-            finally
-            {
-                wrapper?.Dispose();
-            }
         }
 
 
-        private static async Task ExecuteCreate(Connection connection, string maskedurl, string? backupId, CancellationToken cancelToken)
+        private static async Task ExecuteCreateAsync(Connection connection, IApplicationSettings applicationSettings, string maskedurl, string? backupId, long? connectionStringId, CancellationToken cancelToken)
         {
             try
             {
-                var url = UnmaskUrl(connection, maskedurl, backupId);
-                using (var b = Duplicati.Library.DynamicLoader.BackendLoader.GetBackend(url, new Dictionary<string, string>()))
+                using var wrapper = await SharedRemoteOperation.GetBackendAsync(connection, applicationSettings, maskedurl, null, backupId, connectionStringId ?? -1, cancelToken);
+                using (var b = wrapper.Backend)
                     await b.CreateFolderAsync(cancelToken).ConfigureAwait(false);
             }
             catch (UserInformationException uex)

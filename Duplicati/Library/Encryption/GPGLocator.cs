@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -28,12 +28,6 @@ namespace Duplicati.Library.Encryption
 {
     public static class GPGLocator
     {
-        public static IEnumerable<string> GetGpgExecutableNames()
-            => [
-                OperatingSystem.IsWindows() ? "gpg2.exe" : "gpg2",
-                OperatingSystem.IsWindows() ? "gpg.exe" : "gpg",
-            ];
-
         public static string GetGpgExecutablePath()
         {
             var searchPaths = new List<string>();

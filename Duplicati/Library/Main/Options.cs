@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -29,11 +29,10 @@ using Duplicati.Library.Utility;
 using System.Globalization;
 using System.Threading;
 using Duplicati.Library.Utility.Options;
-using Duplicati.Library.SQLiteHelper;
 using System.Diagnostics.CodeAnalysis;
 using Duplicati.Library.Snapshots;
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Duplicati.Library.Snapshots.MacOS;
 
 namespace Duplicati.Library.Main
 {
@@ -125,6 +124,11 @@ namespace Duplicati.Library.Main
         private static readonly OptimizationStrategy DEFAULT_BACKUPREAD_POLICY = OptimizationStrategy.Off;
 
         /// <summary>
+        /// The default MacOS photos handling strategy
+        /// </summary>
+        private static readonly MacOSPhotosHandling DEFAULT_MACOS_PHOTOS_HANDLING = MacOSPhotosHandling.PhotosAndLibrary;
+
+        /// <summary>
         /// The default number of compressor instances
         /// </summary>
         private static readonly int DEFAULT_COMPRESSORS = Math.Max(1, Environment.ProcessorCount / 2);
@@ -157,32 +161,42 @@ namespace Duplicati.Library.Main
         /// <summary>
         /// The default value for the number of file processors during restore
         /// </summary>
-        private static readonly int DEFAULT_RESTORE_FILE_PROCESSORS = Math.Max(1, Environment.ProcessorCount / 2);
+        public static readonly int DEFAULT_RESTORE_FILE_PROCESSORS = Math.Max(1, Environment.ProcessorCount / 2);
 
         /// <summary>
-        /// The default value for the maximum size of the restore volume cache is 100 times the volume size. E.g. for 50MB volumes, the default cache size is 5GB.
+        /// The default value for the restore volume cache hint. When empty, the cache is unlimited (disk-space-aware eviction via <see cref="RestoreVolumeCacheMinFree"/>).
         /// </summary>
         private const string DEFAULT_RESTORE_VOLUME_CACHE_HINT = "";
 
         /// <summary>
+        /// The default minimum free disk space to maintain in the temp directory during restore (1 GB).
+        /// </summary>
+        private const string DEFAULT_RESTORE_VOLUME_CACHE_MIN_FREE = "1gb";
+
+        /// <summary>
         /// The default value for the number of volume decryptors during restore
         /// </summary>
-        private static readonly int DEFAULT_RESTORE_VOLUME_DECRYPTORS = Math.Max(1, Environment.ProcessorCount / 2);
+        public static readonly int DEFAULT_RESTORE_VOLUME_DECRYPTORS = Math.Max(1, Environment.ProcessorCount / 2);
 
         /// <summary>
         /// The default value for the number of volume decompressors during restore
         /// </summary>
-        private static readonly int DEFAULT_RESTORE_VOLUME_DECOMPRESSORS = Math.Max(1, Environment.ProcessorCount / 2);
+        public static readonly int DEFAULT_RESTORE_VOLUME_DECOMPRESSORS = Math.Max(1, Environment.ProcessorCount / 2);
 
         /// <summary>
         /// The default value for the number of volume downloaders during restore
         /// </summary>
-        private static readonly int DEFAULT_RESTORE_VOLUME_DOWNLOADERS = Math.Max(1, Environment.ProcessorCount / 2);
+        public static readonly int DEFAULT_RESTORE_VOLUME_DOWNLOADERS = Math.Max(1, Environment.ProcessorCount / 2);
 
         /// <summary>
         /// The default value for the size of the channel buffers during restore
         /// </summary>
-        private static readonly int DEFAULT_RESTORE_CHANNEL_BUFFER_SIZE = Environment.ProcessorCount;
+        public static readonly int DEFAULT_RESTORE_CHANNEL_BUFFER_SIZE = Environment.ProcessorCount;
+
+        /// <summary>
+        /// The default value for the long database query threshold
+        /// </summary>
+        private const string DEFAULT_LONG_DATABASE_QUERY_THRESHOLD = "30m";
 
         /// <summary>
         /// An enumeration that describes the supported strategies for an optimization
@@ -318,7 +332,7 @@ namespace Duplicati.Library.Main
 
         public Options(Dictionary<string, string?> options)
         {
-            m_options = options;
+            m_options = new Dictionary<string, string?>(options);
         }
 
         public Dictionary<string, string?> RawOptions => m_options;
@@ -352,20 +366,41 @@ namespace Duplicati.Library.Main
         private IEnumerable<ICommandLineArgument> GetOSConditionalCommands()
         {
             var items = new List<ICommandLineArgument>();
-            if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
+            if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
                 yield return new CommandLineArgument("snapshot-policy", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.SnapshotpolicyShort, Strings.Options.SnapshotpolicyLong, DEFAULT_SNAPSHOT_POLICY.ToString(), null, Enum.GetNames(typeof(OptimizationStrategy)));
 
             if (OperatingSystem.IsWindows())
             {
-                yield return new CommandLineArgument("snapshot-provider", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.SnapshotproviderShort, Strings.Options.SnapshotproviderLong, WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_PROVIDER.ToString(), null, Enum.GetNames(typeof(Snapshots.WindowsSnapshotProvider)));
+                yield return new CommandLineArgument("snapshot-provider", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.SnapshotproviderShort, Strings.Options.SnapshotproviderLong, WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_PROVIDER.ToString(), null, WindowsSnapshot.SUPPORTED_PROVIDERS.Select(x => x.ToString()).ToArray());
                 yield return new CommandLineArgument("vss-exclude-writers", CommandLineArgument.ArgumentType.String, Strings.Options.VssexcludewritersShort, Strings.Options.VssexcludewritersLong, "{e8132975-6f93-4464-a53e-1050253ae220}");
                 yield return new CommandLineArgument("vss-use-mapping", CommandLineArgument.ArgumentType.Boolean, Strings.Options.VssusemappingShort, Strings.Options.VssusemappingLong, "false");
+                yield return new CommandLineArgument("vss-timeout", CommandLineArgument.ArgumentType.Timespan, Strings.Options.VsstimeoutShort, Strings.Options.VsstimeoutLong, Snapshots.Windows.SnapshotManager.DefaultMaxWaitTime);
                 yield return new CommandLineArgument("usn-policy", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.UsnpolicyShort, Strings.Options.UsnpolicyLong, "off", null, Enum.GetNames(typeof(OptimizationStrategy)));
                 yield return new CommandLineArgument("backupread-policy", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.BackupreadpolicyShort, Strings.Options.BackupreadpolicyLong, DEFAULT_BACKUPREAD_POLICY.ToString(), null, Enum.GetNames(typeof(OptimizationStrategy)));
+                yield return new CommandLineArgument("exclude-non-local-files", CommandLineArgument.ArgumentType.Boolean, Strings.Options.ExcludenonlocalfilesShort, Strings.Options.ExcludenonlocalfilesLong, "false");
+                yield return new CommandLineArgument("enable-ads-backup", CommandLineArgument.ArgumentType.Boolean, Strings.Options.EnableAdsBackupShort, Strings.Options.EnableAdsBackupLong, "false");
+                yield return new CommandLineArgument("disable-ads-restore", CommandLineArgument.ArgumentType.Boolean, Strings.Options.DisableAdsRestoreShort, Strings.Options.DisableAdsRestoreLong, "false");
             }
 
             if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
                 yield return new CommandLineArgument("ignore-advisory-locking", CommandLineArgument.ArgumentType.Boolean, Strings.Options.IgnoreadvisorylockingShort, Strings.Options.IgnoreadvisorylockingLong, "false");
+
+            if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
+                yield return new CommandLineArgument("disable-backup-exclusion-xattr", CommandLineArgument.ArgumentType.Boolean, Strings.Options.DisablebackupexclusionxattrShort, Strings.Options.DisablebackupexclusionxattrLong, "false");
+
+            if (OperatingSystem.IsMacOS())
+            {
+                yield return new CommandLineArgument("photos-handling", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.DisablephotohandlingShort, Strings.Options.DisablephotohandlingLong, DEFAULT_MACOS_PHOTOS_HANDLING.ToString(), null, Enum.GetNames(typeof(MacOSPhotosHandling)));
+                yield return new CommandLineArgument("photos-library-path", CommandLineArgument.ArgumentType.Path, Strings.Options.MacosphotoslibrarypathShort, Strings.Options.MacosphotoslibrarypathLong);
+            }
+        }
+
+        private IEnumerable<ICommandLineArgument> GetDebugConditionalCommands()
+        {
+#if DEBUG
+            yield return new CommandLineArgument("unittest-mode", CommandLineArgument.ArgumentType.Boolean, Strings.Options.UnittestmodeShort, Strings.Options.UnittestmodeLong, "false");
+#endif
+            yield break;
         }
 
         /// <summary>
@@ -373,9 +408,8 @@ namespace Duplicati.Library.Main
         /// </summary>
         public IList<ICommandLineArgument> SupportedCommands =>
         [
-            new CommandLineArgument("dblock-size", CommandLineArgument.ArgumentType.Size, Strings.Options.DblocksizeShort, Strings.Options.DblocksizeLong, DEFAULT_VOLUME_SIZE),
+            new CommandLineArgument("dblock-size", CommandLineArgument.ArgumentType.Size, Strings.Options.DblocksizeShort, Strings.Options.DblocksizeLong, DEFAULT_VOLUME_SIZE, ["remote-volume-size"]),
             new CommandLineArgument("auto-cleanup", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AutocleanupShort, Strings.Options.AutocleanupLong, "false"),
-            new CommandLineArgument("unittest-mode", CommandLineArgument.ArgumentType.Boolean, Strings.Options.UnittestmodeShort, Strings.Options.UnittestmodeLong, "false"),
 
             new CommandLineArgument("control-files", CommandLineArgument.ArgumentType.Path, Strings.Options.ControlfilesShort, Strings.Options.ControlfilesLong),
             new CommandLineArgument("skip-file-hash-checks", CommandLineArgument.ArgumentType.Boolean, Strings.Options.SkipfilehashchecksShort, Strings.Options.SkipfilehashchecksLong, "false"),
@@ -383,12 +417,16 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("restore-path", CommandLineArgument.ArgumentType.String, Strings.Options.RestorepathShort, Strings.Options.RestorepathLong),
             new CommandLineArgument("time", CommandLineArgument.ArgumentType.DateTime, Strings.Options.TimeShort, Strings.Options.TimeLong, "now"),
             new CommandLineArgument("version", CommandLineArgument.ArgumentType.String, Strings.Options.VersionShort, Strings.Options.VersionLong, ""),
+            new CommandLineArgument("version-name", CommandLineArgument.ArgumentType.String, Strings.Options.VersionnameShort, Strings.Options.VersionnameLong, ""),
             new CommandLineArgument("all-versions", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AllversionsShort, Strings.Options.AllversionsLong, "false"),
             new CommandLineArgument("list-prefix-only", CommandLineArgument.ArgumentType.Boolean, Strings.Options.ListprefixonlyShort, Strings.Options.ListprefixonlyLong, "false"),
+            new CommandLineArgument("soft-delete-prefix", CommandLineArgument.ArgumentType.String, Strings.Options.SoftdeleteprefixShort, Strings.Options.SoftdeleteprefixLong),
+            new CommandLineArgument("prevent-backend-rename", CommandLineArgument.ArgumentType.Boolean, Strings.Options.PreventbackendrenameShort, Strings.Options.PreventbackendrenameLong, "false"),
             new CommandLineArgument("list-folder-contents", CommandLineArgument.ArgumentType.Boolean, Strings.Options.ListfoldercontentsShort, Strings.Options.ListfoldercontentsLong, "false"),
             new CommandLineArgument("list-sets-only", CommandLineArgument.ArgumentType.Boolean, Strings.Options.ListsetsonlyShort, Strings.Options.ListsetsonlyLong, "false"),
             new CommandLineArgument("disable-autocreate-folder", CommandLineArgument.ArgumentType.Boolean, Strings.Options.DisableautocreatefolderShort, Strings.Options.DisableautocreatefolderLong, "false"),
             new CommandLineArgument("allow-missing-source", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AllowmissingsourceShort, Strings.Options.AllowmissingsourceLong, "false"),
+            new CommandLineArgument("abort-if-source-missing", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AbortifsourcemissingShort, Strings.Options.AbortifsourcemissingLong, "false"),
             new CommandLineArgument("prevent-empty-source", CommandLineArgument.ArgumentType.Boolean, Strings.Options.PreventemptysourceShort, Strings.Options.PreventemptysourceLong, "false"),
 
             new CommandLineArgument("disable-filetime-check", CommandLineArgument.ArgumentType.Boolean, Strings.Options.DisablefiletimecheckShort, Strings.Options.DisablefiletimecheckLong, "false"),
@@ -401,13 +439,14 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("prefix", CommandLineArgument.ArgumentType.String, Strings.Options.PrefixShort, Strings.Options.PrefixLong, "duplicati"),
 
             new CommandLineArgument("passphrase", CommandLineArgument.ArgumentType.Password, Strings.Options.PassphraseShort, Strings.Options.PassphraseLong),
+            new CommandLineArgument("new-passphrase", CommandLineArgument.ArgumentType.Password, Strings.Options.PassphraseShort, Strings.Options.PassphraseLong),
             new CommandLineArgument("no-encryption", CommandLineArgument.ArgumentType.Boolean, Strings.Options.NoencryptionShort, Strings.Options.NoencryptionLong, "false"),
 
             new CommandLineArgument("number-of-retries", CommandLineArgument.ArgumentType.Integer, Strings.Options.NumberofretriesShort, Strings.Options.NumberofretriesLong, DEFAULT_NUMBER_OF_RETRIES.ToString()),
             new CommandLineArgument("retry-delay", CommandLineArgument.ArgumentType.Timespan, Strings.Options.RetrydelayShort, Strings.Options.RetrydelayLong, DEFAULT_RETRY_DELAY),
             new CommandLineArgument("retry-with-exponential-backoff", CommandLineArgument.ArgumentType.Boolean, Strings.Options.RetrywithexponentialbackoffShort, Strings.Options.RetrywithexponentialbackoffLong, "false"),
 
-            new CommandLineArgument("synchronous-upload", CommandLineArgument.ArgumentType.Boolean, Strings.Options.SynchronousuploadShort, Strings.Options.SynchronousuploadLong, "false"),
+            new CommandLineArgument("synchronous-upload", CommandLineArgument.ArgumentType.Boolean, Strings.Options.SynchronousuploadShort, Strings.Options.SynchronousuploadLong, "false", null, null, Strings.Options.SynchronousuploadDeprecated("asynchronous-upload-limit")),
             new CommandLineArgument("asynchronous-upload-limit", CommandLineArgument.ArgumentType.Integer, Strings.Options.AsynchronousconcurrentuploadlimitShort, Strings.Options.AsynchronousconcurrentuploadlimitLong, DEFAULT_ASYNCHRONOUS_UPLOAD_LIMIT.ToString(), ["asynchronous-concurrent-upload-limit"]),
             new CommandLineArgument("asynchronous-upload-folder", CommandLineArgument.ArgumentType.Path, Strings.Options.AsynchronousuploadfolderShort, Strings.Options.AsynchronousuploadfolderLong, System.IO.Path.GetTempPath()),
 
@@ -423,6 +462,7 @@ namespace Duplicati.Library.Main
 
             new CommandLineArgument("encryption-module", CommandLineArgument.ArgumentType.String, Strings.Options.EncryptionmoduleShort, Strings.Options.EncryptionmoduleLong, "aes"),
             new CommandLineArgument("compression-module", CommandLineArgument.ArgumentType.String, Strings.Options.CompressionmoduleShort, Strings.Options.CompressionmoduleLong, "zip"),
+            new CommandLineArgument("parity-module", CommandLineArgument.ArgumentType.String, Strings.Options.ParitymoduleShort, Strings.Options.ParitymoduleLong, ""),
 
             new CommandLineArgument("enable-module", CommandLineArgument.ArgumentType.String, Strings.Options.EnablemoduleShort, Strings.Options.EnablemoduleLong),
             new CommandLineArgument("disable-module", CommandLineArgument.ArgumentType.String, Strings.Options.DisablemoduleShort, Strings.Options.DisablemoduleLong),
@@ -446,6 +486,8 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("log-socket-data", CommandLineArgument.ArgumentType.Integer, Strings.Options.LogsocketdataShort, Strings.Options.LogsocketdataLong, "-1"),
 
             new CommandLineArgument("profile-all-database-queries", CommandLineArgument.ArgumentType.Boolean, Strings.Options.ProfilealldatabasequeriesShort, Strings.Options.ProfilealldatabasequeriesLong, "false"),
+            new CommandLineArgument("long-database-query-threshold", CommandLineArgument.ArgumentType.Timespan, Strings.Options.LongdatabasequerythresholdShort, Strings.Options.LongdatabasequerythresholdLong, DEFAULT_LONG_DATABASE_QUERY_THRESHOLD),
+            new CommandLineArgument("store-metadata-content-in-database", CommandLineArgument.ArgumentType.Boolean, Strings.Options.StoremetadatacontentindatabaseShort, Strings.Options.StoremetadatacontentindatabaseLong, "false"),
 
             new CommandLineArgument("list-verify-uploads", CommandLineArgument.ArgumentType.Boolean, Strings.Options.ListverifyuploadsShort, Strings.Options.ListverifyuploadsLong, "false"),
             new CommandLineArgument("allow-sleep", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AllowsleepShort, Strings.Options.AllowsleepLong, "false"),
@@ -458,17 +500,17 @@ namespace Duplicati.Library.Main
 
             new CommandLineArgument("symlink-policy", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.SymlinkpolicyShort, Strings.Options.SymlinkpolicyLong("store", "ignore", "follow"), Enum.GetName(typeof(SymlinkStrategy), SymlinkStrategy.Store), null, Enum.GetNames(typeof(SymlinkStrategy))),
             new CommandLineArgument("hardlink-policy", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.HardlinkpolicyShort, Strings.Options.HardlinkpolicyLong("first", "all", "none"), Enum.GetName(typeof(HardlinkStrategy), HardlinkStrategy.All), null, Enum.GetNames(typeof(HardlinkStrategy))),
-            new CommandLineArgument("exclude-files-attributes", CommandLineArgument.ArgumentType.String, Strings.Options.ExcludefilesattributesShort, Strings.Options.ExcludefilesattributesLong(Enum.GetNames(typeof(System.IO.FileAttributes)))),
+            new CommandLineArgument("exclude-files-attributes", CommandLineArgument.ArgumentType.Flags, Strings.Options.ExcludefilesattributesShort, Strings.Options.ExcludefilesattributesLong, null, null, Common.IO.ExtendedFileAttributes.GetNames(false).ToArray()),
             new CommandLineArgument("compression-extension-file", CommandLineArgument.ArgumentType.Path, Strings.Options.CompressionextensionfileShort, Strings.Options.CompressionextensionfileLong(DEFAULT_COMPRESSED_EXTENSION_FILE), DEFAULT_COMPRESSED_EXTENSION_FILE),
 
-            new CommandLineArgument("machine-id", CommandLineArgument.ArgumentType.String, Strings.Options.MachineidShort, Strings.Options.MachineidLong, Library.AutoUpdater.DataFolderManager.InstallID),
+            new CommandLineArgument("machine-id", CommandLineArgument.ArgumentType.String, Strings.Options.MachineidShort, Strings.Options.MachineidLong, Library.AutoUpdater.DataFolderManager.GetMachineID(probeOnly: true)),
             new CommandLineArgument("machine-name", CommandLineArgument.ArgumentType.String, Strings.Options.MachinenameShort, Strings.Options.MachinenameLong, Library.AutoUpdater.DataFolderManager.MachineName),
             new CommandLineArgument("backup-id", CommandLineArgument.ArgumentType.String, Strings.Options.BackupidShort, Strings.Options.BackupidLong, ""),
             new CommandLineArgument("backup-name", CommandLineArgument.ArgumentType.String, Strings.Options.BackupnameShort, Strings.Options.BackupnameLong, DefaultBackupName),
             new CommandLineArgument("next-scheduled-run", CommandLineArgument.ArgumentType.String, Strings.Options.NextscheduledrunShort, Strings.Options.NextscheduledrunLong),
 
             new CommandLineArgument("verbose", CommandLineArgument.ArgumentType.Boolean, Strings.Options.VerboseShort, Strings.Options.VerboseLong, "false", null, null, Strings.Options.VerboseDeprecated),
-            new CommandLineArgument("full-result", CommandLineArgument.ArgumentType.Boolean, Strings.Options.FullresultShort, Strings.Options.FullresultLong, "false"),
+            new CommandLineArgument("full-result", CommandLineArgument.ArgumentType.Boolean, Strings.Options.FullresultShort, Strings.Options.FullresultLong, "false", new string[] { "full-results" }),
 
             new CommandLineArgument("overwrite", CommandLineArgument.ArgumentType.Boolean, Strings.Options.OverwriteShort, Strings.Options.OverwriteLong, "false"),
 
@@ -486,6 +528,7 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("threshold", CommandLineArgument.ArgumentType.Integer, Strings.Options.ThresholdShort, Strings.Options.ThresholdLong, DEFAULT_THRESHOLD.ToString()),
             new CommandLineArgument("index-file-policy", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.IndexfilepolicyShort, Strings.Options.IndexfilepolicyLong, IndexFileStrategy.Full.ToString(), null, Enum.GetNames(typeof(IndexFileStrategy))),
             new CommandLineArgument("no-backend-verification", CommandLineArgument.ArgumentType.Boolean, Strings.Options.NobackendverificationShort, Strings.Options.NobackendverificationLong, "false"),
+            new CommandLineArgument("case-insensitive-remote", CommandLineArgument.ArgumentType.Boolean, Strings.Options.CaseinsensitiveremoteShort, Strings.Options.CaseinsensitiveremoteLong, "false"),
             new CommandLineArgument("backup-test-samples", CommandLineArgument.ArgumentType.Integer, Strings.Options.BackendtestsamplesShort, Strings.Options.BackendtestsamplesLong("no-backend-verification"), DEFAULT_BACKUP_TEST_SAMPLES.ToString()),
             new CommandLineArgument("backup-test-percentage", CommandLineArgument.ArgumentType.Decimal, Strings.Options.BackendtestpercentageShort, Strings.Options.BackendtestpercentageLong, "0.1"),
             new CommandLineArgument("full-remote-verification", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.FullremoteverificationShort, Strings.Options.FullremoteverificationLong("no-backend-verification"), Enum.GetName(typeof(RemoteTestStrategy), RemoteTestStrategy.False), null, Enum.GetNames(typeof(RemoteTestStrategy))),
@@ -503,9 +546,11 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("patch-with-local-blocks", CommandLineArgument.ArgumentType.Boolean, Strings.Options.PatchwithlocalblocksShort, Strings.Options.PatchwithlocalblocksLong, "false", null, null, Strings.Options.PatchwithlocalblocksDeprecated("restore-with-local-blocks")),
             new CommandLineArgument("no-local-db", CommandLineArgument.ArgumentType.Boolean, Strings.Options.NolocaldbShort, Strings.Options.NolocaldbLong, "false"),
             new CommandLineArgument("dont-compress-restore-paths", CommandLineArgument.ArgumentType.Boolean, Strings.Options.DontcompressrestorepathsShort, Strings.Options.DontcompressrestorepathsLong, "false"),
+            new CommandLineArgument("allow-restore-outside-target-directory", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AllowRestoreOutsideTargetDirectoryShort, Strings.Options.AllowRestoreOutsideTargetDirectoryLong, "false"),
 
             new CommandLineArgument("keep-versions", CommandLineArgument.ArgumentType.Integer, Strings.Options.KeepversionsShort, Strings.Options.KeepversionsLong, DEFAULT_KEEP_VERSIONS.ToString()),
             new CommandLineArgument("keep-time", CommandLineArgument.ArgumentType.Timespan, Strings.Options.KeeptimeShort, Strings.Options.KeeptimeLong),
+            new CommandLineArgument("remote-file-lock-duration", CommandLineArgument.ArgumentType.Timespan, Strings.Options.RemotefilelockdurationShort, Strings.Options.RemotefilelockdurationLong),
             new CommandLineArgument("retention-policy", CommandLineArgument.ArgumentType.String, Strings.Options.RetentionPolicyShort, Strings.Options.RetentionPolicyLong),
             new CommandLineArgument("upload-verification-file", CommandLineArgument.ArgumentType.Boolean, Strings.Options.UploadverificationfileShort, Strings.Options.UploadverificationfileLong, "false"),
             new CommandLineArgument("allow-passphrase-change", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AllowpassphrasechangeShort, Strings.Options.AllowpassphrasechangeLong, "false"),
@@ -538,6 +583,9 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("rebuild-missing-dblock-files", CommandLineArgument.ArgumentType.Boolean, Strings.Options.RebuildmissingdblockfilesShort, Strings.Options.RebuildmissingdblockfilesLong, "false"),
             new CommandLineArgument("disable-partial-dblock-recovery", CommandLineArgument.ArgumentType.Boolean, Strings.Options.DisablePartialDblockRecoveryShort, Strings.Options.DisablePartialDblockRecoveryLong, "false"),
             new CommandLineArgument("disable-replace-missing-metadata", CommandLineArgument.ArgumentType.Boolean, Strings.Options.DisableReplaceMissingMetadataShort, Strings.Options.DisableReplaceMissingMetadataLong, "false"),
+            new CommandLineArgument("reduced-purge-statistics", CommandLineArgument.ArgumentType.Boolean, Strings.Options.ReducedPurgeStatisticsShort, Strings.Options.ReducedPurgeStatisticsLong, "false"),
+            new CommandLineArgument("repair-refresh-lock-info", CommandLineArgument.ArgumentType.Boolean, Strings.Options.RepairRefreshLockInfoShort, Strings.Options.RepairRefreshLockInfoLong, "false"),
+            new CommandLineArgument("refresh-lock-info-complete", CommandLineArgument.ArgumentType.Boolean, Strings.Options.RefreshLockInfoCompleteShort, Strings.Options.RefreshLockInfoCompleteLong, "false"),
 
             new CommandLineArgument("auto-compact-interval", CommandLineArgument.ArgumentType.Timespan, Strings.Options.AutoCompactIntervalShort, Strings.Options.AutoCompactIntervalLong, "0m"),
             new CommandLineArgument("auto-vacuum-interval", CommandLineArgument.ArgumentType.Timespan, Strings.Options.AutoVacuumIntervalShort, Strings.Options.AutoVacuumIntervalLong, "0m"),
@@ -547,12 +595,16 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("secret-provider-cache", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.SecretProviderCacheShort, Strings.Options.SecretProviderCacheLong, Enum.GetName(SecretProviderHelper.CachingLevel.None), null, Enum.GetNames(typeof(SecretProviderHelper.CachingLevel))),
             new CommandLineArgument("cpu-intensity", CommandLineArgument.ArgumentType.Integer, Strings.Options.CPUIntensityShort, Strings.Options.CPUIntensityLong, "10", null, ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]),
 
+            new CommandLineArgument("remote-sync-json-config", CommandLineArgument.ArgumentType.String, Strings.Options.RemoteSyncJsonConfigShort, Strings.Options.RemoteSyncJsonConfigLong),
+
             new CommandLineArgument("restore-cache-max", CommandLineArgument.ArgumentType.Size, Strings.Options.RestoreCacheMaxShort, Strings.Options.RestoreCacheMaxLong, DEFAULT_RESTORE_CACHE_MAX),
             new CommandLineArgument("restore-cache-evict", CommandLineArgument.ArgumentType.Integer, Strings.Options.RestoreCacheEvictShort, Strings.Options.RestoreCacheEvictLong, DEFAULT_RESTORE_CACHE_EVICT.ToString()),
             new CommandLineArgument("restore-file-processors", CommandLineArgument.ArgumentType.Integer, Strings.Options.RestoreFileprocessorsShort, Strings.Options.RestoreFileprocessorsLong, DEFAULT_RESTORE_FILE_PROCESSORS.ToString()),
+            new CommandLineArgument("restore-all-files", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.RestoreAllFilesShort, Strings.Options.RestoreAllFilesLong("restore-path"), nameof(RestoreAllFilesMode.False), null, Enum.GetNames(typeof(RestoreAllFilesMode))),
             new CommandLineArgument("restore-legacy", CommandLineArgument.ArgumentType.Boolean, Strings.Options.RestoreLegacyShort, Strings.Options.RestoreLegacyLong, "false"),
             new CommandLineArgument("restore-preallocate-size", CommandLineArgument.ArgumentType.Boolean, Strings.Options.RestorePreallocateSizeShort, Strings.Options.RestorePreallocateSizeLong, "false"),
             new CommandLineArgument("restore-volume-cache-hint", CommandLineArgument.ArgumentType.Size, Strings.Options.RestoreVolumeCacheHintShort, Strings.Options.RestoreVolumeCacheHintLong, DEFAULT_RESTORE_VOLUME_CACHE_HINT),
+            new CommandLineArgument("restore-volume-cache-min-free", CommandLineArgument.ArgumentType.Size, Strings.Options.RestoreVolumeCacheMinFreeShort, Strings.Options.RestoreVolumeCacheMinFreeLong, DEFAULT_RESTORE_VOLUME_CACHE_MIN_FREE),
             new CommandLineArgument("restore-volume-decompressors", CommandLineArgument.ArgumentType.Integer, Strings.Options.RestoreVolumeDecompressorsShort, Strings.Options.RestoreVolumeDecompressorsLong, DEFAULT_RESTORE_VOLUME_DECOMPRESSORS.ToString()),
             new CommandLineArgument("restore-volume-decryptors", CommandLineArgument.ArgumentType.Integer, Strings.Options.RestoreVolumeDecryptorsShort, Strings.Options.RestoreVolumeDecryptorsLong, DEFAULT_RESTORE_VOLUME_DECRYPTORS.ToString()),
             new CommandLineArgument("restore-volume-downloaders", CommandLineArgument.ArgumentType.Integer, Strings.Options.RestoreVolumeDownloadersShort, Strings.Options.RestoreVolumeDownloadersLong, DEFAULT_RESTORE_VOLUME_DOWNLOADERS.ToString()),
@@ -560,7 +612,15 @@ namespace Duplicati.Library.Main
             new CommandLineArgument("internal-profiling", CommandLineArgument.ArgumentType.Boolean, Strings.Options.InternalProfilingShort, Strings.Options.InternalProfilingLong, "false"),
             new CommandLineArgument("ignore-update-if-version-exists", CommandLineArgument.ArgumentType.Boolean, Strings.Options.IgnoreUpdateIfVersionExistsShort, Strings.Options.IgnoreUpdateIfVersionExistsLong, "false"),
 
-            .. GetOSConditionalCommands()
+            new CommandLineArgument("allow-paths-in-log-messages", CommandLineArgument.ArgumentType.Boolean, Strings.Options.AllowPathsInLogMessagesShort, Strings.Options.AllowPathsInLogMessagesLong, "false"),
+
+            new CommandLineArgument("sync-recheck", CommandLineArgument.ArgumentType.Boolean, Strings.Options.SyncRecheckShort, Strings.Options.SyncRecheckLong, "false"),
+            new CommandLineArgument("sync-then-delete", CommandLineArgument.ArgumentType.Boolean, Strings.Options.SyncThenDeleteShort, Strings.Options.SyncThenDeleteLong, "false"),
+            new CommandLineArgument("sync-verify-hash", CommandLineArgument.ArgumentType.Boolean, Strings.Options.SyncVerifyHashShort, Strings.Options.SyncVerifyHashLong, "false"),
+            new CommandLineArgument("sync-remote-state", CommandLineArgument.ArgumentType.Enumeration, Strings.Options.SyncRemoteStateShort, Strings.Options.SyncRemoteStateLong, Enum.GetName(typeof(SyncRemoteState), SyncRemoteState.UseRemoteState), null, Enum.GetNames(typeof(SyncRemoteState))),
+
+            .. GetOSConditionalCommands(),
+            .. GetDebugConditionalCommands(),
         ];
 
         /// <summary>
@@ -685,6 +745,11 @@ namespace Duplicati.Library.Main
         public bool AllVersions => GetBool("all-versions");
 
         /// <summary>
+        /// Gets the label to assign to the backup version, or null if no label is set
+        /// </summary>
+        public string? VersionName => GetString("version-name", null);
+
+        /// <summary>
         /// A value indicating if only the largest common prefix is returned
         /// </summary>
         public bool ListPrefixOnly => GetBool("list-prefix-only");
@@ -705,7 +770,7 @@ namespace Duplicati.Library.Main
         public bool DisableFiletimeCheck => GetBool("disable-filetime-check");
 
         /// <summary>
-        /// A value indicating if file time checks are skipped
+        /// A value indicating if only the file timestamp is checked (ignoring metadata and file size) when deciding to scan a file
         /// </summary>
         public bool CheckFiletimeOnly => GetBool("check-filetime-only");
 
@@ -789,6 +854,22 @@ namespace Duplicati.Library.Main
         }
 
         /// <summary>
+        /// Gets the configured object lock duration for uploaded files, if specified
+        /// </summary>
+        public TimeSpan? RemoteFileLockDuration
+        {
+            get
+            {
+                m_options.TryGetValue("remote-file-lock-duration", out var value);
+
+                if (string.IsNullOrWhiteSpace(value))
+                    return null;
+
+                return Library.Utility.Timeparser.ParseTimeSpan(value);
+            }
+        }
+
+        /// <summary>
         /// Gets the time frames and intervals for the retention policy
         /// </summary>
         public List<RetentionPolicyValue> RetentionPolicy
@@ -816,6 +897,11 @@ namespace Duplicati.Library.Main
         public string? Passphrase => GetString("passphrase", null);
 
         /// <summary>
+        /// Gets the new encryption passphrase
+        /// </summary>
+        public string? NewPassphrase => GetString("new-passphrase", null);
+
+        /// <summary>
         /// A value indicating if backups are not encrypted
         /// </summary>
         public bool NoEncryption => GetBool("no-encryption");
@@ -831,14 +917,22 @@ namespace Duplicati.Library.Main
         public string CompressionModule => GetString("compression-module", "zip");
 
         /// <summary>
+        /// Gets the module used for parity, or null if parity is disabled.
+        /// Parity is opt-in: it is disabled unless a parity module is explicitly selected.
+        /// </summary>
+        public string? ParityModule
+        {
+            get
+            {
+                var module = GetString("parity-module", "");
+                return string.IsNullOrEmpty(module) ? null : module;
+            }
+        }
+
+        /// <summary>
         /// Gets the number of time to retry transmission if it fails
         /// </summary>
         public int NumberOfRetries => Math.Max(0, GetInt("number-of-retries", DEFAULT_NUMBER_OF_RETRIES));
-
-        /// <summary>
-        /// A value indicating if backups are transmitted on a separate thread
-        /// </summary>
-        public bool SynchronousUpload => GetBool("synchronous-upload");
 
         /// <summary>
         /// A value indicating if system is allowed to enter sleep power states during backup/restore
@@ -924,7 +1018,7 @@ namespace Duplicati.Library.Main
             => GetString("throttle-disabled-backends", DEFAULT_THROTTLE_DISABLED_BACKENDS)?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)?.ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>();
 
         /// <summary>
-        /// A value indicating if the backup is a full backup
+        /// A value indicating if the last fileset is allowed to be removed
         /// </summary>
         public bool AllowFullRemoval => GetBool("allow-full-removal");
 
@@ -1098,10 +1192,29 @@ namespace Duplicati.Library.Main
         public bool ProfileAllDatabaseQueries => GetBool("profile-all-database-queries");
 
         /// <summary>
+        /// Gets the threshold for a database query to be considered slow
+        /// </summary>
+        public TimeSpan SlowQueryThreshold => Library.Utility.Utility.ParseTimespanOption(m_options, "long-database-query-threshold", DEFAULT_LONG_DATABASE_QUERY_THRESHOLD);
+
+        /// <summary>
+        /// A value indicating if metadata content should be stored in the database
+        /// </summary>
+        public bool StoreMetadataContentInDatabase => GetBool("store-metadata-content-in-database");
+
+        /// <summary>
         /// Gets the attribute filter used to exclude files and folders.
         /// </summary>
         public System.IO.FileAttributes FileAttributeFilter
-            => Library.Utility.Utility.ParseFlagsOption(m_options, "exclude-files-attributes", default(System.IO.FileAttributes));
+        {
+            get
+            {
+                var result = Common.IO.ExtendedFileAttributes.Parse(m_options.GetValueOrDefault("exclude-files-attributes"));
+                var excludeNonLocalFiles = GetBool("exclude-non-local-files");
+                if (excludeNonLocalFiles)
+                    result |= Common.IO.ExtendedFileAttributes.NonLocalAttributes;
+                return result;
+            }
+        }
 
         /// <summary>
         /// A value indicating if server uploads are verified by listing the folder contents
@@ -1151,6 +1264,16 @@ namespace Duplicati.Library.Main
         public bool QuotaDisable => GetBool("quota-disable");
 
         /// <summary>
+        /// Gets the soft delete prefix
+        /// </summary>
+        public string? SoftDeletePrefix => GetString("soft-delete-prefix", null);
+
+        /// <summary>
+        /// Gets a flag indicating if the backend rename operation should be avoided
+        /// </summary>
+        public bool PreventBackendRename => GetBool("prevent-backend-rename");
+
+        /// <summary>
         /// Gets the display name of the backup
         /// </summary>
         public string BackupName
@@ -1158,16 +1281,6 @@ namespace Duplicati.Library.Main
             get => GetString("backup-name", DefaultBackupName);
             set => m_options["backup-name"] = value;
         }
-
-        /// <summary>
-        /// Gets the ID of the backup
-        /// </summary>
-        public string? BackupId => m_options.GetValueOrDefault("backup-id");
-
-        /// <summary>
-        /// Gets the ID of the machine
-        /// </summary>
-        public string? MachineId => m_options.GetValueOrDefault("machine-id", Library.AutoUpdater.DataFolderManager.InstallID);
 
         /// <summary>
         /// Gets the path to the database
@@ -1227,6 +1340,14 @@ namespace Duplicati.Library.Main
         /// Gets a flag indicating if empty folders should be ignored
         /// </summary>
         public bool ExcludeEmptyFolders => GetBool("exclude-empty-folders");
+
+        /// <summary>
+        /// Gets a flag indicating if backup exclusion extended attributes should be ignored
+        /// </summary>
+        public bool DisableBackupExclusionXattr =>
+            OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()
+                ? GetBool("disable-backup-exclusion-xattr")
+                : true; // Windows does not support xattrs, so disable looking for them
 
         /// <summary>
         /// Gets a flag indicating if during restores metadata should be applied to the symlink target.
@@ -1296,6 +1417,15 @@ namespace Duplicati.Library.Main
         public string? Restorepath => m_options.GetValueOrDefault("restore-path");
 
         /// <summary>
+        /// Gets the <c>--restore-all-files</c> mode controlling multi-version restore behavior.
+        /// When set to <see cref="RestoreAllFilesMode.True"/> or <see cref="RestoreAllFilesMode.Unique"/>,
+        /// every targeted version is restored into its own timestamp-named subfolder below
+        /// <see cref="Restorepath"/>. <see cref="RestoreAllFilesMode.False"/> performs a normal
+        /// single-version restore.
+        /// </summary>
+        public RestoreAllFilesMode RestoreAllFiles => GetEnum("restore-all-files", RestoreAllFilesMode.False);
+
+        /// <summary>
         /// Gets the index file usage method
         /// </summary>
         public IndexFileStrategy IndexfilePolicy => GetEnum("index-file-policy", IndexFileStrategy.Full);
@@ -1304,6 +1434,11 @@ namespace Duplicati.Library.Main
         /// Gets a flag indicating if the check for files on the remote storage should be omitted
         /// </summary>
         public bool NoBackendverification => GetBool("no-backend-verification");
+
+        /// <summary>
+        /// Gets a value indicating whether remote filenames should be matched case-insensitively.
+        /// </summary>
+        public bool CaseInsensitiveRemote => GetBool("case-insensitive-remote");
 
         /// <summary>
         /// Gets the percentage of samples to test during a backup operation
@@ -1355,6 +1490,10 @@ namespace Duplicati.Library.Main
         /// </summary>
         public bool AllowMissingSource => GetBool("allow-missing-source");
         /// <summary>
+        /// Gets a flag indicating if missing source elements should cause backups to fail
+        /// </summary>
+        public bool AbortIfSourceMissing => GetBool("abort-if-source-missing");
+        /// <summary>
         /// Gets a flag indicating if empty source elements should cause backups to fail
         /// </summary>
         public bool PreventEmptySource => GetBool("prevent-empty-source");
@@ -1397,7 +1536,7 @@ namespace Duplicati.Library.Main
         /// <summary>
         /// Gets a value indicating whether local blocks usage should be used for restore.
         /// </summary>
-        /// <value><c>true</c> if no local blocks; otherwise, <c>false</c>.</value>
+        /// <value><c>true</c> if local blocks are used for restore; otherwise, <c>false</c>.</value>
         public bool UseLocalBlocks => GetBool("restore-with-local-blocks");
 
         /// <summary>
@@ -1407,10 +1546,15 @@ namespace Duplicati.Library.Main
         public bool NoLocalDb => GetBool("no-local-db");
 
         /// <summary>
-        /// Gets a flag indicating if the local database should not be used
+        /// Gets a flag indicating if the restored file paths should keep their full folder structure instead of being compressed to the shortest common path
         /// </summary>
-        /// <value><c>true</c> if no local db is used; otherwise, <c>false</c>.</value>
+        /// <value><c>true</c> if restore paths are not compressed; otherwise, <c>false</c>.</value>
         public bool DontCompressRestorePaths => GetBool("dont-compress-restore-paths");
+
+        /// <summary>
+        /// Gets a value indicating whether to allow restore outside target directory.
+        /// </summary>
+        public bool AllowRestoreOutsideTargetDirectory => GetBool("allow-restore-outside-target-directory");
 
         /// <summary>
         /// Gets a flag indicating if block hashes are checked before being applied
@@ -1435,6 +1579,17 @@ namespace Duplicati.Library.Main
         /// </summary>
         /// <value><c>true</c> if repair process always use blocks; otherwise, <c>false</c>.</value>
         public bool RepairForceBlockUse => GetBool("repair-force-block-use");
+
+        /// <summary>
+        /// Gets a flag indicating if the repair process should refresh lock information from the backend
+        /// </summary>
+        /// <value><c>true</c> if repair process should refresh lock information; otherwise, <c>false</c>.</value>
+        public bool RepairRefreshLockInfo => GetBool("repair-refresh-lock-info");
+
+        /// <summary>
+        /// Gets a flag indicating if the repair process should refresh lock information for all volumes
+        /// </summary>
+        public bool RefreshLockInfoComplete => GetBool("refresh-lock-info-complete");
 
         /// <summary>
         /// Gets a flag indicating whether the VACUUM operation should ever be run automatically.
@@ -1478,6 +1633,11 @@ namespace Duplicati.Library.Main
         /// Gets a value indicating if missing metadata is replaced with empty content on purge-broken-files
         /// </summary>
         public bool DisableReplaceMissingMetadata => GetBool("disable-replace-missing-metadata");
+
+        /// <summary>
+        /// Gets a value indicating if the purge-broken-files command should skip calculating the size of the removed files
+        /// </summary>
+        public bool ReducedPurgeStatistics => GetBool("reduced-purge-statistics");
 
         /// <summary>
         /// Gets the threshold for when log data should be cleaned
@@ -1648,6 +1808,8 @@ namespace Duplicati.Library.Main
         private long GetSize(string name, string unit, string @default)
             => Library.Utility.Utility.ParseSizeOption(m_options, name, unit, @default);
 
+        public string? RemoteSyncJsonConfig => GetString("remote-sync-json-config", null);
+
         /// <summary>
         /// Gets the maximum number of data blocks to keep in the cache. If set to 0, the cache is effictively disabled, but some is still kept for bookkeeping.
         /// </summary>
@@ -1706,11 +1868,22 @@ namespace Duplicati.Library.Main
         /// <summary>
         /// Gets whether to preallocate files during restore
         /// </summary>
-        public bool RestorePreAllocate => GetBool("restore-pre-allocate");
+        public bool RestorePreAllocate => GetBool("restore-preallocate-size");
 
-        // <summary>
-        // Gets the size of the volume cache used during restore, in MB.
-        // </summary>
+        /// <summary>
+        /// Gets whether to handle MacOS Photo Libraries specially
+        /// </summary>
+        public MacOSPhotosHandling HandleMacOSPhotoLibrary => GetEnum("photos-handling", DEFAULT_MACOS_PHOTOS_HANDLING);
+
+        /// <summary>
+        /// Gets the path to the MacOS Photos Library
+        /// </summary>
+        public string? MacOSPhotoLibraryPath => GetString("photos-library-path", null);
+
+        /// <summary>
+        /// Gets the maximum size of the restore volume cache in bytes.
+        /// Returns -1 when unset (unlimited/disk-space-aware mode), 0 to disable caching, or a positive byte count for a hard cap.
+        /// </summary>
         public long RestoreVolumeCacheHint
         {
             get
@@ -1718,11 +1891,18 @@ namespace Duplicati.Library.Main
                 m_options.TryGetValue("restore-volume-cache-hint", out var s);
 
                 if (string.IsNullOrEmpty(s))
-                    return VolumeSize * 100; // Default to 100 times the volume size
+                    return -1L; // Unlimited: disk-space-aware eviction bounded by RestoreVolumeCacheMinFree
 
                 return GetSize("restore-volume-cache-hint", "mb", $"{VolumeSize * 100}b");
             }
         }
+
+        /// <summary>
+        /// Gets the minimum free disk space (in bytes) to maintain in the temp directory during restore.
+        /// Only used when <see cref="RestoreVolumeCacheHint"/> returns -1 (unlimited mode).
+        /// </summary>
+        public long RestoreVolumeCacheMinFree
+            => GetSize("restore-volume-cache-min-free", "gb", DEFAULT_RESTORE_VOLUME_CACHE_MIN_FREE);
 
         /// <summary>
         /// Gets the number of volume decryptors to use in the restore process
@@ -1745,6 +1925,16 @@ namespace Duplicati.Library.Main
         public int RestoreChannelBufferSize => GetInt("restore-channel-buffer-size", DEFAULT_RESTORE_CHANNEL_BUFFER_SIZE);
 
         /// <summary>
+        /// Gets a value indicating whether NTFS alternate data streams should be backed up
+        /// </summary>
+        public bool EnableAdsBackup => GetBool("enable-ads-backup");
+
+        /// <summary>
+        /// Gets a value indicating whether NTFS alternate data streams should be skipped during restore
+        /// </summary>
+        public bool DisableAdsRestore => GetBool("disable-ads-restore");
+
+        /// <summary>
         /// Toggles whether internal profiling is enabled and should be logged.
         /// </summary>
         public bool InternalProfiling => GetBool("internal-profiling");
@@ -1754,6 +1944,28 @@ namespace Duplicati.Library.Main
         /// </summary>
         public bool IgnoreUpdateIfVersionExists
             => GetBool("ignore-update-if-version-exists");
+
+        /// <summary>
+        /// Forces a full remote listing to rebuild the local sync cache.
+        /// </summary>
+        public bool SyncRecheck => GetBool("sync-recheck");
+
+        /// <summary>
+        /// Deletes files on the remote that no longer exist locally.
+        /// </summary>
+        public bool SyncThenDelete => GetBool("sync-then-delete");
+
+        /// <summary>
+        /// Verifies file content using SHA-256 hashes when size and time match.
+        /// </summary>
+        public bool SyncVerifyHash => GetBool("sync-verify-hash");
+
+        /// <summary>
+        /// Controls how the sync operation determines the remote state of each folder:
+        /// enumerate the remote destination, consult the local database, or upload
+        /// blindly. See <see cref="SyncRemoteState"/> for the trade-offs.
+        /// </summary>
+        public SyncRemoteState SyncRemoteState => GetEnum("sync-remote-state", SyncRemoteState.UseRemoteState);
 
         /// <summary>
         /// Class for handling a single RetentionPolicy timeframe-interval-pair
@@ -1811,6 +2023,15 @@ namespace Duplicati.Library.Main
             public static RetentionPolicyValue CreateFromString(string rententionPolicyValueString)
             {
                 var periodInterval = rententionPolicyValueString.Split(':');
+
+                // Each retention policy entry must be a timeframe and an interval separated by
+                // a single colon (e.g. "7D:1D"). Guard against malformed values so a user typo
+                // produces a clear error instead of an IndexOutOfRangeException (when the colon
+                // is missing) or silently dropping extra segments (when there are too many).
+                if (periodInterval.Length != 2)
+                {
+                    throw new UserInformationException(Strings.Options.RetentionPolicyInvalidValue(rententionPolicyValueString), "RetentionPolicyInvalidValue");
+                }
 
                 TimeSpan timeframe;
                 // Timeframe "U" (= Unlimited) means: For unlimited time keep one version every X interval.

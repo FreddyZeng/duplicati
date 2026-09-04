@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -29,6 +29,7 @@ namespace Duplicati.WebserverCore.Dto;
 /// <param name="direct">Whether the backup should be imported and created directly</param>
 /// <param name="passphrase">The passphrase to use for the backup configuration</param>
 /// <param name="temporary">Whether the backup should be created as temporary</param>
+/// <param name="replace_settings">Settings to replace in the imported backup configuration</param>
 public sealed record ImportBackupInputDto
 (
     string config,
@@ -36,5 +37,6 @@ public sealed record ImportBackupInputDto
     bool? import_metadata,
     bool? direct,
     string? passphrase,
-    bool? temporary
+    bool? temporary,
+    Dictionary<string, string>? replace_settings
 );

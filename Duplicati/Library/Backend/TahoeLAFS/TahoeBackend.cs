@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -27,11 +27,12 @@ using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
 using Newtonsoft.Json;
-using Uri = Duplicati.Library.Utility.Uri;
+
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
 
 namespace Duplicati.Library.Backend;
 
-public class TahoeBackend : IStreamingBackend
+public class TahoeBackend : IStreamingBackend, IRenameEnabledBackend
 {
     /// <summary>
     /// Base URL for the Tahoe-LAFS backend
@@ -60,25 +61,69 @@ public class TahoeBackend : IStreamingBackend
         _certificateOptions = null!;
     }
 
-    public TahoeBackend(string url, Dictionary<string, string?> options)
-    {
-        //Validate URL
-        var u = new Uri(url);
-        u.RequireHost();
+    /// <summary>
+    /// The url requests are built from.
+    /// </summary>
+    /// <param name="Url">The sanitized url: http or https, no credentials, no query, ending with a separator.</param>
+    internal readonly record struct TahoeUrl(string Url);
 
-        if (!u.Path.StartsWith("uri/URI:DIR2:", StringComparison.Ordinal) && !u.Path.StartsWith("uri/URI%3ADIR2%3A", StringComparison.Ordinal))
+    /// <summary>
+    /// Checks that the url names a Tahoe-LAFS directory capability and turns it into the
+    /// url requests are built from.
+    /// </summary>
+    /// <param name="url">The url to read.</param>
+    /// <param name="useSsl">Whether the requests go over https.</param>
+    /// <returns>The url requests are built from.</returns>
+    internal static TahoeUrl ParseTahoeUrl(string url, bool useSsl)
+    {
+        var u = new System.Uri(url);
+        u.RequireHost(url);
+        u.RequireNoFragment(url);
+
+        // The check is made against the decoded path without its leading separator, which is
+        // what the previous parser handed over. Decoding happens once, so a doubly encoded
+        // colon still reaches the second spelling the way it did before.
+        var path = System.Uri.UnescapeDataString(u.AbsolutePath);
+        if (path.StartsWith("/", StringComparison.Ordinal))
+            path = path.Substring(1);
+
+        if (!path.StartsWith("uri/URI:DIR2:", StringComparison.Ordinal) && !path.StartsWith("uri/URI%3ADIR2%3A", StringComparison.Ordinal))
             throw new UserInformationException(Strings.TahoeBackend.UnrecognizedUriError, "TahoeInvalidUri");
 
-        _certificateOptions = SslOptionsHelper.Parse(options);
+        // The escaped path is what goes into the url, and the separator goes on the path
+        // rather than on the assembled url, which is where it ended up before.
+        var builder = new UriBuilder
+        {
+            Scheme = useSsl ? "https" : "http",
+            Host = u.Host,
+            Port = u.Port,
+            Path = Util.AppendDirSeparator(u.AbsolutePath, "/")
+        };
 
-        _url = u.SetScheme(_certificateOptions.UseSSL ? "https" : "http").SetQuery(null).SetCredentials(null, null).ToString();
-        _url = Util.AppendDirSeparator(_url, "/");
+        return new TahoeUrl(builder.Uri.AbsoluteUri);
+    }
+
+    public TahoeBackend(string url, Dictionary<string, string?> options)
+    {
+        _certificateOptions = SslOptionsHelper.Parse(options);
+        _url = ParseTahoeUrl(url, _certificateOptions.UseSSL).Url;
         _timeouts = TimeoutOptionsHelper.Parse(options);
     }
 
+    /// <summary>
+    /// Builds the backend on a caller supplied handler, so the request handling
+    /// can be exercised without a Tahoe-LAFS instance
+    /// </summary>
+    /// <param name="url">The connection url</param>
+    /// <param name="options">The options to use</param>
+    /// <param name="handler">The message handler to send requests through</param>
+    internal TahoeBackend(string url, Dictionary<string, string?> options, HttpMessageHandler handler)
+        : this(url, options)
+        => _httpClient = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+
     /// <inheritdoc />
-    public Task TestAsync(CancellationToken cancelToken)
-        => this.TestReadWritePermissionsAsync(cancelToken);
+    public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+        => this.TestBackendAsync(alsoWrite, cancelToken);
 
     /// <inheritdoc />
     public async Task CreateFolderAsync(CancellationToken cancelToken)
@@ -176,14 +221,15 @@ public class TahoeBackend : IStreamingBackend
     {
         try
         {
-            using (await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken,
-                       innerCancelToken =>
-                       {
-                           using var request = CreateRequest(remotename, string.Empty, HttpMethod.Delete);
-                           return GetHttpClient().SendAsync(request,
-                               innerCancelToken);
-                       }).ConfigureAwait(false))
-            { }
+            using var resp = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken,
+                innerCancelToken =>
+                {
+                    using var request = CreateRequest(remotename, string.Empty, HttpMethod.Delete);
+                    return GetHttpClient().SendAsync(request,
+                        innerCancelToken);
+                }).ConfigureAwait(false);
+
+            resp.EnsureSuccessStatusCode();
         }
         catch (HttpRequestException wex)
             when (wex.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
@@ -261,7 +307,7 @@ public class TahoeBackend : IStreamingBackend
     /// <returns></returns>
     private HttpRequestMessage CreateRequest(string remotename, string queryparams, HttpMethod? method = null)
     {
-        var request = new HttpRequestMessage(method == null ? HttpMethod.Get : method, $"{_url}{Uri.UrlEncode(remotename).Replace("+", "%20")}{(string.IsNullOrEmpty(queryparams) || queryparams.Trim().Length == 0 ? String.Empty : "?" + queryparams)}");
+        var request = new HttpRequestMessage(method == null ? HttpMethod.Get : method, $"{_url}{UrlEncoding.UrlEncode(remotename).Replace("+", "%20")}{(string.IsNullOrEmpty(queryparams) || queryparams.Trim().Length == 0 ? String.Empty : "?" + queryparams)}");
         request.Headers.UserAgent.ParseAdd($"Duplicati Tahoe-LAFS Client {Assembly.GetExecutingAssembly().GetName().Version?.ToString()}");
         return request;
     }
@@ -277,5 +323,17 @@ public class TahoeBackend : IStreamingBackend
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
 
         return _httpClient;
+    }
+
+    public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+    {
+        using var resp = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken,
+            innerCancelToken =>
+            {
+                using var request = CreateRequest(string.Empty, $"t=rename&from_name={UrlEncoding.UrlEncode(oldname)}&to_name={UrlEncoding.UrlEncode(newname)}", HttpMethod.Post);
+                return GetHttpClient().SendAsync(request, innerCancelToken);
+            }).ConfigureAwait(false);
+
+        resp.EnsureSuccessStatusCode();
     }
 }

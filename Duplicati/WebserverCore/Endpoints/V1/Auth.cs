@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -47,7 +47,7 @@ public partial class Auth : IEndpointV1
             {
                 try
                 {
-                    var result = await loginProvider.PerformLoginWithRefreshToken(refreshTokenString, input?.Nonce ?? "", ct);
+                    var result = await loginProvider.PerformLoginWithRefreshTokenAsync(refreshTokenString, input?.Nonce ?? "", ct);
                     AddCookie(httpContextAccessor.HttpContext, cookieName, result.RefreshToken, DateTimeOffset.UtcNow.AddMinutes(jWTConfig.RefreshTokenDurationInMinutes));
                     return new Dto.AccessTokenOutputDto(result.AccessToken, result.Nonce);
                 }
@@ -70,7 +70,7 @@ public partial class Auth : IEndpointV1
             var cookieName = GetCookieName(httpContextAccessor);
             try
             {
-                var result = await loginProvider.PerformLoginWithSigninToken(input.SigninToken, !(input.RememberMe ?? false), ct);
+                var result = await loginProvider.PerformLoginWithSigninTokenAsync(input.SigninToken, !(input.RememberMe ?? false), ct);
                 if (!string.IsNullOrWhiteSpace(result.RefreshToken))
                     AddCookie(httpContextAccessor.HttpContext!, cookieName, result.RefreshToken, DateTimeOffset.UtcNow.AddMinutes(jWTConfig.RefreshTokenDurationInMinutes));
                 return new Dto.AccessTokenOutputDto(result.AccessToken, result.Nonce);
@@ -92,7 +92,7 @@ public partial class Auth : IEndpointV1
             var cookieName = GetCookieName(httpContextAccessor);
             try
             {
-                var result = await loginProvider.PerformLoginWithPassword(input.Password, !(input.RememberMe ?? false), ct);
+                var result = await loginProvider.PerformLoginWithPasswordAsync(input.Password, !(input.RememberMe ?? false), ct);
                 if (!string.IsNullOrWhiteSpace(result.RefreshToken))
                     AddCookie(httpContextAccessor.HttpContext!, cookieName, result.RefreshToken, DateTimeOffset.UtcNow.AddMinutes(jWTConfig.RefreshTokenDurationInMinutes));
                 return new Dto.AccessTokenOutputDto(result.AccessToken, result.Nonce);
@@ -126,6 +126,7 @@ public partial class Auth : IEndpointV1
             {
                 case "export":
                 case "bugreport":
+                case "websocket":
                     break;
 
                 default:
@@ -145,6 +146,30 @@ public partial class Auth : IEndpointV1
 
             return new Dto.AccessTokenOutputDto(tokenProvider.CreateForeverToken(), null);
         }).RequireAuthorization();
+
+        group.MapPost("auth/status", ([FromServices] IHttpContextAccessor httpContextAccessor, [FromServices] IJWTTokenProvider tokenProvider) =>
+        {
+            var httpContext = httpContextAccessor.HttpContext;
+            var user = httpContext?.User;
+            var isAuthenticated = user?.Identity?.IsAuthenticated ?? false;
+
+            // Return 200, to avoid showing this probe as an error in browser devtools and logs
+            if (!isAuthenticated)
+                return Results.Ok(new
+                {
+                    authorized = false,
+                    message = "Not authorized",
+                });
+
+
+            // If we are authenticated, we can return the socket token
+            return Results.Ok(new
+            {
+                authorized = true,
+                message = "Authorized",
+                socketToken = tokenProvider.CreateSingleOperationToken("web-api", "websocket"),
+            });
+        });
     }
 
     private static void AddCookie(HttpContext context, string name, string value, DateTimeOffset expires)
@@ -159,14 +184,18 @@ public partial class Auth : IEndpointV1
             Domain = context.Request.Host.Host
         });
 
-    private static object PerformLogout(ILoginProvider loginProvider, IHttpContextAccessor httpContextAccessor, Dto.RefreshTokenInputDto? input)
+    private static async Task<object> PerformLogout(ILoginProvider loginProvider, IHttpContextAccessor httpContextAccessor, Dto.RefreshTokenInputDto? input)
     {
+        var context = httpContextAccessor.HttpContext!;
         var cookieName = GetCookieName(httpContextAccessor);
-        if (httpContextAccessor.HttpContext!.Request.Cookies.TryGetValue(cookieName, out var refreshTokenString))
+        if (context.Request.Cookies.TryGetValue(cookieName, out var refreshTokenString))
         {
             try
             {
-                loginProvider.PerformLogoutWithRefreshToken(refreshTokenString, input?.Nonce, CancellationToken.None);
+                // Must be awaited, otherwise exceptions from the async call are
+                // never observed by the catch below and the intended
+                // "ignore invalid refresh tokens" handling does not run.
+                await loginProvider.PerformLogoutWithRefreshTokenAsync(refreshTokenString, input?.Nonce, CancellationToken.None).ConfigureAwait(false);
             }
             catch
             {
@@ -174,8 +203,15 @@ public partial class Auth : IEndpointV1
             }
         }
 
-        // Also remove the cookie, in case we failed to delete it
-        httpContextAccessor.HttpContext!.Response.Cookies.Delete(cookieName);
+        // Also remove the cookie, in case we failed to delete it.
+        // The Path and Domain must match the values used when the cookie was
+        // created (see AddCookie), otherwise the browser will not match and
+        // remove the stored cookie.
+        context.Response.Cookies.Delete(cookieName, new CookieOptions
+        {
+            Path = "/api/v1/auth/refresh",
+            Domain = context.Request.Host.Host
+        });
         return new { success = true };
     }
 

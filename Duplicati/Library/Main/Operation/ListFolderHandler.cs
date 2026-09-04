@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -40,17 +40,18 @@ internal static class ListFolderHandler
     /// <param name="folders">The folders to list</param>
     /// <param name="offset">The offset to start listing from</param>
     /// <param name="limit">The maximum number of entries to list</param>
+    /// <param name="extendedData">Whether to include extended data</param>
     /// <returns>A task representing the asynchronous operation</returns>
-    public static async Task RunAsync(Options options, ListFolderResults result, string[] folders, long offset, long limit)
+    public static async Task RunAsync(Options options, ListFolderResults result, string[] folders, long offset, long limit, bool extendedData)
     {
         if (!System.IO.File.Exists(options.Dbpath) || options.NoLocalDb)
             throw new UserInformationException("No local database found, this operation requires a local database", "NoLocalDatabase");
 
-        await using var db = await Database.LocalListDatabase.CreateAsync(options.Dbpath, null, result.TaskControl.ProgressToken)
+        await using var db = await Database.Local.LocalListDatabase.CreateAsync(options.Dbpath, null, result.TaskControl.ProgressToken)
             .ConfigureAwait(false);
 
         var filesetIds = await db
-            .GetFilesetIDs(options.Time, options.Version, singleTimeMatch: true, result.TaskControl.ProgressToken)
+            .GetFilesetIDsAsync(options.Time, options.Version, singleTimeMatch: true, result.TaskControl.ProgressToken)
             .ToArrayAsync(cancellationToken: result.TaskControl.ProgressToken)
             .ConfigureAwait(false);
 
@@ -64,22 +65,36 @@ internal static class ListFolderHandler
             if (folders != null && folders.Length > 1)
                 throw new UserInformationException("When no folder is specified, only one folder can be listed", "MultipleFoldersFound");
             var rootFolders = await db
-                .GetMinimalUniquePrefixEntries(filesetIds[0], result.TaskControl.ProgressToken)
+                .GetMinimalUniquePrefixEntriesAsync(filesetIds[0], result.TaskControl.ProgressToken)
                 .ToListAsync(cancellationToken: result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
             result.Entries = new PaginatedResults<IListFolderEntry>(0, rootFolders.Count, 1, rootFolders.Count, rootFolders);
         }
         else
         {
-            result.Entries = await db
-                .ListFolder(
-                    db.GetPrefixIds(folders, result.TaskControl.ProgressToken).ToEnumerable(),
+            var entries = await db
+                .ListFolderAsync(
+                    db.GetPrefixIdsAsync(folders, result.TaskControl.ProgressToken).ToBlockingEnumerable(),
                     filesetIds[0],
                     offset,
                     limit,
                     result.TaskControl.ProgressToken
                 )
                 .ConfigureAwait(false);
+
+            result.Entries = entries;
+        }
+
+        if (extendedData)
+        {
+            var coreentries = result.Entries.Items.Cast<Database.Local.LocalListDatabase.FolderEntry>().ToArray();
+            var metadata = await db.GetMetadataForFilesetIdsAsync(coreentries.Select(e => e.FileId), result.TaskControl.ProgressToken).ConfigureAwait(false);
+            for (int i = 0; i < coreentries.Length; i++)
+            {
+                if (metadata.TryGetValue(coreentries[i].FileId, out var dict))
+                    coreentries[i] = coreentries[i] with { Metadata = dict };
+            }
+            result.Entries = new PaginatedResults<IListFolderEntry>(result.Entries.Page, result.Entries.PageSize, result.Entries.TotalPages, result.Entries.TotalCount, coreentries);
         }
     }
 }

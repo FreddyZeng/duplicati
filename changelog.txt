@@ -1,3 +1,1435 @@
+2026-09-04 - 2.4.0.100_canary_2026-09-04
+==========
+This release is a canary release intended to be used for testing.
+
+# New Native VSS snapshot provider
+
+This release introduces a new native VSS snapshot provider on Windows that replaces the previous providers. Hyper-V and MSSQL enumeration work with the native provider which is now default.
+
+The new native VSS snapshot provider does not require VCRedist to be installed and works on x86, x64, and Arm64 systems.
+The existing AlphaVSS and Vanara-based VSS snapshot providers can still be selected (but not on Arm64).
+They will be removed in a future version as AlphaVSS is no longer maintained and the new native library has fewer dependencies than Vanara.
+
+# New WMI VSS snapshot provider
+
+The previously supported WMIC provider has been removed as Windows updates will remove the executable it relies on.
+Instead a new WMI snapshot provider is added which works similar to WMIC.
+
+The WMI (and WMIC) provider gives a more light-weight VSS functionality, where it does not flush the writers (MSSQL, HyperV, etc) but just ensures a crash-consistent disk snapshot.
+
+If you rely on systems that integrate with VSS, use the Native provider, if you just want to back up locked files, use the WMI provider.
+
+# Full-disk backup and VSS snapshots
+
+With this release VSS is now also used for full-disk backups. This is fully transparent and works such that an active snapshot is detected and the full-disk reader will use the snapshot to access the disk contents.
+
+# Recovering from an interrupted first backup
+
+Interrupting a first backup previously left the destination in an unrecoverable state: blocks and index files were uploaded, but no filelist was written, so neither backup nor repair could proceed. The recreate logic can now reconstruct a database from the index files alone, so an interrupted first backup can be resumed instead of requiring the destination to be discarded, thanks @JamBalaya56562.
+
+# Repair no longer removes metadata
+
+The repair handler previously attempted to fix defective metadata with various reassignment strategies that could silently remove metadata. It now reports the problem and asks the user to run `list-broken-files` and `purge-broken-files`, which rewire the metadata while keeping the file content. Detection of zero-length and otherwise defective blocksets has also been improved.
+
+# Azure Blob Storage path support
+
+The Azure Blob Storage backend previously ignored the path part of the destination URL and always stored data in the root of the container. The path is now treated as a prefix, so backups can be placed in a subfolder of a container. If you previously used a path in an Azure Blob Storage destination URL, the data was stored in the root; after upgrading, new backups will use the path as a prefix and will not see the previously uploaded files.
+
+# Prevent empty machine ID
+
+A startup sequence issue could cause a clean install to report and connect to the console without a machine ID, which could cause various unwanted behaviors.
+
+# Linux sleep prevention
+
+Duplicati can now prevent the system from sleeping during backup operations on Linux, similar to the existing support on Windows and macOS.
+
+# AppImage `.zsync` support
+
+This release now has the `.zsync` file and relevant metadata such that future updates can be done efficiently and automatically by AppImage managers that support it.
+
+# `--synchronous-upload` deprecated
+
+The `--synchronous-upload` option no longer has any effect and is now marked as deprecated. Existing configurations that set it will continue to load, but a warning is now logged. Use `--asynchronous-upload-limit` instead.
+
+# Default exclude volume information
+
+The `System Volume Information` folder is now automatically excluded from backups as it cannot be reliably read and cannot be used in a restore process.
+
+# Performance and stability updates
+
+Several performance fixes are applied to the local database queries, affecting most operations, mostly by @JamBalaya56562.
+Many edge cases around unexpected server responses and url encoding issues have also been adressed, thanks @JamBalaya56562.
+
+## Detailed list of changes
+
+- Updated all localizations, thanks to all translators
+- Added a native VSS snapshot provider, replacing the WMI-based approach
+- Fixed Hyper-V and MSSQL enumeration with the native VSS provider
+- Added `--vss-writer-flush-timeout` to control how long to wait for VSS writers
+- Used VSS for full-disk backups and automatically excluded `System Volume Information`
+- Hid unsupported VSS options on Arm64
+- Added support for recreating a database from an interrupted first backup, thanks @JamBalaya56562
+- Changed repair to report defective metadata instead of silently reassigning it
+- Improved detection and notification of zero-length and defective blocksets
+- Sped up `purge-broken-files` by reusing the invalid-blocks query
+- Added an API endpoint for purging files across backup versions
+- Added permission checks for MS365 and Google Workspace so users can verify granted permissions
+- Fixed MS365 group classifications and added validation of source and destination provider options
+- Added support for a path prefix in Azure Blob Storage destinations
+- Fixed `--prefix` combined with path separators in sync operations
+- Fixed a clean install potentially starting with an empty machine ID
+- Added sleep prevention support on Linux
+- Fixed the destination self-test incorrectly failing on OpenStack when a probe file was already gone, thanks @JamBalaya56562
+- Fixed Google Cloud Storage not detecting a delete of a missing file
+- Fixed Google Cloud Storage URL encoding that broke authentication
+- Fixed OneDrive browsing failing on the drive root and not returning folders
+- Fixed OneDrive folder names with percent signs or hashes not being reachable, thanks @JamBalaya56562
+- Fixed Dropbox folder names with percent signs being decoded twice, thanks @JamBalaya56562
+- Fixed SharePoint destination paths containing `+` being misread, thanks @JamBalaya56562
+- Fixed WebDAV destination paths containing `+` being misread, thanks @JamBalaya56562
+- Fixed hostless backend URLs such as `dropbox://?authid=...` failing to enumerate from the root
+- Fixed a Windows source given as a bare drive letter (e.g., `C:`) resolving to the process working directory instead of the drive root, thanks @JamBalaya56562
+- Preserved the fileset timestamp when replacing a missing dlist file during repair, thanks @JamBalaya56562
+- Recorded the fileset timestamp in the dlist file so a database recreate keeps it, thanks @JamBalaya56562
+- Fixed URL query string values not always being preserved when modifying URLs
+- Indexed the verification tables on the compared columns, significantly speeding up remote volume verification, thanks @JamBalaya56562
+- Removed a redundant `DISTINCT` that blocked index lookups in fileset queries, thanks @JamBalaya56562
+- Stopped deduplicating twice in the fileset consistency check, thanks @JamBalaya56562
+- Made BackendTester re-read the remote folder before abandoning a test run, and accept an already-deleted file during cleanup, thanks @JamBalaya56562
+- Cleared the Filen file cache when a write did not come back, preventing stale lookups, thanks @JamBalaya56562
+- Re-read the Filejump file list when a delete got no answer, thanks @JamBalaya56562
+- Re-read the Drime file list when a delete got no answer, thanks @JamBalaya56562
+- Deprecated `--synchronous-upload` which no longer has any effect, thanks @JamBalaya56562
+- Added `.zsync` files for `.appimage` releases, enabling delta updates
+- Updated System.CommandLine from pre-release to the stable 2.0 release
+- Regenerated the libsecret DBus bindings with the latest tooling
+
+## Updates to ngclient
+
+- Changed the order for navigation on new backups: source before destination
+- Added support for purging files from the UI
+- Added support for checking permissions with MS365 and Google Workspace
+- Fixed Windows search results having a leading `\` prefix, causing empty restores
+- Fixed WebDAV destination path normalization, thanks @JamBalaya56562
+- Fixed folder filters losing their type while editing, thanks @JamBalaya56562
+- Fixed folder exclusions not propagating through the file tree, thanks @JamBalaya56562
+- Fixed file attribute exclusions not being preserved when editing, thanks @JamBalaya56562
+- Fixed local schedule dates being reset when editing, thanks @JamBalaya56562
+- Fixed custom form validator behavior, thanks @JamBalaya56562
+- Fixed commandline result polling, thanks @JamBalaya56562
+- Hardened HTTP interceptor request handling, thanks @JamBalaya56562
+- Fixed the file browser height on the restore page
+- Fixed flicker in the Duplicati Storage backup picker
+- Fixed connection state being set incorrectly with socket relay
+- Migrated to hey-api's modern Angular client, thanks @sp90
+- Fixed termination display
+- Updated all translations, thanks to all translators
+
+2026-08-25 - 2.3.0.110_canary_2026-08-25
+==========
+This release is a canary release intended to be used for testing.
+
+# Database update to version 20
+
+This release updates the local database schema to version 20. The update adds a label column to the fileset table and is applied automatically on first use. After the update, the database can no longer be opened by earlier versions of Duplicati. If you need to downgrade, the bundled database tool (`duplicati-database-tool`) can downgrade the database back to version 19; downgrading removes the labels, but otherwise causes no data loss.
+
+# Labels on backup versions
+
+Backup versions can now carry an optional text label. Labels have no functional purpose, but they help mark and distinguish versions, for example when backups are hand-curated instead of running on a schedule. The CLI and UI supports setting and showing labels.
+
+# Partition-level backup and restore
+
+It is now possible to select a single disk partition as the backup source, instead of selecting the full disk and filtering the unwanted partitions. Restores are likewise more flexible: in addition to disk-to-disk restores, a single partition can now be restored into a partition on another disk, creating the partition as needed.
+
+This also fixes a bug where a failing priority file would leave the restore stuck until it was cancelled, and a number of issues with enumerating and filtering disks and partitions, in particular on Windows.
+
+# Automatic metadata storage for sources that need it
+
+Backups using a source provider that relies on database metadata, such as the disk image provider, previously required the user to set `--store-metadata-content-in-database=true` manually. The setting is now applied automatically when the source needs it, and can still be overridden by setting the option explicitly.
+
+# QNAP packages
+
+This release adds native QNAP package support. Similar to the Synology package, it integrates with the QNAP OS, uses the built-in authentication, and only allows access for administrators.
+
+# Stricter Google Cloud Storage credentials
+
+Google Cloud Storage credentials are now read as service account credentials, which is what the options are documented to take. Other credential types, such as stored user credentials or external account configurations, are now refused. If you authenticate to Google Cloud Storage, or the Google Cloud secret provider, with anything other than a service account key, you need to switch to a service account key.
+
+## Detailed list of changes
+
+- Updated all localizations, thanks to all translators
+- Added labels to backup versions, with CLI, API, and UI support
+- Added partition-level backup and partition-to-partition restore
+- Fixed disk image provider not initializing when listing drives, and improved disk enumeration and filter handling on Windows
+- Automatically enabled `--store-metadata-content-in-database` when the source provider requires it
+- Added native QNAP package support
+- Added a watchdog that restarts a stale remote management connection, and fixed issues that could drop the connection
+- Google Cloud Storage credentials are now read strictly as service accounts, thanks @JamBalaya56562
+- Fixed WebDAV destinations with a `+` in the path reporting uploaded files as missing, thanks @JamBalaya56562
+- Fixed Windows `file://` target URLs with a query string being misparsed
+- Stopped reporting quota errors on read-only operations such as restore, thanks @JamBalaya56562
+- Fixed stale SQLite query statistics causing extremely slow fileset and consistency queries on growing databases, thanks @JamBalaya56562
+- Sped up cleanup after deleting a backup version by avoiding a full table scan
+- Fixed a similarly named file and folder in the source causing the folder to be omitted, and allowed explicitly including a file inside an excluded folder
+- Fixed backend statistics reporting a bogus zero timestamp in the operation log, thanks @JamBalaya56562
+- Fixed Linux desktop notifications using an unsupported signal API, thanks @JamBalaya56562
+- Fixed a restore with failing priority files getting stuck instead of failing
+- Aligned SharpAESCrypt, AWSSDK.Core, Azure.Core, and Microsoft.Extensions package versions across the solution, thanks @JamBalaya56562
+
+## Updates to ngclient
+
+- Added settings to control sorting of tree views
+- Added support for editing version labels
+- Disabled menu options that do not apply to sync jobs
+- Fixed the destination editor mixing up connection state when a destination is removed, thanks @JamBalaya56562
+- Allowed changing encryption settings for imported backups, thanks @JamBalaya56562
+- Fixed the usage statistics setting not matching the format used by the legacy UI and server settings, thanks @JamBalaya56562
+- Added a plain-language summary to the custom schedule editor, thanks @JamBalaya56562
+- Added support for browsing disks and partitions and for restoring disk images and partitions
+- Fixed Chinese locale selection, thanks @JamBalaya56562
+- Fixed absolute asset paths ignoring the path prefix when running behind a reverse proxy, thanks @scambra
+- Updated all translations, thanks to all translators
+
+2026-08-14 - 2.3.0.109_canary_2026-08-14
+==========
+This release is a canary release intended to be used for testing.
+
+# Native desktop notifications
+
+This release adds native desktop notifications on all supported desktop platforms. Backup results and other tray-icon notifications are now shown as real operating-system notifications instead of only appearing inside the UI.
+
+On Windows, notifications are shown as Windows toast notifications with click-to-open support, thanks @JamBalaya56562. On macOS, notifications are shown via the native notification center. On Linux, notifications are sent over DBus and integrate with the desktop environment's notification daemon.
+
+# Native environment variable syntax on Linux and macOS
+
+Paths and filters now support the native `$VAR` and `${VAR}` environment variable syntax on Linux and macOS, most notably `$HOME`, thanks @JamBalaya56562. Previously only the Windows-style `%VAR%` syntax was expanded, so the native forms were silently left unexpanded on non-Windows systems.
+
+The expansion is additive: `%VAR%` keeps working everywhere, and an undefined variable is left as-is. If you previously worked around this with literal `$` characters in paths or filters, those entries will now be expanded.
+
+# Restore improvements and fixes
+
+Several restore issues have been fixed in this release, thanks @JamBalaya56562. Restore now honors stop requests promptly: an abort interrupts in-progress file reads and writes, where it previously could keep running for minutes after the request. An aborted restore no longer reports errors, blames the backup, or leaks temporary files, and files that a shutdown interrupted are no longer listed as broken. A requested shutdown is in general no longer reported as a failure. Two bugs that could corrupt restored data were fixed: a wrong seek offset when copying verified local blocks, and an incorrect buffer copy when merging a hash fragment. Restore now also preserves the selected folder and applies configured default options (such as `--restore-permissions`) when the restore request does not explicitly specify them. On the legacy restore engine, restoring a directory symlink no longer creates a real folder in its place.
+
+# Stricter validation of settings
+
+This release adds validation in places that previously failed silently, which may surface new warnings or errors after upgrading:
+
+- Misconfigured filters are now detected and reported with a warning, instead of silently matching nothing.
+- An unusable update check interval is now rejected instead of being ignored.
+- An invalid webservice timezone now fails instead of being silently reset.
+
+## Detailed list of changes
+
+- Let an abort interrupt the restore's file reads and writes, so a restore stops promptly, thanks @JamBalaya56562
+- Stopped listing files interrupted by a shutdown as broken during restore, thanks @JamBalaya56562
+- Stopped reporting a requested shutdown as a failure, thanks @JamBalaya56562
+- Fixed the legacy restore engine creating a real folder in place of a directory symlink, thanks @JamBalaya56562
+- Ran all main database queries through the slow-query monitor, so `--long-database-query-threshold` now warns about hanging queries, thanks @JamBalaya56562
+- Added native desktop notifications: Windows toast notifications with click-to-open, macOS notifications, and Linux DBus notifications, thanks @JamBalaya56562
+- Added support for native `$VAR`/`${VAR}` environment variable syntax in paths and filters on Linux and macOS, thanks @JamBalaya56562
+- Made restore honor stop requests; aborted restores no longer report errors, blame the backup, or leak temp files, thanks @JamBalaya56562
+- Fixed wrong seek offset when copying verified local blocks during restore, thanks @JamBalaya56562
+- Fixed incorrect buffer copy when merging a hash fragment during restore, thanks @JamBalaya56562
+- Preserved the selected folder during restore, thanks @JamBalaya56562
+- Let configured default options apply when restore options are not specified, thanks @JamBalaya56562
+- Prevented credentials from leaking through URL sanitizing on malformed URLs, thanks @JamBalaya56562
+- Fixed corrupted target URL for local paths containing `@`, thanks @JamBalaya56562
+- Matched backend URL schemes without regard to case, thanks @JamBalaya56562
+- Fixed decoding of `%uXXXX` unicode escapes in URLs, thanks @JamBalaya56562
+- Kept repeated path components in alternate update URLs, thanks @JamBalaya56562
+- Parsed SSH, SMB, FTP, XMPP, pCloud, Tahoe-LAFS, and OAuth login URLs with the standard URI parser, thanks @JamBalaya56562
+- Renamed the internal URL parser to `RelaxedUri`
+- Removed unused parts of the relaxed URL parser and documented its constraints, thanks @JamBalaya56562
+- Re-created missing index files after the block volumes are processed, thanks @JamBalaya56562
+- Recomputed the next scheduled run when weekdays or interval change, thanks @JamBalaya56562
+- Fixed logout not awaiting invalidation and not clearing the refresh cookie, thanks @JamBalaya56562
+- Improved console connection reconnect handling and allowed concurrent message processing
+- Guarded Hyper-V and MSSQL enumeration against errors
+- Simplified MS365 seat counting and improved site classification
+- Fixed MS365 user listing classification and return results sorted
+- Fixed pagination when listing backend destination folders
+- Treated an existing folder as success when auto-creating a destination, thanks @JamBalaya56562
+- Made the connection test accept a missing probe file, thanks @JamBalaya56562
+- Fixed Box folder resolution when the folder name is already in use, thanks @JamBalaya56562
+- Fixed Box lookups ignoring the requested path, thanks @JamBalaya56562
+- Fixed IDrive e2 reporting existing entries as missing, thanks @JamBalaya56562
+- Reported the server error when a multipart upload fails, thanks @JamBalaya56562
+- Observed read timeout on chunked uploads to Google and Dropbox, thanks @JamBalaya56562
+- Checked response status before decrypting a Filen download, thanks @JamBalaya56562
+- Checked response status before treating a pCloud upload as done, thanks @JamBalaya56562
+- Checked response status when deleting a Tahoe-LAFS file, thanks @JamBalaya56562
+- Fixed Filejump error handler calling itself indefinitely, thanks @JamBalaya56562
+- Made BackendTester cleanup accept an already deleted file, thanks @JamBalaya56562
+- Added detection of misconfigured filters with a warning
+- Rejected unusable update check intervals instead of ignoring them, thanks @JamBalaya56562
+- Failed on an invalid webservice timezone instead of silently resetting it, thanks @JamBalaya56562
+- Updated the help text for the sync command
+- Relaxed data folder permission checks for debug builds
+- Synced Japanese and Chinese README files with the English version, thanks @JamBalaya56562
+- Updated all packages to latest versions
+- Updated SSH.NET and BouncyCastle dependencies
+- Updated js-yaml, fast-uri, and postcss dependencies
+- Updated the licenses project
+
+## Updates to ngclient
+
+- Fixed commandline autoscrolling, thanks @JamBalaya56562
+- Fixed source filter highlighting, thanks @JamBalaya56562
+- Prefill restore settings from configured backup settings, thanks @JamBalaya56562
+- Updated Google Workspace icon
+- Fixed pagination in source tree
+- Database query timeout is now a "short time" type
+- Added a visual warning if filters are "exclude all"
+- Use `-filename*` as the default new filter to avoid having exclude all as the default
+- Updated all translations, thanks all translators
+
+2026-07-20 - 2.3.0.108_canary_2026-07-20
+==========
+This release is a canary release intended to be used for testing.
+
+If no major faults are found, **this release is intended to be the basis of the next beta release**.
+
+# MS365 subsites and shared mailboxes
+
+This release improves the Microsoft 365 backup support with two additions.
+Support for backing up SharePoint subsites has been added, making it possible
+to include sub-sites beneath a site collection in a backup.
+
+The handling of shared mailboxes has also been improved, with better detection
+and enumeration of shared mailboxes within a tenant.
+
+The license counter now excludes shared mailboxes without a license, and supports
+top-level filtering of users/sites/groups based on classification.
+
+An extra information button is added to the source page that shows a summary
+of what content was found in the MS365 tenant.
+
+# Case-insensitive remote filename matching
+
+A new option has been added to perform case-insensitive matching of remote
+filenames. This helps with backends that do not preserve filename casing, and
+prevents issues where files cannot be found because of case differences.
+
+# Improved filter parsing
+
+The filter parsing logic has been improved to handle more edge cases and
+produce more predictable results when building filter expressions.
+
+# Added `wipe-encryption` to database tool
+
+The database tool now supports a `wipe-encryption` command that can be used to remove all encrypted fields from a server database. With this command it is possible to get an encrypted database back into a state where it can be opened again. After encrypted fields are wiped, the user can then edit backups and settings to replace the lost data.
+
+## Detailed list of changes
+
+- Make BackendTester actually retry failed uploads, thanks @JamBalaya56562
+- Fix `--restore-preallocate-size` option having no effect, thanks @JamBalaya56562
+- Re-introduce `insecure-permissions.txt` file in install folder
+- Use the application data folder for the control directory filter, thanks @JamBalaya56562
+- Fix several options declared as Integer that are not integers, thanks @JamBalaya56562
+- Add case-insensitive remote filename matching, thanks @JamBalaya56562
+- Fix broken date-time format strings, thanks @JamBalaya56562
+- Fix secure-datafolder for service permissions
+- Log errors when user-supplied settings fail to parse, thanks @JamBalaya56562
+- Support MS365 subsites in backup and restore
+- Updated all translations, thanks to all translators
+- Fixed pulling mulitple new languages
+- Improve MS365 shared mailbox handling and item classification
+- Improve filter parsing with regards to embedded path separators
+- Fixed restore-control-files with non-standard options
+- Unify `--datafolder` option name in configuretool
+- Fail the backend test when verification finds a problem, thanks @JamBalaya56562
+- Use local executable name for configuretool
+- Fix loading of locale files with hyphenated culture names, thanks @JamBalaya56562
+
+## UI updates
+
+- Added option to manually start a console-managed backup
+- Added `tr` and `ko` languages to the UI
+- Updated all translations, thanks to all translators
+- Fixed an error attempting to save a backup with a schedule
+- Added button to show MS365 tenant counters
+
+2026-07-13 - 2.3.0.107_canary_2026-07-13
+==========
+This release is a canary release intended to be used for testing.
+
+If no major faults are found, **this release is intended to be the basis of the next beta release**.
+
+# Breaking change: Locked-down data folder permissions
+
+This release hardens security around the data folder and is a **breaking change** for some setups.
+
+Duplicati now **requires** that the data folder has the exact expected permissions, or it will refuse to use it. Previously, Duplicati would silently lock down the folder if it was not already locked. The previous `insecure-permissions.txt` opt-out file is no longer supported.
+
+The only way to opt out of the permission check is to pass `--allow-insecure-datafolder` or set the environment variable `DUPLICATI__ALLOW_INSECURE_DATAFOLDER=true`. This setting can be placed in `preload.json`, but only if _that_ file is in a trusted location (the directory with the binaries, or the path pointed to by `DUPLICATI_PRELOAD_SETTINGS`). The previous trusted paths `/usr/local/share/Duplicati/preload.json` and `C:\ProgramData\Duplicati\preload.json` are no longer supported as they cannot be guaranteed to be locked down.
+
+A `preload.json` inside the data folder is still supported, provided the folder passes the permission check.
+
+The `ConfigureTool` has a new `secure-datafolder` command that can be used to force the correct permissions on the data folder.
+
+For most users this should not cause any problems, as Duplicati has been locking down the folder already, but if you rely on lax folder permissions the setup needs to change. Some Docker setups may not be able to set the permissions and will need to apply `DUPLICATI__ALLOW_INSECURE_DATAFOLDER=true` in the image to run without the protections.
+
+## Feedback requested
+
+We are grateful for any feedback on changes or hints for how we can lessen the impact before the next stable release.
+
+# Live reporting module
+
+This release adds a new live-reporting module that sends the current progress of backups to a user-specified URL. The intention is that this can be used for dashboards that want to show the current progress for backups. By default, the module is not configured and has no impact.
+
+The module supports multiple activity targets and includes metadata in the activity report, as well as a server-provided activity URL.
+
+# PAR2 parity / error-correction for remote volumes
+
+This release adds a pluggable parity module that produces error-correction data for remote data volumes, so they can be repaired after bit-rot or corruption on the backend, thanks @JamBalaya56562.
+
+A pluggable `IParity` module system is introduced, mirroring the existing compression/encryption modules. The default `Par2Parity` implementation shells out to the `par2` (par2cmdline) program. If the `par2` command is installed this will transparently handle creating and using parity files to guard against flipped bits.
+
+# Improved TLS certificate validation
+
+The TLS certificate validation has been improved, and Duplicati now falls back to using the OS-default certificate validator. This should resolve issues with custom certificate chains and improve compatibility with various TLS setups.
+
+## Detailed list of changes
+
+- Locked down data folder permissions and require exact permissions, with opt-out via `--allow-insecure-datafolder`
+- Added `secure-datafolder` command to the ConfigureTool
+- Added a live reporting module for sending backup progress to a URL
+- Added pluggable PAR2 parity module for error-correction of remote volumes, thanks @JamBalaya56562
+- Improved TLS certificate validation and fallback to OS-default validator
+- Locked the server database with a busy timeout to prevent concurrent access issues
+- Improved metadata update handling to better show remote versions
+- Guarded the compact operation against race conditions
+- Fixed database inconsistency after shared metadata delete
+- Avoid secondary transaction errors after repair failure, thanks @JamBalaya56562
+- Delete the incomplete recreate database when the remote is empty, thanks @JamBalaya56562
+- Stabilized ZipFallback database cleanup on Windows, thanks @JamBalaya56562
+- Reset restore rendezvous barriers per operation, thanks @JamBalaya56562
+- Fixed test-filters ignoring `--source` from a parameters file, thanks @JamBalaya56562
+- Removed redundant cancel button from restore progress, thanks @JamBalaya56562
+- Do not attach stack traces to known-problem path warnings, thanks @JamBalaya56562
+- Made CLI `find` search all backup versions by default, thanks @JamBalaya56562
+- Use effective dbpath for show-log and delete-db endpoints, thanks @JamBalaya56562
+- Reporte script execution in operation status, thanks @JamBalaya56562
+- Added commandline target URL done action, thanks @JamBalaya56562
+- Returned non-zero exit code from server-util run on backup failures, thanks @JamBalaya56562
+- Added DfsrPrivate to default excludes, thanks @JamBalaya56562
+- Escaped Windows commandline percent expansion, thanks @JamBalaya56562
+- Updated SQLitePCLRaw e_sqlite3 library, thanks @JamBalaya56562
+- Stabilized Windows ACL restore test, thanks @JamBalaya56562
+- Updated Swashbuckle to patched OpenApi, thanks @JamBalaya56562
+- Delayed Windows service startup, thanks @JamBalaya56562
+- Validated retention-policy format instead of crashing on missing colon, thanks @TowyTowy
+- Allowed machine-id override to fix mismatched ids for console connection and backup reports
+- Added endpoints for removal of versions and purge-broken files
+- Reported number of zero-length metadata entries
+- Fixed uninstall issue with delay-start service
+- Updated all localizations, thanks to all translators
+
+## UI updates
+
+- Option to start a managed backup from the home page.
+- Support for deleting versions from the actions menu.
+- Support for invoking purge-broken-files from the actions menu.
+- Moved the database compact action from the main menu to the database page.
+- Resolved websocket reconnect race conditions and timer mismatch
+- Aligned the disconnected dialog countdown with the actual reconnect delay (5s)
+- Renamed the "System settings" panel heading to "Server settings" for consistency with the tab name
+- Fixed a search issue with advanced options
+- Resolved the schedule page next-time off-by-one day issue
+- Updated localizations, thansk to all translators
+
+2026-07-03 - 2.3.0.106_canary_2026-07-03
+==========
+This release is a canary release intended to be used for testing.
+
+# Sync copy mode
+
+This release adds a often requested feature that enables simple copying of files from source to destination.
+Where the regular backups are deduplicated, compressed, encrypted and versioned, the new sync mode will instead simply copy from source to destination.
+
+The copy is currently a one-way sync, where the source is replicated on the destination. Files can be deleted on the destination during sync (use `--sync-then-delete`), but destination folders will not be deleted.
+
+The option `--sync-remote-state` is by default be set to `UseRemoteState` which will list the destination and figure out what to upload. The setting `UseLocalState` uses a local database, similar to how backups work, to keep track of known remote files, and reduce the amount of remote listings done. Finally, the `BlindlyUpload` setting will just copy everything as-is to the remote.
+
+The sync jobs support remote sources, snapshots, and multiple destinations. If snapshots are enabled, the copy is done from the snapshot, ensuring reliable reads.
+
+Configuration of such a sync job is done the same way as with backup, but using a toggle option in the first step of the UI. Note that backup and sync jobs are not compatible as they use very different storage logic, so it is not possible to change the job mode after creating a job.
+
+CLI mode also supports sync.
+
+# Multi version restore
+
+A new option, `--restore-all-files` can be used to restore files matching a filter from multiple versions. This can be used to select specific versions and then restore a set of files in all versions. This option does not currently have a UI component.
+
+## Detailed list of changes
+
+- Fix MacOS Photos memory usage.
+- Fix Agent startup race condition.
+- Warn when VCRedist is missing on VSS failure.
+- Update localizations.
+- Fix incorrect help text for remote locks.
+- Added a restore callback module.
+- Added support for restoring files across multiple versions.
+- Added a sync command to the Controller and CLI.
+- Prevent creating a useless encryption key on startup.
+- Added an option to control OCSP/CRL failure handling.
+- Improved the secret provider loader and license checker.
+- Bumped SQLite and StreamJson dependencies.
+
+## UI changes
+
+- Added support for editing sync jobs
+- Show multiple destinations on overview
+- Updated localizations
+- Fixed issue with forcing lock refresh
+- Updated ShipUI and Angular
+
+2026-06-24 - 2.3.0.105_canary_2026-06-24
+==========
+# 2026-06-24 - 2.3.0.105_canary_2026-06-24
+
+This release is a canary release intended to be used for testing.
+
+# Store configuration with backup
+
+This release revives the `store-task-config` option and makes it enabled by default for encrypted backups. The backup configuration is stored with the backup data, making it easier to restore a configuration later.
+
+For unencrypted backups, no secrets are stored by default. The behavior can be customized with options to store none, self, or all configurations, with or without secrets. The UI has been updated to allow restoring from the destination config. If multiple configurations are found, the user can select one or more backup configurations to restore.
+
+# Support for MacOS ACLs
+
+This release adds support for reading MacOS attributes and ACL strings during backup, and restoring them when permission restores are selected.
+
+# Support for Windows Alternate Data Streams
+
+This release implements support for reading and writing alternate data streams (ADS) on Windows. This feature is disabled by default and can be enabled with the advanced option `--enable-ads-backup`. If ADS content is found in the source, this is restored by default but can be disabled with `--disable-ads-restore`.
+
+# Fixed MSSQL backups
+
+Since 2.1 the MSSQL backups would produce errors if attempting to back up an MSSQL server that was running as the default instance, but would work with a named instance. This release fixes the issue and now handles both default- and named instances.
+
+# Improved missing source handling
+
+The default behavior when sources are missing has changed. Previously, a missing source would abort the backup. Now, a missing source will only trigger a warning unless the option `--abort-if-source-missing` is set. The option `--allow-missing-source` can still be used to suppress warnings entirely. If no sources are found at all, the backup will still abort.
+
+# Relative database paths
+
+Database paths are now stored relative to the data folder by default. This makes it simpler to move the data folder as the paths are not stored in full. Existing backups retain their full paths, but manually updating a database path will make it relative if it is within the data folder.
+
+# Updated LibSecret support for KDE
+
+The LibSecret support has been updated to work correctly on KDE Plasma 5+6. The default collection alias is now properly resolved, fixing issues where a new collection named `default` would be created incorrectly.
+
+# License flexibility in MS365 and Google Workspace
+
+The way license usage is calculated has been updated. Enumeration is now applied without imposing limitations, but actually reading the items is limited. This allows filtering unwanted items before they count towards usage.
+
+# Improved source tree
+
+To make it easier to see what data is included, the source tree will now show the content of remote sources, including Microsoft 365 tenants, Google workspace subscriptions and full-disk content.
+
+## Easier filter configuration
+
+Expanding the content will show item inclusion state. Clicking items will toggle them, similar to how regular file select works. This allows selective backup of remote data, such as picking which MS365 mailboxes to include.
+
+For the full-disk selection is now possible to select an entire disk as the source, or select the individual partitions.
+
+## Server-side filters
+
+Additionally, the filter evaluation will now be performed server-side if the filters are not "simple filters". When a non-trivial filter is in the list, the C# code will be asked to evaluate the list and produces the filtered results which are then displayed. This increases the correctness of the displayed filter state because the same code is now used for both display and actual backup operations.
+
+## Resolve helper entries
+
+The helper entries, like "My Documents" are now show in all picker situations and resolve to the full path. This makes it possible to use these shortcuts to pick things like log-file location or SSH keyfiles, without having to traverse the full tree to find the locations.
+
+## Browse remote destinations
+
+The destination configuration has been updated to include a browse button for finding the remote destination path. Once the connection details are in place, the browse button can be used to navigate the remote file system and select the desired destination folder. This works both for configuring a backup and for picking the restore location.
+
+## Detailed list of changes
+
+- Updated LibSecret support to work correctly on KDE Plasma 6
+- Improved missing source handling, missing sources now warn instead of abort by default
+- Fixed MSSQL default instance handling
+- Fixed incorrect option types for lock mode, now showing as enums in the UI
+- Fixed retry of HTTP messages
+- Fixed ordering issue where filtered paths were accessed before filtering
+- Use relative database paths by default
+- Updated rclone in Docker images to use recent releases
+- Store configuration with backup with flexible options for encrypted and unencrypted backups
+- Added support for MacOS ACLs
+- Added searching in metadata for remote sources
+- Filter paths in reported log data to avoid leaking sensitive information
+- Prevent crash on metadata error during restore
+- Fixed case-insensitive search and exposed the flag in the API
+- Implemented support for ADS on Windows
+- Added auth timeout to Duplicati backend
+- Handle script modified filters correctly
+- Fix minor issues with remote sources
+- Improve license flexibility, allowing filtering before usage limits
+- Added unified interface for remote browsing
+- Always install WindowsService.exe in MSI
+- Add server-side filter evaluation
+- Block path traversal in recovery tool
+- Allow disabling default secret provider
+- Fixed case-change issue with USN on Windows
+
+## Updates to ngclient
+
+### New Features
+
+- Added support for restoring from remote config.
+- Added ability to browse for a destination path.
+- Added support for the new destination list API (auto-toggled if server supports it).
+- Added support for browsing MS365 and Google Workspace, so filters can be applied while content is visible.
+- Added support for server-side filters in treeview.
+- Showing shortcuts in pickers as we can now resolve them.
+- Added a debouncer to filter calls.
+- Added error indicator to tree view.
+
+### Improvements
+
+- Clean up target disk layout.
+- Apply extended search only if we are restoring from a destination that needs it.
+- Include server-only options, if any.
+- Better Google Workspace error messages.
+- Fixes to allow listing full disks on Windows.
+- Fixed issue with evaluating globbing.
+
+2026-06-04 - 2.3.0.104_canary_2026-06-04
+==========
+This release is a canary release intended to be used for testing.
+
+# Improved Windows installer
+
+This change brings a major update to the Windows installers, which now integrates the ability to run as a service, as well as generate and use TLS (https). The service feature has been present for a while in the `WindowsService.exe` tool and the TLS certificates were added as part of the `Duplicati.CommandLine.ConfigureTool.exe`. With this update these things are now integrated into the installer, and exposed as simple checkboxes to toggle the features. Installing the service from a regular user account, will also auto-generate a secure password and configure the TrayIcon to connect to the service (only for the current user).
+
+If you have installed the service manually, do not activate the new checkbox as it only works if there is no pre-existing service.
+
+# NTFS full-disk backup
+
+This release extends the full disk backup feature to include NTFS support on Windows. With this support it is more efficient to make backups of NTFS formatted disks. To enable this feature, add the advanced option `--diskimage-filesystem-parsed=true` and the backups will attempt to parse the disk, and if it is one of the supported formats, it will only read the relevant sectors.
+
+# New Auto-Tune tool
+
+This release also introduces a new AutoTune tool (`Duplicati.CommandLine.AutoTuneTool` / `duplicati-autotune`), designed to help evaluate and optimize performance-related settings automatically based on the system.
+
+# Read-only testing of backends
+
+Backends now support read-only context-aware testing, which allows testing connections safely without risking unintended changes to the storage. The read-only testing is applied when testing a restore destination or a remote source, such that no files are attempted written to the remote storage.
+
+# New welcome page and start
+
+The UI will now show a welcome page showing how to connect to the console with an option to continue without. 
+This can be suppressed with the option `--webservice-suppress-welcome-page=true` or environment variable `DUPLICATI__SUPPRESS_WELCOME_PAGE=true`.
+
+If the connection is made from the TrayIcon, the initial dialog asking to set a password is no longer shown, as the intention is to use the TrayIcon to connect.
+It is still possible to change the password from the Settings page if needed.
+
+## Detailed list of changes
+
+- Added handling for extended Win32 file attributes and option to ignore non-local files, such as OneDrive and Dropbox files
+- Fixed showing correct S3 lock mode values
+- Added full disk NTFS support
+- Added AutoTune tool
+- Added read-only testing to backends, thanks @realtek2017
+- Made FS parsing experimental
+- Fixed remote file locking on Windows
+- Fixed SMB source listing misclassifying directories as files, thanks @realtek2017
+- Improved MSI installer package for Service
+- Simplified console handling
+- Cleaned up state after registering
+- Removed explicit defaults in backup config
+- Hardened MSI installer
+
+## Changes in ngclient
+
+- Added toggle to show advanced option names instead of descriptions
+- Added confirmation popup before exporting configuration without encryption
+- Now showing remote lock results on log page
+- Toggling read-only testing of backends based on context
+- Fixed websocket not connecting on welcome page
+- Added a welcome page for simpler console connections
+- Removed attributes filter options on source page, in favor of using advanced options
+
+2026-05-22 - 2.3.0.103_canary_2026-05-22
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this version
+
+This release marks the soft-launch of the Duplicati Storage service, giving a zero-configuration setup of storage. The Duplicati Storage backend works like any other backend, but there is no configuration to set up. Once the client is connected to the console, it can use the Duplicati Storage backend.
+
+The service is currently in soft-launch mode and anyone interrested can contact Duplicati support to have a storage trial activated on their account.
+
+In this release there is an experimental setting option that makes the actual operations (backup, restore, verify, etc.) run in an isolated sub-process. When this setting is enabled, the Duplicati server will spawn a new process for each operation, and the operation will run in that process. This means that if the process crashes or hangs, the Duplicati server will not be affected. It also allows the Duplicati server, and by extension the user, to force-kill a stuck process. While this feature is tested, it is not enabled by default as we are aware that there might be subtle issues and would like feedback on how the feature works in real-world scenarios.
+
+The previous "SharePoint" and "OneDrive for Business" backends have been marked as deprecated, as Microsoft shut down the API they were calling. The migration step is to use the "SharePoint v2" backend (renamed to just "SharePoint" in this version) which uses the Microsoft Graph API.
+
+This version also adds a new backend for the Spanish proivder Movistar, thanks to @redmars27. The backend is marked as "untested" as it can only be used (and tested) by Movistar customers.
+
+This update also adds some more guards to the synthetic filelist generation update from 2.3.0.102, and a fix for OneDrive timeouts.
+
+## Detailed list of changes
+
+- Fixed an issue with Filen.io renaming
+- Added a failsafe when creating synthetic filelists
+- Added check code to ensure synthetic filelists are generated with required fields
+- Fixed restore message when no files are restored to reflect if existing files are found
+- Added support for marking backends as deprecated or untested
+- Deprecated `od4b` and `mssp` backends as the API is no longer working
+- Fixed some files showing as folders and missing size information
+- Hide the `--unittest-mode` flag from supported options
+- Fix parsing MacOS timestamps that are from year 0000
+- Updated internal controller to only expose `async` methods
+- Updated Mega S4 endpoint list
+- Fixed an issue where option settings could potentially be sticky across operations
+- Updated warning logic on restore if no files were restored
+- Fix a 100s timeout with OneDrive and SharePoint v2
+- Updated the Duplicati Backend to use the new API
+- Added support for running backup and restore in an isolated sub-process
+- Added MoviStar storage backend, thanks @redmars27
+
+## Changes in ngclient
+
+- Prevent iteration of non-folder paths
+- Enable selecting hidden items
+- Added path resolving on the "dynamic paths", such as "My documents"
+- Fixed compression option not being visible
+- Added support for showing backends as deprecated or untested
+- Fixed an issue where file size would not be shown in the file tree
+- Added an option to retry loading a backup list
+
+2026-05-09 - 2.3.0.102_canary_2026-05-09
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this version
+
+## Drime Cloud Backend
+
+Added support for Drime Cloud as a new storage backend.
+
+## Slow Query Monitor
+
+Added a slow query monitor to help diagnose performance issues by tracking long-running database queries.
+
+## Synthetic Filelist Optimization
+
+Optimized the creation of synthetic filelists, improving performance for large datasets.
+
+## Empty Index File Handling
+
+Improved handling of empty index files to prevent errors during database recreate and restore operations.
+
+## SQL Logging Improvements
+
+Improved SQL logging across the database layer for better diagnostics and debugging.
+
+## Detailed Changes
+
+- Added Drime Cloud backend support
+- Improved websocket handling for remote management
+- Added slow query monitor for database performance diagnostics
+- Optimized synthetic filelist creation
+- Improved handling of empty index files
+- Persisted used compression module in volume reader
+- Improved SQL logging across database operations
+- Updated Office 365 strings to Microsoft 365
+- Added package to Docker image
+- Improved immediate usage reporter updates
+
+## ngclient Updates
+
+- Show "last backup" with the same date in both detail and grid view
+- Show actual scheduled time for backups
+- Fixed an issue with using stored destinations which would fail to create folders
+- Fixed an issue with importing backups where the schedule edits would be ignored
+- Fixed an issue where the date for a scheduled backup would be off-by-one when edited
+- Optimized query flow to use websockets instead of polling/fetching
+
+2026-05-04 - 2.3.0.101_canary_2026-05-04
+==========
+# 2026-05-04 - 2.3.0.101_canary_2026-05-04
+
+This release is a canary release intended to be used for testing.
+
+# Changes in this version
+
+## Zstd Compression Support
+
+Added a new experimental compression module that supports the zstd compression algorithm, providing faster and more efficient compression for backups.
+This new format is currently only for testing and will log a warning when used. Please do report feedback on speed or usability for this feature.
+
+## SharpAESCrypt v3
+
+Updated the SharpAESCrypt encryption library to support "AES Crypt Stream Format v3", which has a number of improvements over the v2 format.
+For this release, the default written format remains v2, but we encourage you to set the environment variable `DUPLICATI__AES_VERSION=3` to test the new format.
+**Note:** if you set this version to 3, the new remote volumes cannot be read by Duplicati versions older than this version (2.3.0.101).
+
+## Post-Backup Script Support
+
+The RunScript module now supports running scripts when a backup has finished, but before checks and compaction.
+With this new script option it is possible to pause/resume critical functions for a shorter period.
+
+## Remote Synchronization Improvements
+
+Added destination space quota checks to the remote synchronization runner, helping prevent failures due to insufficient destination space.
+An option to disable quota checks (`quota-disable`) has also been added for scenarios where quota information is not available or reliable.
+The remote sync code now handles backend instantiation failures more gracefully.
+
+## Maintenance and Recompress Fixes
+
+Fixed an issue where the write-path option was not correctly persisted and restored during maintenance and recompress operations, thanks @aureliandevel.
+
+## More Defensive Delete Operations
+
+Added additional defensive checks during the delete operation to prevent database constraint violations in edge cases.
+
+## Certificate Chain Preservation
+
+The web server again returns full certificate chains when serving HTTPS.
+
+## Avalonia Update
+
+Updated the Avalonia UI framework to version 12.0.2, which no longer requires DX12.
+
+## Detailed Changes
+
+- Added experimental zstd compression support
+- Updated SharpAESCrypt to version 3
+- Added post-backup script support to the RunScript module
+- Added destination space quota checks to remote synchronization
+- Added option to disable quota checks in remote synchronization
+- Improved S3 backend to use precomputed hashes for uploads
+- Added content length support for non-seekable streams in S3 backend
+- Improved error handling in remote sync
+- Fixed persisted write-path option for maintenance and recompress operations, thanks @aureliandevel
+- Added more defensive checks during delete operations
+- Fixed certificate chain preservation in HTTPS server
+- Added support for DO_NOT_TRACK environment variable
+- Added logging of 500 errors to live log
+- Fixed SecretProvider initialization failure handling
+- Improved expired remote control link handling
+- Fixed full-result option mismatch with alias support, thanks @aureliandevel
+- Added remote-volume-size option alias
+- Updated Avalonia to version 12.0.2
+- Updated all localizations, thanks to all translators
+
+## ngclient changes
+
+- Removed flicker on console signup
+- Expanded restore view to work better on large screens
+- Fixed filters on Commandline page not being fully editable
+- Added filename searching to the restore page
+- Fixed an issue where a folder would not always expand when loading the tree
+- Fixed an issue where invalid requests would be sent to the backend when loading the tree
+- Updated to latest ShipUI
+- Fixed an issue with referencing crypto API directly
+
+2026-04-23 - 2.3.0.100_canary_2026-04-23
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this version
+
+## FAT32 Support for Full Disk Backup
+
+Added FAT32 file system support for the full disk backup feature, including boot sector parser, table reader, streams, and directory walker.
+
+## Remote Synchronization Improvements
+
+Integrated remote synchronization feature (aka 3-2-1 backups) from a separate module into the Main library for better integration, with improved error handling, progress tracking, and reliability.
+
+## Crash Dialog
+
+Added a crash dialog window that appears when the application encounters an unhandled exception.
+
+## DeleteBackup Command
+
+Added a DeleteBackup command to ServerUtil for deleting backups from the command line, thanks to @WouterTinus.
+
+## Avalonia 12 Update
+
+Updated Avalonia UI framework to version 12.
+
+## Performance Improvements
+
+Changed DataBlock and StreamBlockSplitter to use ArrayPool instead of new byte[] allocations, reducing memory pressure during backup operations, and speeding up backups.
+
+Improved the disk-usage logic for improved performance on restores, thanks to @aureliandevel.
+
+# Detailed Changes
+
+- Improved localization resilience and updated all translations, thanks to all translators
+- Fixed empty file db-recreate issue
+- Improved configuration speed from console
+- Updated MailKit, MimeKit, Avalonia
+- Fixed remote sync ShouldTrigger error handling
+- Fixed a settings save bug
+- Performance improvement using ArrayPool for backup operations
+- Updated SharpCompress library
+- Added crash dialog window
+- Added DeleteBackup command to ServerUtil, thanks @WouterTinus
+- Refactored volume manager LRU cache, thanks @aureliandevel
+- Added FAT32 file system support for full disk backup
+- Fixed auth refresh infinite loop in ngax, thnaks @adnit
+- Moved remote synchronization to Main library with improved progress tracking
+- Fixed dollar sign in filename regex issue
+
+# Updates to ngclient
+
+- Fixed an issue with `dblock-size` not being saved correctly
+- Fixed an issue where the notification buttons were hidden
+
+2026-03-20 - 2.2.0.107_canary_2026-03-20
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this version
+
+## Linux full disk backup support
+
+This version extends the full disk backup feature to include Linux support.
+You can now backup and restore entire disks on Linux, including partition tables.
+This is a proprietary module (source available) that requires a license to use in production.
+
+## Database tool improvements
+
+The database tool now includes `verify` and `cleanup` commands.
+The `verify` command can be used to check if databases exist or are orphaned.
+The `cleanup` command can be used to remove orphaned entries and reclaim space.
+
+## Bug fixes and improvements
+
+- Fixed restore without local database for partial restores
+- Fixed an issue with loading certificate bundles on Windows
+- Fixed Docker image tagging to not push with naked version
+- Added Hetzner and DigitalOcean regions to S3 backend
+- Updated AWS SecretManager dependency
+
+## Detailed list of changes:
+
+- Added Linux support for full disk backup and restore
+- Added verify command to database tool
+- Added cleanup command to database tool
+- Fixed restore without local database
+- Fixed certificate bundle loading on Windows
+- Fixed Docker naked version tagging
+- Added Hetzner S3 regions
+- Added DigitalOcean S3 regions
+- Updated AWS SecretManager dependency
+
+## ngclient changes:
+
+### Features
+
+- Added button to suppress warnings
+- Added focus styles for most elements
+- Updated ShipUI, added keyboard navigation
+- Added new provider logos for upcoming storage providers
+
+### Bug Fixes
+
+- Fixed issue with Firefox asking to save passwordds
+- Fixed issue with proxy configuration
+- Datepicker start of week
+- Fixed issue with server ip and port mangling input
+- Fixed refreshToken race condition that caused logout
+- Fixed honeypot using exported type causing login issues
+
+### Improvements
+
+- Improved live logs display
+
+2026-03-06 - 2.2.0.106_canary_2026-03-06
+==========
+# 2026-03-06 - 2.2.0.106_canary_2026-03-06
+
+This release is a canary release intended to be used for testing.
+
+# Changes in this version
+
+## MacOS full disk backup support
+
+This version extends the full disk backup feature to include basic MacOS support.
+You can now backup and restore entire disks on MacOS, including partition tables.
+This is a proprietary module (source available) that requires a license to use in production.
+
+## Automatic HTTPS support
+
+This version adds support for managed TLS certificates, making it easier to run Duplicati with HTTPS enabled.
+The feature includes automatic certificate generation and management for secure connections.
+
+This release contains a new `Duplicati.CommandLine.ConfigureTool.exe` / `duplicati-configure` tool that can be used to configure the server and generate certificates. See documentation/help for more details.
+
+## Detailed list of changes:
+
+- Added basic MacOS support for full disk backup and restore
+- Added support for managed TLS/HTTPS certificates
+- Fixed agent commandline argument names
+- Improved link detection on Windows
+- Fixed race condition with source provider disposal
+- Fixed Windows full-disk reattach scripts
+- Updated nuget dependencies for Mime
+
+2026-02-20 - 2.2.0.105_canary_2026-02-20
+==========
+This release is a canary release intended to be used for testing.
+
+This canary release is intended to be the base for the next beta/stable release.
+
+# Changes in this version
+
+## Database schema updates
+
+This version updates the Server database schema to **version 11** (was 9 in 2.2.0.104).
+These changes add the new remote destination repository table, and a table for tracking multiple backup destinations.
+
+Updates are applied automatically, and if you need to downgrade, the database tool can perform downgrades.
+Downgrades will wipe the new backup destinations and the backup destination repository, but otherwise does not cause data loss.
+
+## Multiple backup destinations
+
+This version adds support for configuring multiple destinations for a single backup job.
+This allows you to backup to multiple locations simultaneously, such as a local drive and a cloud storage provider.
+With multiple destinations, you can now configure a complete 3-2-1 backup strategy in a single job.
+After each completed backup, Duplicati will ensure that data is available on all destinations.
+
+A 3-2-1 backup strategy is where you have 3 copies of your data, 2 of which are on different media, and 1 of which is offsite/immutable.
+
+## Windows folder status indicator
+
+Thanks to @AndyBodnar, this version adds a Windows shell extension that shows the backup status of folders with icon overlays.
+The feature is disabled by default but can be enabled with the option `--enable-folder-status-service` on either Server or TrayIcon.
+Once the feature is enabled, you can run the `RegisterFolderStatusExtension.ps1` script to register the extension, and you can then see the backup status of folders in Windows Explorer.
+
+## Google Workspace backup
+
+This version adds support for backing up Google Workspace, including Gmail, Google Drive, Contacts, Calendar, and Chat.
+Like the Office 365 backup feature, this is a proprietary module (source available) that requires a license to use in production.
+Without a license, testing is possible with up to 5 users.
+
+If you prefer a clean OSI-approved installation, you can prevent proprietary modules from loading by setting the environment variable `DUPLICATI_DISABLE_PROPRIETARY_MODULES=1` or simply delete the files named `Duplicati.Proprietary.*` from your installation.
+
+## Full disk backup
+
+This version adds simple support for backup and restore of entire disks, including the MBR/GPT partition table.
+In this initial version, only Windows is supported, the backup is accessing the disk directly (no VSS).
+We are working on adding support for Linux and macOS, as well as VSS support for Windows.
+Like the Office 365 / Google Workspace backup features, this is a proprietary module (source available).
+
+Full disk backup requires administrative privileges to access the disk directly.
+Full disk restore requires administrative privileges and requires that the disk is unmounted and not write-protected.
+
+## Bugfixes and improvements
+
+- Fixed S3 endpoint port preservation and path validation, thanks @aureliandevel
+- Added connection string repository for simpler management of re-used backend connections
+
+## Detailed list of changes:
+
+- Added support for full disk backup and restore on Windows
+- Fixed incorrect commandline argument names in Agent
+- Added support for assigning license from console
+- Added Windows folder icon overlay for backup status, thanks @AndyBodnar
+- Fixed compile errors after merges
+- Added Google Workspace backup support
+- Added temp disk space check endpoint
+- Added support for multiple backup destinations
+- Updated translations
+- Fixed race condition with index file uploads during backup
+- Added latest translations
+- Updated translations from Transifex
+- Rolled back supplementary groups change
+- Fixed S3 host port preservation and path validation, thanks @aureliandevel
+- Fixed nullable warnings
+- Fixed large volume inputs handling
+- Fixed RPM spec ownership calculation
+- Fixed scheme detection on short paths
+
+## ngclient changes:
+
+### Features
+
+- Added support for picking disks for backup (if supported by the backend)
+- Added support for Google Workspace
+- Added support for saving multiple destinations
+- Added destination page
+- Added const to toggle auto-save of destinations
+- Added missing dropdown options for filters
+
+### Bug Fixes
+
+- Fixed issue with crashes in Chrome when showing tooltips
+- Fixed issue with "loader" buttons shrinking visually
+- Fixed advanced options not possible with UNC paths
+- Fixed include filters converting to paths
+- Fixed multi-line small screen styling of menu
+- Fixed non-existent icons
+
+### Improvements
+
+- Improved mobile display (responsive layout)
+- Improved status content
+- Improved status file text
+- Updated localizations, thansk to all translators
+- Updated status and destinations
+- Automatically open warnings/errors on the logs page
+
+2026-02-06 - 2.2.0.104_canary_2026-02-06
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this versions
+
+## Locking and protection
+This version extends on the remote file locking feature added in 2.2.0.103, to now also include locking support for Google Cloud Storage (GCS), as well as a policy mode option for Azure Blob Storage.
+
+This version also adds a new option `--soft-delete-prefix` which enables the soft-delete feature.
+When soft-delete is enabled, files are renamed (or moved) to a new location instead of being deleted.
+For destinations that support lifecycle management, this can be used to setup access such that Duplicati cannot delete a file, but can rename/move it.
+When Duplicati wants to delete a file, it will instead rename/move the file to a new location, and the lifecycle management or other tool can be used to delete the files with a specific prefix after a certain period of time.
+
+## Remote sources
+Remote sources have been supported, even in the current stable release, but the usage required some difficult manual string construction.
+This version adds support for remote sources in the UI, and makes it easier to use remote sources, with a prominent button on the source page.
+
+Besides making remote sources easier to use, this version also adds support for using Box, Dropbox, OneDrive and Google Drive as remote sources.
+
+## Office 365
+This version adds support for backing up Office 365 tenants, including mailboxes, calendars, contacts, OneDrive, Planner, Tasks, Teams, Sites, and more.
+
+Like the rest of Duplicati, the source code for this is available, but unlike the rest of Duplicati, this feature is not OSI open-source, and requires a license to use in production.
+In the current version, there is a limit of 5 users + 5 sites + 5 groups for testing.
+
+If you prefer a clean OSI open-source build, you can set the environment variable `DUPLICATI_DISABLE_PROPRIETARY_MODULES` or simply delete the files named `Duplicati.Proprietary.*` from your installation.
+
+## Templating engine for reporting
+Thanks to @AndyBodnar, it is now possible to use a Handlebars template to format the report output, which is especially nice for crafting emails.
+
+## Quality of life fixes
+This version now saves the current state of the commandline-inside-the-UI feature, so when you go back, it will retain the setup, making it much simpler to iterate and try out commands.
+
+We also added the long-requested "Edit as text" option to the source paths and filters, so you can now either use the UI or edit the paths and filters as text.
+
+The releases now also include an AppImage for Linux, so it can be used on Linux without needing to install it.
+
+Finally, we added support for the Hungarian, Czech and Polish languages. Thanks to the super translators!
+
+## Bugfixes
+This version includes a number of bugfixes targeting stability, where Duplicati now handles more edge cases, and is more robust against errors.
+
+Additionally:
+ - The `--dry-run` option has been fixed to strictly not touch data.
+ - The `--changed-files` option has been fixed to not introduce extra dangling file entries.
+ - The purge operation has been fixed to count size reduction more correct, use a faster query, and an option to disable size stats, should it still be too slow.
+ - Filen MFA login was updated a bit but the fix does not create long-lived tokens yet.
+
+
+## Detailed list of changes:
+- Added check for temporary space before starting server + restore operation
+- Fixed an issue with testing on remote sources when masked
+- Added support for reading `DUPLICATI__REGISTER_REMOTE_CONTROL` environment variable from Agent
+- Added Selectel S3 hostnames
+- Prevent restore outside of designated target folder
+- Added macOS snapshot support
+- Added encryption and masking of remote sources in logs and UI
+- Improved SSL certificate handling for WebDAV when testing
+- Added Office 365 backup support
+- Fixed cross-OS remote source path handling
+- Implemented rename operation on backends
+- Fixed purge size calculation to only include blocks once
+- Added guard against invalid entries in DeletedVolume table
+- Fixed manual changelist logic for `--changed-files` option
+- Fixed issue with failed delete causing database inconsistency
+- Handle missing blocks on recreate to prevent database issues
+- Improved support for remote sources
+- Fixed dry run functionality
+- Added support for GCS object locking
+- Added restore path to log output, thanks @WhiteElephantIsNotARobot 
+- Improved commandline execute functionality
+- Added automatic 3-2-1 backup rule support
+- Fixed issue with missing log entries when errors occurred
+- Added soft delete support
+- Improved query for purge broken files with `--reduced-purge-statistics` option
+- Fixed missing event on data update
+- Fixed Filen MFA login (but still broken)
+- Fixed cross-OS restore issues
+- Added AppImage builds
+- Added policy mode for Azure locking
+- Added templating engine support, thanks @AndyBodnar
+- Fixed spelling mistake for supplementary groups
+- Updated S3 NuGet dependencies
+
+## ngclient changes:
+- Added Selectel to list of S3 providers
+- Added autocomplete attributes to password fields
+- Fixed issues with masked urls not correctly working with test buttons
+- Fixed an issue with setting a blank path on initial load of FileTree
+- Fixed an issue that prevented save of an unencrypted backup
+- Fixed issue with recursive loading of paths in FileTree not working
+- Fixed issue with FileTree resetting the path on load in some cases
+- Updated FileTree to show which folder is currently expanding
+- Fixed a loading race that could clear an input
+- Rewrote most of the test handling for backends to use a shared component
+- Fixed wrongly saving draft backups while editing
+- Avoid requesting invalid data in FileTree browser
+- Added tooltip showing current file being processed
+- Keep state when navigating back to commandline UI
+- Added placeholder and hints to the commandline screen
+- Validate input before saving a backup to give better error message
+- Changed button text on theme switcher to indicate an action
+- Show SSH as "SFTP (SSH)"
+- Added new locales
+- Updated locales
+- Updated browser mapping
+- Fixed broken link to usagereporter
+- Hide button with no action in source view
+- Updated source lists and filter lists to allow "Edit as text"
+- Fixed bug with Create Folder and masked urls
+- Added support for Office 365 backup and restore
+- Fixed typo preventing TrayIcon login toggle from working
+- Added button to add remote sources to a backup
+
+2026-01-08 - 2.2.0.103_canary_2026-01-08
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this versions
+This version re-introduces the Synology native package, adds support for remote locking of files, and fixes a number of minor issues.
+
+## Synology native package
+The Synology native package has been re-developed to support the new Synology DSM 7.2 and above.
+This package installs as any other Synology package and uses the integrated DSM authentication to guard access, so only system admins can use Duplicati.
+To use the package, you need to grant access to the shared folders that you want to back up.
+
+## Remote locking of files
+This release adds support for remote locking of files, which is useful for example when using Duplicati with a remote storage provider that supports locking, such as S3 or Azure Blob Storage.
+The feature works by completing the backup as usual, and then locking all files that are required to restore the backup.
+The locking is done by asking the remote storage provider to lock the files, such that it is not possible to delete or overwrite the required files until the lock expires.
+Duplicati then keeps track of the locks and avoids attempting to delete or overwrite the locked files.
+
+To use the feature, set the advanced option `--remote-file-lock-duration` to the duration of the lock, for example `30D` for 30 days.
+
+Since locking requires support from the remote storage provider, this feature is only available for certain backends. 
+The locking is currently supported for S3, Azure Blob Storage, Backblaze B2, and iDrive e2.
+
+Each of the backends that currently support locking also have a property to set the locking mode to either `governance` (default) or `compliance`.
+The `governance` mode allows the lock to be removed in the admin console for the storage provider, while the `compliance` mode does not allow the lock to be removed.
+
+If using this feature, note that each provider has different requirements for the bucket, usually requiring versioning to be enabled.
+For S3 and B2, deleting the files after the lock expires will create a delete marker, which means that you will still be billed for the storage of the files, and need to set up lifecycle rules to actually delete the files after the lock expires.
+For Azure Blob Storage, deleting the files after the lock expires will delete the files immediately.
+
+## Change to default database encryption
+Carried over from 2.2.0.102_canary_2025-12-12, this release has a "default secret provider" for the current OS.
+The mapping is:
+- Windows: Windows Credential Manager
+- MacOS: Keychain
+- Linux: libSecret (Gnome Keyring), or commandline `pass` if available
+
+**Warning**: If there is no secret provider set, this change will cause the **database to be encrypted** with a random password, and the password will be stored in the default secret provider for the current OS.
+
+## Detailed list of changes:
+- Added Internxt S3 hostnames
+- Added improved support for hosting ngclient behind a reverse proxy
+- Added support for new API for remote management
+- Added support for remote locking of files
+- Re-introduced the Synology native package
+- Removed AWS specific labels on S3 options
+- Fixed a bug with testing on an empty destination
+- Added support for authentication regions with S3, particularly for Minio
+
+## ngclient changes:
+- Added support for serving behind a reverse proxy
+- Added support for hosting in an iframe, if configured
+- Improved handling auth attempts so successful re-auth is not shown as messages
+- Fixed proxied auth and websocket authentication
+- Fixed advanced options for rclone not working
+- Fixed hide connection status not showing when not connected
+
+2025-12-12 - 2.2.0.102_canary_2025-12-12
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this versions
+This release makes the S3 providers simpler to use by providing fewer options, and only showing relevant endpoints.
+
+The release also adds support for excluding files based on extended attributes on Linux and MacOS, and adds support for supplementary access groups on Linux.
+
+For Windows, the installer now supports `NOSCRIPT=true` which will prevent the installer from running scripts that start/stop the Windows service.
+
+It is now also possible to change the encryption passphrase for a backup, using the RecoveryTool.
+
+## Change to default database encryption
+This release now has a "default secret provider" for the current OS.
+The mapping is:
+- Windows: Windows Credential Manager
+- MacOS: Keychain
+- Linux: libSecret (Gnome Keyring), or commandline `pass` if available
+
+If no secret provider is given, the default secret provider for the current OS will be used.
+The secret provider is then used to store secrets, inclduing the encryption password for the database and the password for the server, if using the TrayIcon to connect to the server.
+
+**Warning**: This change will cause the **database to be encrypted** with a random password, and the password will be stored in the default secret provider for the current OS.
+
+If you rely on getting the database contents for something, you need to ensure you also have a copy of the random password.
+
+If you want to opt-out of this change, you can use the `--disable-db-encryption` option when starting the Server/TrayIcon.
+If you already have an encryption password set, this change will not affect you.
+
+If you are already using database encryption, and want to switch to the new managed way of storing the encryption password, you need to:
+- Stop the server/TrayIcon
+- Start the server/TrayIcon with the `--disable-db-encryption` option to remove the database encryption
+- Remove the `--disable-db-encryption` option
+- Remove the `--webservice-password` option or environment variable
+- Start the server/TrayIcon again
+
+## Detailed list of changes:
+- Added Rabata.io to list of support S3 providers
+- Added support for supplementary access groups on Linux
+- Added support for excluding files based on extended attributes (MacOS / Linux)
+- Added support for providing a URL for the servername for S3
+- Added a whitelist of public S3 providers, and include hostname in backup reports if the hostname is in the whitelist
+- Updated SSH.NET to latest version (2025.1.0)
+- Fixed an issue with startup delay not working correctly
+- Fixed a timeout issue with AliyunOSS
+- Updated RecoveryTool to also allow changing a backup's encryption password, thansk @greyxr
+- Added support for providing the target URL and encryption passphrase in ServerUtil when importing a configuration
+- Fixed a warning on Windows with the EventLog commandline argument type
+- Updated MSI installer to support `NOSCRIPT=true` which will prevent the installer from running scripts that start/stop the Windows service
+- Updated MSI installer to ignore errors when stopping the service
+- Added a guard code to check that the database is in a good state before attempting removal
+- Added support for writing secrets with the secret providers and the secret tool
+- Added a dialog to TrayIcon that asks for the password to the server, if not using a hosted server instance
+- Added support for saving the TrayIcon password in the default secret provider for the current OS
+- Added automatic encryption of the Server database, using the default secret provider for the current OS, if possible
+- Added support for getting an authentication token for Filen.io when using MFA
+- Automatically run `VACUUM` on the database if the encryption settings are changed, so existing data is scrubbed
+- Added a Duplicati Storage backend that supports the Duplicati Storage service
+
+## ngclient changes:
+- Fixed an issue with loading Chinese language
+- Added support for custom bucket validation rules on B2 buckets
+- Added support for hiding the console connection indicator
+- Merged settings for remote control on the settings page
+- Fixed an issue with some default empty url not working on the destination page
+- Fixed supporting Storj Access Grant & Storj API key
+- More accurate display of destination type on the overview page
+- Added custom UIs for supported S3 providers
+- Added improved field validation for providers
+- Updated the "Direct restore" flow to use the same destination picker as when setting up a backup
+- Added some functionality to swap UI and choose the default UI (ngax vs ngclient)
+- Fixed startup delay settings not being saved
+- Fixed an issue with the data not being selectable in a custom schedule
+- Fixed back button not working on Schedule page
+- Now pushing serversettings via websocket instead of polling
+- Added a button for getting API token for Filen.io when using MFA
+- Allow finding deprecated backends by typing their full protocol key
+- Added support for Duplicati storage backend
+
+2025-11-20 - 2.2.0.101_canary_2025-11-20
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this versions
+This version now runs on .NET10! Apart from some speedup, the transition should not be noticeable.
+
+This version also adds initial support for MacOS Photos, where it can now read photos, even if they are stored in iCloud.
+Previous versions would back up the folder, which might not include all photos.
+Use the option `--photos-handling` to disable or tweak this feature.
+
+When using advanced options, the human-readable description is now displayed with the option name, and you can search for either.
+
+
+## Detailed list of changes:
+- Fixed an issue with SyncTool and retries that would fail on some backends
+- Improved support for OEM injection
+- Return status of backup in ServerUtil, thanks @greyxr
+- Updated to run on .NET10
+- Improved deadlock detection for restore with fewer false positives
+- Updated Uplink.NET to v2.14.3623 (for Storj backend)
+- Added support for MacOS Photos
+- Disabled internal timeout in AzureBlobStorage
+- Updated localizations, thanks to all translators!
+
+## ngclient changes:
+- Updated to latest ShipUI
+- Preload modules for better desktop performance
+- Fixed some issues with localization not being applied
+- Updates to the options list
+- Updated localizations, thanks to all translators!
+- Fixed an issue with Rclone not maintaining letter-case for remote
+- Simplified the schedule setup page
+- Improved AuthID picking
+- Improved integration with console
+- Cleaned the sidebar slightly
+- Fixed an issue with styling in settings
+- Restore flow will now default to not overwrite existing files
+- Added both option name and short description to advanced options
+- Fixed not showing "Verifying" at the start of the backup operation
+- Handle global settings with and without `--` prefix
+- Upgraded to Anguler 21
+
+2025-11-05 - 2.2.0.100_canary_2025-11-05
+==========
+This release is a canary release intended to be used for testing.
+
+# Changes in this versions
+This version is a bugfix release for some issues discovered with the previous canary build and stable release.
+Some of the changes in this Canary will be applied to a new revised stable release.
+
+The changes in this version are mostly bugfixes and minor improvements that are not expected to cause issues.
+
+## Detailed list of changes:
+- Reporting remote filename on errors instead of temporary file
+- Added guards and fix for timeouts in MSGraph backend
+- Added guard against sending an unsupported header in remote control
+- Fixed href-base replacement, thanks @peloyeje
+- Fixed an error parsing flag-options (multiple option names in a single option)
+- Fixed an incorrect option name in release builder
+- Clear notifications on startup for issues that are resolved
+- Improved S3 hostname check to auto-prune trailing slashes
+- Show the assembly version in the version number
+- Made `--send-email-password` a password option so it is guarded
+- Added a dynamically adjusting deadlock timer for the restore flow
+- Improved parsing of WebDAV PROPFIND messages to cover more servers
+- Exposed options for pCloud that were previously not showed
+- Made the file-backend's `--use-move-for-put` option auto-disable streaming transfers
+- Fixed an issue with restoring from a config file that would fail if the backups were encrypted
+- Added option to disable remote control when connected to the console
+
+## ngclient changes:
+- Added support for picking the power-mode provider in settings
+- Fixed some issues with filters
+- Fixed some buttons that were missing styling
+- Fixed issue with Test function not asking to create folder
+- Fixed not showing tooltip to remember password when not encrypting exported file
+- Fixed issues with parsing the exclude attributes and exclude by file size
+- Improved hint texts on start page to be less cloud-oriented
+- Correctly show duration if it takes over 24h
+- Renamed the "Start" button to "Resume" when the server is paused
+- No longer showing the usage reporter option if this is disabled by environment variables
+- The settings page now shows the currently installed version
+- Better detection of users language on initial load
+- Add a warning when doing cross-OS restores
+- Toggled some steps as disabled when clicking them would not result in a working flow
+- Added password visibility toggle on login page
+- Improved advanced options view to show file pickers and email parsers
+- Improved the display of the warning when typing a custom destination URL
+- Fixed some issues with the URL parsing, especially making it case-preserving and fixing Rclone
+- Using the Commandline UI now includes the global advanced settings
+- Very long error messages no longer overflow the screen but gets scrollable instead
+- Changed order of options on the restore overview page to nudge towards using configured backups
+- Added scrolling to source paths when entering more than 25 sources
+- Hiding FileJump destination due to a pending migration
+- Sizes can again be chosen in bytes, which also fixes the wrong warning displayed on the volume size picker
+- Updated localization, thanks to all translators
+- Added a new connection link that shows the console connection status
+- Updated naming for the console connection to be more consistent
+- Hide connection options when connecting remotely
+
 2025-10-10 - 2.1.1.105_canary_2025-10-10
 ==========
 This release is a canary release intended to be used for testing.

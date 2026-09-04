@@ -2,6 +2,8 @@ name: Backend Live Tests
 on: [pull_request, workflow_dispatch]
 permissions:
   contents: read
+  issues: none
+  pull-requests: none
 concurrency:
   group: duplicati-ci-livetests
   cancel-in-progress: false
@@ -20,9 +22,9 @@ jobs:
       filen_secrets_available: "${{ steps.check_filen.outputs.available }}"
       filejump_secrets_available: "${{ steps.check_filejump.outputs.available }}"
       onedrive_secrets_available: "${{ steps.check_onedrive.outputs.available }}"
-      idrivee2_secrets_available: "${{ steps.check_idrivee2.outputs.available }}"
       gcs_secrets_available: "${{ steps.check_gcs.outputs.available }}"
       cloudstack_secrets_available: "${{ steps.check_cloudstack.outputs.available }}"
+      drime_secrets_available: "${{ steps.check_drime.outputs.available }}"
     steps:
       - id: check_pcloud
         name: Check pCloud secrets
@@ -186,22 +188,6 @@ jobs:
             echo "available=false" >> $GITHUB_OUTPUT
           fi
           echo "OneDrive check completed"
-      - id: check_idrivee2
-        name: Check iDrivee2 secrets
-        shell: bash
-        run: |
-          echo "Starting iDrivee2 secrets check..."
-          if [[ -n "${{ secrets.TESTCREDENTIAL_IDRIVEE2_BUCKET }}" ]] && \
-             [[ -n "${{ secrets.TESTCREDENTIAL_IDRIVEE2_ACCESS_KEY }}" ]] && \
-             [[ -n "${{ secrets.TESTCREDENTIAL_IDRIVEE2_SECRET_KEY }}" ]] && \
-             [[ -n "${{ secrets.TESTCREDENTIAL_IDRIVEE2_FOLDER }}" ]]; then
-            echo "All iDrivee2 secrets found"
-            echo "available=true" >> $GITHUB_OUTPUT
-          else
-            echo "Missing some iDrivee2 secrets"
-            echo "available=false" >> $GITHUB_OUTPUT
-          fi
-          echo "iDrivee2 check completed"
       - id: check_gcs
         name: Check GCS secrets
         shell: bash
@@ -236,6 +222,20 @@ jobs:
             echo "available=false" >> $GITHUB_OUTPUT
           fi
           echo "CloudStack check completed"
+      - id: check_drime
+        name: Check Drime secrets
+        shell: bash
+        run: |
+          echo "Starting Drime secrets check..."
+          if [[ -n "${{ secrets.TESTCREDENTIAL_DRIMECLOUD_FOLDER }}" ]] && \
+             [[ -n "${{ secrets.TESTCREDENTIAL_DRIMECLOUD_TOKEN }}" ]]; then
+            echo "All Drime secrets found"
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "Missing some Drime secrets"
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+          echo "Drime check completed"
 
       - name: Debug Output
         shell: bash
@@ -251,9 +251,9 @@ jobs:
           echo "Filen.io Available: ${{ steps.check_filen.outputs.available }}"
           echo "Filejump Available: ${{ steps.check_filejump.outputs.available }}"
           echo "OneDrive Available: ${{ steps.check_onedrive.outputs.available }}"
-          echo "iDrivee2 Available: ${{ steps.check_idrivee2.outputs.available }}"
           echo "GCS Available: ${{ steps.check_gcs.outputs.available }}"
           echo "CloudStack Available: ${{ steps.check_cloudstack.outputs.available }}"
+          echo "Drime Available: ${{ steps.check_drime.outputs.available }}"
   test_ftp:
     needs: check_secrets
     if: needs.check_secrets.outputs.testcontainers_secrets_available == 'true'
@@ -269,21 +269,21 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Setup Testcontainers Cloud Client
-        uses: atomicjar/testcontainers-cloud-setup-action@v1
+        uses: atomicjar/testcontainers-cloud-setup-action@7d1bab3fdfe0027c91936deca6b924d8a8a7a04d # v1.4.0
         with:
           token: "${{ secrets.TC_CLOUD_TOKEN }}"
       - name: Run FTP tests
@@ -292,7 +292,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~FtpTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
 
   test_pcloud:
     needs: check_secrets
@@ -309,19 +309,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run pCloud tests
         env:
           TESTCREDENTIAL_PCLOUD_SERVER: "${{ secrets.TESTCREDENTIAL_PCLOUD_SERVER }}"
@@ -330,7 +330,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~pCloudTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
 
   test_s3:
     needs: check_secrets
@@ -347,19 +347,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run S3 tests
         env:
           TC_CLOUD_TOKEN: "${{ secrets.TC_CLOUD_TOKEN }}"
@@ -370,7 +370,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~S3Tests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_azure:
     needs: check_secrets
     if: needs.check_secrets.outputs.azure_secrets_available == 'true'
@@ -386,19 +386,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run Azure tests
         env:
           READ_WRITE_TIMEOUT_SECONDS: 18000
@@ -408,7 +408,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~AzureTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_webdav:
     needs: check_secrets
     if: needs.check_secrets.outputs.testcontainers_secrets_available == 'true'
@@ -424,21 +424,21 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Setup Testcontainers Cloud Client
-        uses: atomicjar/testcontainers-cloud-setup-action@v1
+        uses: atomicjar/testcontainers-cloud-setup-action@7d1bab3fdfe0027c91936deca6b924d8a8a7a04d # v1.4.0
         with:
           token: "${{ secrets.TC_CLOUD_TOKEN }}"
       - name: Run Webdav tests
@@ -447,7 +447,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~WebDavTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_dropbox:
     needs: check_secrets
     if: needs.check_secrets.outputs.dropbox_secrets_available == 'true'
@@ -463,19 +463,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run Dropbox tests
         env:
           TC_CLOUD_TOKEN: "${{ secrets.TC_CLOUD_TOKEN }}"
@@ -484,7 +484,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~DropBoxTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_ssh:
     needs: check_secrets
     if: needs.check_secrets.outputs.testcontainers_secrets_available == 'true'
@@ -500,21 +500,21 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Setup Testcontainers Cloud Client
-        uses: atomicjar/testcontainers-cloud-setup-action@v1
+        uses: atomicjar/testcontainers-cloud-setup-action@7d1bab3fdfe0027c91936deca6b924d8a8a7a04d # v1.4.0
         with:
           token: "${{ secrets.TC_CLOUD_TOKEN }}"
       - name: Run SSH tests
@@ -523,7 +523,47 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~SshTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+
+  test_sftp:
+    needs: check_secrets
+    if: needs.check_secrets.outputs.testcontainers_secrets_available == 'true'
+    name: SFTP Tests
+    runs-on: "${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+      - name: Checkout source
+        uses: actions/checkout@v7
+      - name: Restore NuGet dependencies
+        run: >-
+          dotnet restore
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+      - name: Build project
+        run: >-
+          dotnet build --no-restore
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+      - name: Setup Testcontainers Cloud Client
+        uses: atomicjar/testcontainers-cloud-setup-action@7d1bab3fdfe0027c91936deca6b924d8a8a7a04d # v1.4.0
+        with:
+          token: "${{ secrets.TC_CLOUD_TOKEN }}"
+      - name: Run SFTP tests
+        env:
+          TC_CLOUD_TOKEN: "${{ secrets.TC_CLOUD_TOKEN }}"
+        run: >-
+          dotnet test --no-build --filter="ClassName~SshTests"
+          --logger:"console;verbosity=detailed"
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_googledrive:
     needs: check_secrets
     if: needs.check_secrets.outputs.google_secrets_available == 'true'
@@ -539,19 +579,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run Googledrive tests
         env:
           TESTCREDENTIAL_GOOGLEDRIVE_TOKEN: "${{ secrets.TESTCREDENTIAL_GOOGLEDRIVE_TOKEN }}"
@@ -559,7 +599,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~GoogleDriveTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_cifs:
     needs: check_secrets
     if: needs.check_secrets.outputs.testcontainers_secrets_available == 'true'
@@ -573,24 +613,24 @@ jobs:
           - ubuntu-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run CIFS tests
         run: >-
-          dotnet test --no-build --filter="ClassName~CIFSTests"
+          dotnet test --no-build --filter="ClassName~SMBTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_b2:
     needs: check_secrets
     if: needs.check_secrets.outputs.b2_secrets_available == 'true'
@@ -606,19 +646,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run B2 tests
         env:
           TESTCREDENTIAL_B2_BUCKET: "${{ secrets.TESTCREDENTIAL_B2_BUCKET }}"
@@ -628,7 +668,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~B2Tests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_box:
     needs: check_secrets
     if: needs.check_secrets.outputs.box_secrets_available == 'true'
@@ -644,19 +684,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run Box.com tests
         env:
           TESTCREDENTIAL_BOX_FOLDER: "${{ secrets.TESTCREDENTIAL_BOX_FOLDER }}"
@@ -664,7 +704,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~Box.BoxTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_filen:
     needs: check_secrets
     if: needs.check_secrets.outputs.filen_secrets_available == 'true'
@@ -680,64 +720,65 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run Filen.io tests
         env:
           TESTCREDENTIAL_FILEN_FOLDER: "${{ secrets.TESTCREDENTIAL_FILEN_FOLDER }}"
           TESTCREDENTIAL_FILEN_USERNAME: "${{ secrets.TESTCREDENTIAL_FILEN_USERNAME }}"
           TESTCREDENTIAL_FILEN_PASSWORD: "${{ secrets.TESTCREDENTIAL_FILEN_PASSWORD }}"
+          TESTCREDENTIAL_FILEN_APIKEY: "${{ secrets.TESTCREDENTIAL_FILEN_APIKEY }}"
         run: >-
           dotnet test --no-build --filter="ClassName~Filen.FilenTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
-  test_filejump:
-    needs: check_secrets
-    if: needs.check_secrets.outputs.filejump_secrets_available == 'true'
-    name: Filejump Tests
-    runs-on: "${{ matrix.os }}"
-    strategy:
-      max-parallel: 1
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
-    steps:
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.x
-      - name: Checkout source
-        uses: actions/checkout@v4
-      - name: Restore NuGet dependencies
-        run: >-
-          dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
-      - name: Build project
-        run: >-
-          dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
-      - name: Run Filejump tests
-        env:
-          TESTCREDENTIAL_FILEJUMP_FOLDER: "${{ secrets.TESTCREDENTIAL_FILEJUMP_FOLDER }}"
-          TESTCREDENTIAL_FILEJUMP_TOKEN: "${{ secrets.TESTCREDENTIAL_FILEJUMP_TOKEN }}"
-        run: >-
-          dotnet test --no-build --filter="ClassName~Filejump.FilejumpTests"
-          --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+  # test_filejump:
+  #   needs: check_secrets
+  #   if: needs.check_secrets.outputs.filejump_secrets_available == 'true'
+  #   name: Filejump Tests
+  #   runs-on: "${{ matrix.os }}"
+  #   strategy:
+  #     max-parallel: 1
+  #     fail-fast: false
+  #     matrix:
+  #       os:
+  #         - ubuntu-latest
+  #         - windows-latest
+  #         - macos-latest
+  #   steps:
+  #     - name: Set up .NET
+  #       uses: actions/setup-dotnet@v5
+  #       with:
+  #         dotnet-version: 10.x
+  #     - name: Checkout source
+  #       uses: actions/checkout@v7
+  #     - name: Restore NuGet dependencies
+  #       run: >-
+  #         dotnet restore
+  #         LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+  #     - name: Build project
+  #       run: >-
+  #         dotnet build --no-restore
+  #         LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+  #     - name: Run Filejump tests
+  #       env:
+  #         TESTCREDENTIAL_FILEJUMP_FOLDER: "${{ secrets.TESTCREDENTIAL_FILEJUMP_FOLDER }}"
+  #         TESTCREDENTIAL_FILEJUMP_TOKEN: "${{ secrets.TESTCREDENTIAL_FILEJUMP_TOKEN }}"
+  #       run: >-
+  #         dotnet test --no-build --filter="ClassName~Filejump.FilejumpTests"
+  #         --logger:"console;verbosity=detailed"
+  #         LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_onedrive:
     needs: check_secrets
     if: needs.check_secrets.outputs.onedrive_secrets_available == 'true'
@@ -753,19 +794,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run OneDrive tests
         env:
           TESTCREDENTIAL_ONEDRIVE_FOLDER: "${{ secrets.TESTCREDENTIAL_ONEDRIVE_FOLDER }}"
@@ -773,47 +814,8 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~OneDrive.OneDriveTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
 
-  test_idrivee2:
-    needs: check_secrets
-    if: needs.check_secrets.outputs.idrivee2_secrets_available == 'true'
-    name: iDrivee2 Tests
-    runs-on: "${{ matrix.os }}"
-    strategy:
-      max-parallel: 1
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
-    steps:
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.x
-      - name: Checkout source
-        uses: actions/checkout@v4
-      - name: Restore NuGet dependencies
-        run: >-
-          dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
-      - name: Build project
-        run: >-
-          dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
-      - name: Run iDrivee2 tests
-        env:
-          TESTCREDENTIAL_IDRIVEE2_BUCKET: "${{ secrets.TESTCREDENTIAL_IDRIVEE2_BUCKET }}"
-          TESTCREDENTIAL_IDRIVEE2_ACCESS_KEY: "${{ secrets.TESTCREDENTIAL_IDRIVEE2_ACCESS_KEY }}"
-          TESTCREDENTIAL_IDRIVEE2_SECRET_KEY: "${{ secrets.TESTCREDENTIAL_IDRIVEE2_SECRET_KEY }}"
-          TESTCREDENTIAL_IDRIVEE2_FOLDER: "${{ secrets.TESTCREDENTIAL_IDRIVEE2_FOLDER }}"
-
-        run: >-
-          dotnet test --no-build --filter="ClassName~iDrivee2.iDrivee2Tests"
-          --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
   test_gcs:
     needs: check_secrets
     if: needs.check_secrets.outputs.gcs_secrets_available == 'true'
@@ -829,19 +831,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run GCS tests
         env:
           TESTCREDENTIAL_GCS_BUCKET: "${{ secrets.TESTCREDENTIAL_GCS_BUCKET }}"
@@ -851,7 +853,7 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~GCS.GCSTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
   test_cloudstack:
     needs: check_secrets
     if: needs.check_secrets.outputs.cloudstack_secrets_available == 'true'
@@ -867,19 +869,19 @@ jobs:
           - macos-latest
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore NuGet dependencies
         run: >-
           dotnet restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Build project
         run: >-
           dotnet build --no-restore
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
       - name: Run CloudStack tests
         env:
           TESTCREDENTIAL_CLOUDSTACK_USERNAME: "${{ secrets.TESTCREDENTIAL_CLOUDSTACK_USERNAME }}"
@@ -892,4 +894,40 @@ jobs:
         run: >-
           dotnet test --no-build --filter="ClassName~CloudStack.CloudStackTests"
           --logger:"console;verbosity=detailed"
-          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.sln
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+  test_drime:
+    needs: check_secrets
+    if: needs.check_secrets.outputs.drime_secrets_available == 'true'
+    name: Drime Tests
+    runs-on: "${{ matrix.os }}"
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+      - name: Checkout source
+        uses: actions/checkout@v7
+      - name: Restore NuGet dependencies
+        run: >-
+          dotnet restore
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+      - name: Build project
+        run: >-
+          dotnet build --no-restore
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx
+      - name: Run Drime tests
+        env:
+          TESTCREDENTIAL_DRIMECLOUD_FOLDER: "${{ secrets.TESTCREDENTIAL_DRIMECLOUD_FOLDER }}"
+          TESTCREDENTIAL_DRIMECLOUD_TOKEN: "${{ secrets.TESTCREDENTIAL_DRIMECLOUD_TOKEN }}"
+        run: >-
+          dotnet test --no-build --filter="ClassName~DrimeCloudTests"
+          --logger:"console;verbosity=detailed"
+          LiveTests/Duplicati.Backend.Tests/Duplicati.Backend.Tests.slnx

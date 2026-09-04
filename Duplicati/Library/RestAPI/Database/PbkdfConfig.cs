@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -68,8 +68,7 @@ public record PbkdfConfig(string Algorithm, int Version, string Salt, int Iterat
         prng.GetBytes(buf);
 
         var salt = Convert.ToBase64String(buf);
-        var pbkdf2 = new Rfc2898DeriveBytes(password, buf, _Iterations, new HashAlgorithmName(_HashAlorithm));
-        var pwd = Convert.ToBase64String(pbkdf2.GetBytes(_HashSize));
+        var pwd = Convert.ToBase64String(Rfc2898DeriveBytes.Pbkdf2(password, buf, _Iterations, new HashAlgorithmName(_HashAlorithm), _HashSize));
 
         return new PbkdfConfig(_Algorithm, _Version, salt, _Iterations, _HashAlorithm, pwd);
     }
@@ -81,8 +80,7 @@ public record PbkdfConfig(string Algorithm, int Version, string Salt, int Iterat
     /// <returns>The hashed password</returns>
     private string ComputeHash(string password)
     {
-        var pbkdf2 = new Rfc2898DeriveBytes(password, Convert.FromBase64String(Salt), Iterations, new HashAlgorithmName(HashAlorithm));
-        return Convert.ToBase64String(pbkdf2.GetBytes(_HashSize));
+        return Convert.ToBase64String(Rfc2898DeriveBytes.Pbkdf2(password, Convert.FromBase64String(Salt), Iterations, new HashAlgorithmName(HashAlorithm), _HashSize));
     }
 
     /// <summary>

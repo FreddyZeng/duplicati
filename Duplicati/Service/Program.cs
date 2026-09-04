@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -31,7 +31,7 @@ namespace Duplicati.Service
         {
             PreloadSettingsLoader.ConfigurePreloadSettings(ref args, PackageHelper.NamedExecutable.Service);
 
-            using (var runner = new Runner(PackageHelper.NamedExecutable.Server, args))
+            using (var runner = new Runner(PackageHelper.NamedExecutable.Server, args, inProcess: false))
                 runner.Wait();
 
             return 0;

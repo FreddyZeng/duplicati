@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -169,18 +169,27 @@ public static class WindowsShimLoader
         => LoadWithReflection<Stream>("BackupDataStream", path);
 
     /// <summary>
+    /// Creates a new NativeNotifier that shows Windows toast notifications
+    /// </summary>
+    /// <returns>A new NativeNotifier</returns>
+    public static INativeNotifier NewNativeNotifier()
+        => LoadWithReflection<INativeNotifier>("WindowsToastNotifier");
+
+    /// <summary>
     /// Loads the chosen snapshot provider
     /// </summary>
     /// <param name="provider">The provider to load</param>
+    /// <param name="vssTimeout">The maximum time to wait for asynchronous VSS operations</param>
     /// <returns>The snapshot provider</returns>
-    public static ISnapshotProvider GetSnapshotProvider(WindowsSnapshotProvider provider)
+    public static ISnapshotProvider GetSnapshotProvider(WindowsSnapshotProvider provider, TimeSpan vssTimeout)
         => provider switch
         {
             // To simplify things, we have AlphaVSS in the shim loader,
             // even though it is not loaded by reflection
             WindowsSnapshotProvider.AlphaVSS => new AlphaVssBackup(),
-            WindowsSnapshotProvider.Vanara => LoadWithReflection<ISnapshotProvider>("VanaraVssBackup"),
-            WindowsSnapshotProvider.Wmic => LoadWithReflection<ISnapshotProvider>("WmicVssBackup"),
+            WindowsSnapshotProvider.Vanara => LoadWithReflection<ISnapshotProvider>("VanaraVssBackup", vssTimeout),
+            WindowsSnapshotProvider.Wmi => LoadWithReflection<ISnapshotProvider>("WmiVssBackup"),
+            WindowsSnapshotProvider.Native => LoadWithReflection<ISnapshotProvider>("NativeVssBackup", vssTimeout),
             _ => throw new ArgumentException($"Invalid provider: {provider}")
         };
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -25,8 +25,10 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Duplicati.Library.AutoUpdater;
 using Duplicati.Library.DynamicLoader;
+using Duplicati.Library.Utility;
 using FilterGroup = Duplicati.Library.Utility.FilterGroup;
 
 namespace Duplicati.CommandLine
@@ -194,6 +196,12 @@ namespace Duplicati.CommandLine
                         PrintCompressionModule(mod, lines);
 
                     lines.Add("");
+                    lines.Add("");
+                    lines.Add(Strings.Program.SupportedParityModulesHeader);
+                    foreach (Duplicati.Library.Interface.IParity mod in Library.DynamicLoader.ParityLoader.Modules)
+                        PrintParityModule(mod, lines);
+
+                    lines.Add("");
 
                     lines.Add("");
                     lines.Add("");
@@ -238,6 +246,15 @@ namespace Duplicati.CommandLine
                             }
 
                     if (args == null)
+                        foreach (Duplicati.Library.Interface.IParity module in Library.DynamicLoader.ParityLoader.Modules)
+                            if (string.Equals(module.FilenameExtension, topic, StringComparison.OrdinalIgnoreCase))
+                            {
+                                args = module.SupportedCommands;
+                                found = true;
+                                break;
+                            }
+
+                    if (args == null)
                         foreach (Duplicati.Library.Interface.IGenericModule module in Library.DynamicLoader.GenericLoader.Modules)
                             if (string.Equals(module.Key, topic, StringComparison.OrdinalIgnoreCase))
                             {
@@ -265,8 +282,8 @@ namespace Duplicati.CommandLine
                     var lines = new List<string>();
                     foreach (var module in SecretProviderLoader.Keys)
                     {
-                        var metadata = SecretProviderLoader.GetProviderMetadata(module);
-                        lines.Add($"- {module}: {metadata.DisplayName}");
+                        var metadata = SecretProviderLoader.GetProviderMetadata(module, CancellationToken.None).Await();
+                        lines.Add($"- {module}: {metadata.DisplayName}{(metadata.IsSupported ? "" : " (not supported)")}");
                     }
 
                     tp = tp.Replace("%SECRETPROVIDERS%", string.Join(Environment.NewLine, lines.ToArray()));
@@ -301,6 +318,14 @@ namespace Duplicati.CommandLine
                         if (string.Equals(mod.FilenameExtension, topic, StringComparison.OrdinalIgnoreCase))
                         {
                             PrintCompressionModule(mod, lines);
+                            break;
+                        }
+
+                if (lines.Count == 0)
+                    foreach (Duplicati.Library.Interface.IParity mod in Library.DynamicLoader.ParityLoader.Modules)
+                        if (string.Equals(mod.FilenameExtension, topic, StringComparison.OrdinalIgnoreCase))
+                        {
+                            PrintParityModule(mod, lines);
                             break;
                         }
 
@@ -389,6 +414,19 @@ namespace Duplicati.CommandLine
         }
 
         private static void PrintCompressionModule(Duplicati.Library.Interface.ICompression mod, List<string> lines)
+        {
+            lines.Add(mod.DisplayName + " (." + mod.FilenameExtension + "):");
+            lines.Add(" " + mod.Description);
+            if (mod.SupportedCommands != null && mod.SupportedCommands.Count > 0)
+            {
+                lines.Add(" " + Strings.Program.SupportedOptionsHeader);
+                foreach (Library.Interface.ICommandLineArgument arg in mod.SupportedCommands)
+                    Library.Interface.CommandLineArgument.PrintArgument(lines, arg, "  ");
+            }
+            lines.Add("");
+        }
+
+        private static void PrintParityModule(Duplicati.Library.Interface.IParity mod, List<string> lines)
         {
             lines.Add(mod.DisplayName + " (." + mod.FilenameExtension + "):");
             lines.Add(" " + mod.Description);

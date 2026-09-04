@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -43,11 +43,11 @@ public interface ITaskQueueService
     /// Stops a task with the specified task ID. This will stop the task if it is currently running.
     /// </summary>
     /// <param name="taskid">The ID of the task to stop.</param>
-    void StopTask(long taskid);
+    Task StopTaskAsync(long taskid);
 
     /// <summary>
     /// Aborts a task with the specified task ID. This will immediately terminate the task with minimal waiting for it to finish.
     /// </summary>
     /// <param name="taskid">The ID of the task to abort.</param>
-    void AbortTask(long taskid);
+    Task AbortTaskAsync(long taskid);
 }

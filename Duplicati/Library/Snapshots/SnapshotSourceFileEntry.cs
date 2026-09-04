@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -39,7 +39,8 @@ namespace Duplicati.Library.Snapshots;
 /// <param name="path">The path of the file</param>
 /// <param name="isFolder">True if the entry is a folder, false otherwise</param>
 /// <param name="isRoot">True if the entry is the root entry, false otherwise</param>
-public class SnapshotSourceFileEntry(ISnapshotService service, string path, bool isFolder, bool isRoot) : ISourceProviderEntry
+/// <param name="isAlternateStream">True if the entry is an alternate data stream, false otherwise</param>
+public class SnapshotSourceFileEntry(ISnapshotService service, string path, bool isFolder, bool isRoot, bool isAlternateStream) : ISourceProviderEntry
 {
     /// <summary>
     /// The symlink target
@@ -87,11 +88,6 @@ public class SnapshotSourceFileEntry(ISnapshotService service, string path, bool
     }
 
     /// <summary>
-    /// Gets the minor metadata for the file
-    /// </summary>
-    public Dictionary<string, string> MinorMetadata => service.GetMetadata(path, IsSymlink);
-
-    /// <summary>
     /// Gets a value indicating if the entry is a block device
     /// </summary>
     public bool IsBlockDevice => service.IsBlockDevice(path);
@@ -104,7 +100,7 @@ public class SnapshotSourceFileEntry(ISnapshotService service, string path, bool
     /// <summary>
     /// Gets a value indicating if the entry is an alternate stream
     /// </summary>
-    public bool IsAlternateStream => false;
+    public bool IsAlternateStream => isAlternateStream;
 
     /// <summary>
     /// Gets the hardlink target ID, or null if the entry is not a hardlink
@@ -135,7 +131,8 @@ public class SnapshotSourceFileEntry(ISnapshotService service, string path, bool
     public Task<Stream> OpenRead(CancellationToken cancellationToken) => service.OpenReadAsync(path, cancellationToken);
 
     /// <inheritdoc/>
-    public Task<Stream?> OpenMetadataRead(CancellationToken cancellationToken) => Task.FromResult<Stream?>(new MemoryStream(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(MinorMetadata)));
+    public Task<Dictionary<string, string?>> GetMinorMetadata(CancellationToken cancellationToken) => Task.FromResult(service.GetMetadata(path, IsSymlink));
+
     /// <inheritdoc/>
     public IAsyncEnumerable<ISourceProviderEntry> Enumerate(CancellationToken cancellationToken) => service.EnumerateFilesystemEntries(this).ToAsyncEnumerable();
     /// <inheritdoc/>

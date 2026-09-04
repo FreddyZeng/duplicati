@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -24,7 +24,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using CoCoL;
 using Duplicati.Library.AutoUpdater;
+using Duplicati.Library.Certificates;
 using Duplicati.Library.Common.IO;
 using Duplicati.Library.Crashlog;
 using Duplicati.Library.Encryption;
@@ -43,27 +45,66 @@ namespace Duplicati.Server
 {
     public class Program
     {
+        /// <summary>The commandline argument name for parameters file.</summary>
         private const string PARAMETERS_FILE_OPTION = "parameters-file";
+        /// <summary>Alternative names for the parameters file option.</summary>
         private static readonly string[] PARAMETERS_FILE_OPTION_EXTRAS = ["parameterfile"];
+        /// <summary>The commandline argument name for ping-pong keepalive.</summary>
         private const string PING_PONG_KEEPALIVE_OPTION = "ping-pong-keepalive";
+        /// <summary>The commandline argument name for Windows event log.</summary>
         private const string WINDOWS_EVENTLOG_OPTION = "windows-eventlog";
+        /// <summary>The commandline argument name for Windows event log level.</summary>
         private const string WINDOWS_EVENTLOG_LEVEL_OPTION = "windows-eventlog-level";
+        /// <summary>The commandline argument name for disabling database encryption.</summary>
         private const string DISABLE_DB_ENCRYPTION_OPTION = "disable-db-encryption";
+        /// <summary>The commandline argument name for disabling the default secret provider.</summary>
+        private const string DISABLE_DEFAULT_SECRET_PROVIDER_OPTION = "disable-default-secret-provider";
+        /// <summary>The commandline argument name for requiring database encryption key.</summary>
         private const string REQUIRE_DB_ENCRYPTION_KEY_OPTION = "require-db-encryption-key";
+        /// <summary>The commandline argument name for settings encryption key.</summary>
         private const string SETTINGS_ENCRYPTION_KEY_OPTION = "settings-encryption-key";
+        /// <summary>The commandline argument name for disabling update check.</summary>
         private const string DISABLE_UPDATE_CHECK_OPTION = "disable-update-check";
+        /// <summary>The commandline argument name for registering remote control.</summary>
         private const string REGISTER_REMOTE_CONTROL_OPTION = "register-remote-control";
+        /// <summary>The commandline argument name for forcing remote control reregistration.</summary>
         private const string REGISTER_REMOTE_CONTROL_REREGISTER_OPTION = "register-remote-control-force";
+        /// <summary>The commandline argument name for allowed backend modules.</summary>
         private const string ALLOWED_BACKEND_MODULES = "allowed-backend-modules";
+        /// <summary>The commandline argument name for allowed encryption modules.</summary>
         private const string ALLOWED_ENCRYPTION_MODULES = "allowed-encryption-modules";
+        /// <summary>The commandline argument name for allowed compression modules.</summary>
         private const string ALLOWED_COMPRESSION_MODULES = "allowed-compression-modules";
+        /// <summary>The commandline argument name for log file.</summary>
         private const string LOG_FILE_OPTION = "log-file";
+        /// <summary> Notification action for CA key stored in unencrypted database.</summary>
+        private const string NOTIFICATION_CA_KEY_UNENCRYPTED_DATABASE = "config:issue:ca-key-unencrypted-database";
+        /// <summary>Notification action for certificate renewal failure.</summary>
+        private const string NOTIFICATION_CERTIFICATE_RENEWAL_FAILED = "config:issue:certificate-renewal-failed";
+        /// <summary>The commandline argument name for log level.</summary>
         private const string LOG_LEVEL_OPTION = "log-level";
+        /// <summary>The commandline argument name for log console.</summary>
         private const string LOG_CONSOLE_OPTION = "log-console";
+        /// <summary>The commandline argument name for temp directory.</summary>
         private const string TEMPDIR_OPTION = "tempdir";
+        /// <summary>The commandline argument name for log retention.</summary>
         private const string LOG_RETENTION_OPTION = "log-retention";
+        /// <summary>The commandline argument name for help.</summary>
         private const string HELP_OPTION = "help";
 
+        /// <summary>
+        /// The exit code for init password success
+        /// </summary>
+        public const int EXITCODE_INITPASSWORD_SUCCESS = 102;
+        /// <summary>
+        /// The exit code for init password failure
+        /// </summary>
+        public const int EXITCODE_INITPASSWORD_FAILED = 103;
+
+        /// <summary>
+        /// The name used in the secret provider for the database encryption key
+        /// </summary>
+        private const string DATABASE_SECRET_VALUE_NAME = "duplicati-server-encryption-key";
 
 #if DEBUG
         private const bool DEBUG_MODE = true;
@@ -114,7 +155,7 @@ namespace Duplicati.Server
         /// </summary>
         private static void ShutdownModernWebserver()
         {
-            DuplicatiWebserver.Stop().GetAwaiter().GetResult();
+            DuplicatiWebserver.StopAsync().Await();
         }
 
         /// <summary>
@@ -126,6 +167,11 @@ namespace Duplicati.Server
         /// Timer for purging temp files and log data
         /// </summary>
         private static System.Threading.Timer PurgeTempFilesTimer = null;
+
+        /// <summary>
+        /// Timer for checking certificate renewal
+        /// </summary>
+        private static System.Threading.Timer CertificateRenewalTimer = null;
 
         /// <summary>
         /// The main entry point for the application.
@@ -143,6 +189,12 @@ namespace Duplicati.Server
         [STAThread]
         public static int Main(IApplicationSettings applicationSettings, string[] _args)
         {
+            // Reset the started event and clear any stale webserver reference so that
+            // waiters (e.g. the agent's remote-control callbacks) do not observe a
+            // previous, now-stopped, instance when the local server is restarted.
+            ServerStartedEvent.Reset();
+            DuplicatiWebserver = null;
+
             PreloadSettingsLoader.ConfigurePreloadSettings(ref _args, PackageHelper.NamedExecutable.Server, out var preloadDbSettings);
 
             applicationSettings ??= new ApplicationSettings();
@@ -173,7 +225,7 @@ namespace Duplicati.Server
             SystemContextSettings.StartSession();
 
             ApplyEnvironmentVariables(commandlineOptions);
-            ApplySecretProvider(applicationSettings, commandlineOptions, CancellationToken.None).Await();
+            ApplySecretProviderAsync(applicationSettings, commandlineOptions, CancellationToken.None).Await();
 
             var parameterFileOption = PARAMETERS_FILE_OPTION_EXTRAS.Prepend(PARAMETERS_FILE_OPTION)
                 .FirstOrDefault(x => commandlineOptions.ContainsKey(x));
@@ -182,8 +234,7 @@ namespace Duplicati.Server
             {
                 string filename = commandlineOptions[parameterFileOption];
                 commandlineOptions.Remove(parameterFileOption);
-                if (!ReadOptionsFromFile(filename, ref filter, args, commandlineOptions))
-                    return 100;
+                ReadOptionsFromFile(filename, ref filter, args, commandlineOptions);
             }
 
             var logHandler = new LogWriteHandler();
@@ -212,19 +263,36 @@ namespace Duplicati.Server
                     connection.FixInvalidBackupId();
 
                 connection.ApplicationSettings.UpgradePasswordToKBDF();
+
+                if (Library.Utility.Utility.ParseBoolOption(commandlineOptions, WebServerLoader.OPTION_SUPPRESS_WELCOME_PAGE))
+                    connection.ApplicationSettings.SuppressWelcomePage();
+
+                // Handle --configure-https option before starting the webserver
+                if (Library.Utility.Utility.ParseBoolOption(commandlineOptions, WebServerLoader.OPTION_CONFIGURE_HTTPS))
+                    HandleConfigureHttps(connection, commandlineOptions);
+
+                // Check for certificate renewal on startup (only for autogenerated certs)
+                var renewalResult = CheckAndRenewCertificate(connection);
+                if (renewalResult.RenewalFailedReason != null)
+                    RegisterRenewalFailedNotification(connection, renewalResult.RenewalFailedReason);
+
                 CreateApplicationInstance(applicationSettings.DataFolder, writeToConsoleOnException);
 
                 applicationSettings.StartOrStopUsageReporter = () => StartOrStopUsageReporter(connection);
+                // Bit messy, but the callback needs the connection, and the connection needs the callback
+                connection.UpdateUsageReporterCallback(applicationSettings.StartOrStopUsageReporter);
                 applicationSettings.StartOrStopUsageReporter?.Invoke();
 
-                AdjustApplicationSettings(connection, commandlineOptions);
+                var adjustres = AdjustApplicationSettings(connection, commandlineOptions);
+                if (adjustres.HasValue)
+                    return adjustres.Value;
 
                 UpdaterManager.OnError += obj =>
                 {
                     connection.LogError(null, "Error in updater", obj);
                 };
 
-                DuplicatiWebserver = StartWebServer(commandlineOptions, connection, logHandler, applicationSettings).Await();
+                DuplicatiWebserver = StartWebServerAsync(commandlineOptions, connection, logHandler, applicationSettings).Await();
 
                 connection.SetServiceProvider(DuplicatiWebserver.Provider);
                 queueRunner = DuplicatiWebserver.Provider.GetRequiredService<IQueueRunnerService>();
@@ -235,8 +303,17 @@ namespace Duplicati.Server
                 updatePollThread.Init(Library.Utility.Utility.ParseBoolOption(commandlineOptions, DISABLE_UPDATE_CHECK_OPTION));
 
                 SetPurgeTempFilesTimer(connection, commandlineOptions);
+                SetCertificateRenewalTimer(connection);
 
                 LiveControl.StateChanged = (e) => { LiveControl_StateChanged(queueRunner, connection, eventPollNotify, scheduler, e); };
+
+                // Invoke it once to set initial state
+                LiveControl_StateChanged(queueRunner, connection, eventPollNotify, scheduler, new LiveControls.LiveControlEvent
+                {
+                    State = LiveControl.State,
+                    TransfersPaused = LiveControl.TransfersPaused,
+                    WaitTimeExpiration = LiveControl.EstimatedPauseEnd
+                });
 
                 if (Library.Utility.Utility.ParseBoolOption(commandlineOptions, PING_PONG_KEEPALIVE_OPTION))
                 {
@@ -254,6 +331,9 @@ namespace Duplicati.Server
                 var remoteControlUrl = commandlineOptions.GetValueOrDefault(REGISTER_REMOTE_CONTROL_OPTION);
                 if (!string.IsNullOrWhiteSpace(remoteControlUrl))
                     RegisterForRemoteControl(DuplicatiWebserver.Provider.GetRequiredService<IRemoteControllerRegistration>(), DuplicatiWebserver.Provider.GetRequiredService<IRemoteController>(), remoteControlUrl, Library.Utility.Utility.ParseBoolOption(commandlineOptions, REGISTER_REMOTE_CONTROL_REREGISTER_OPTION), logMessageToConsole);
+
+                if (!string.IsNullOrWhiteSpace(connection.ApplicationSettings.ClientLicenseKey))
+                    Proprietary.LicenseChecker.LicenseHelper.SetRemoteClientLicenseKey(connection.ApplicationSettings.ClientLicenseKey);
 
                 if (applicationSettings.Origin == "Server" && connection.ApplicationSettings.AutogeneratedPassphrase)
                 {
@@ -276,7 +356,7 @@ namespace Duplicati.Server
 
                     terminated = true;
                     applicationSettings.SignalApplicationExit();
-                });
+                }, TaskScheduler.Default).FireAndForget();
 
                 var stopCounter = 0;
                 Console.CancelKeyPress += (sender, e) =>
@@ -284,7 +364,7 @@ namespace Duplicati.Server
                     if (Interlocked.Increment(ref stopCounter) <= 1)
                     {
                         Log.WriteInformationMessage(LOGTAG, "CancelKeyPressed", "Cancel key pressed, stopping server");
-                        Task.Run(() => DuplicatiWebserver?.Stop());
+                        Task.Run(async () => DuplicatiWebserver?.StopAsync() ?? Task.CompletedTask).FireAndForget();
                     }
                     else
                     {
@@ -334,6 +414,7 @@ namespace Duplicati.Server
                     () => queueRunner?.Terminate(true),
                     () => ApplicationInstance?.Dispose(),
                     () => PurgeTempFilesTimer?.Dispose(),
+                    () => CertificateRenewalTimer?.Dispose(),
                     () => Library.UsageReporter.Reporter.ShutDown(),
                     () => PingPongThread?.Interrupt(),
                     () =>
@@ -365,15 +446,22 @@ namespace Duplicati.Server
             return 0;
         }
 
-        private static async Task<DuplicatiWebserver> StartWebServer(IReadOnlyDictionary<string, string> options, Connection connection, ILogWriteHandler logWriteHandler, IApplicationSettings applicationSettings)
+        /// <summary>
+        /// Starts the Duplicati web server
+        /// </summary>
+        /// <param name="options">The commandline options</param>
+        /// <param name="connection">The connection to use</param>
+        /// <param name="logWriteHandler">The log write handler</param>
+        /// <param name="applicationSettings">The application settings</param>
+        /// <returns></returns>
+        private static async Task<DuplicatiWebserver> StartWebServerAsync(IReadOnlyDictionary<string, string> options, Connection connection, ILogWriteHandler logWriteHandler, IApplicationSettings applicationSettings)
         {
-            var server = await WebServerLoader.TryRunServer(options, connection, async parsedOptions =>
+            var server = await WebServerLoader.TryRunServerAsync(options, connection, async parsedOptions =>
             {
                 var mappedSettings = new DuplicatiWebserver.InitSettings(
                     parsedOptions.WebRoot,
                     parsedOptions.Port,
                     parsedOptions.Interface,
-                    parsedOptions.Certificate,
                     parsedOptions.AllowedHostnames,
                     parsedOptions.DisableStaticFiles,
                     parsedOptions.TokenLifetimeInMinutes,
@@ -385,7 +473,7 @@ namespace Duplicati.Server
                 var server = DuplicatiWebserver.CreateWebServer(mappedSettings, connection, logWriteHandler, applicationSettings);
 
                 // Start the server, but catch any configuration issues
-                var task = server.Start();
+                var task = server.StartAsync();
                 await Task.WhenAny(task, Task.Delay(500));
                 if (task.IsCompleted)
                     await task;
@@ -399,6 +487,11 @@ namespace Duplicati.Server
             return server;
         }
 
+        /// <summary>
+        /// Sets up the timer for purging temp files and log data
+        /// </summary>
+        /// <param name="connection">The connection to use</param>
+        /// <param name="commandlineOptions">The commandline options</param>
         private static void SetPurgeTempFilesTimer(Connection connection, Dictionary<string, string> commandlineOptions)
         {
             var lastPurge = new DateTime(0);
@@ -454,6 +547,57 @@ namespace Duplicati.Server
                     DEBUG_MODE ? TimeSpan.FromHours(1) : TimeSpan.FromDays(1));
         }
 
+        /// <summary>
+        /// Sets up a timer to periodically check for certificate renewal.
+        /// This ensures certificates are renewed even if the server runs continuously
+        /// without restarts.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        private static void SetCertificateRenewalTimer(Connection connection)
+        {
+            TimerCallback certificateRenewalCallback = (x) =>
+            {
+                try
+                {
+                    // Only check for autogenerated certificates
+                    if (!connection.ApplicationSettings.ServerSSLCertificateAutogenerated)
+                        return;
+
+                    var renewalResult = CheckAndRenewCertificate(connection);
+
+                    if (renewalResult.Renewed)
+                    {
+                        Log.WriteInformationMessage(LOGTAG, "CertificateRenewedAutomatically",
+                            "SSL certificate was automatically renewed during periodic check.");
+                    }
+                    else if (renewalResult.RenewalFailedReason != null)
+                    {
+                        Log.WriteWarningMessage(LOGTAG, "CertificateRenewalFailed",
+                            null,
+                            $"Automatic certificate renewal failed: {renewalResult.RenewalFailedReason}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.WriteErrorMessage(LOGTAG, "CertificateRenewalCheckFailed", ex,
+                        "Failed to check/renew SSL certificate during periodic check.");
+                }
+            };
+
+            CertificateRenewalTimer =
+                new System.Threading.Timer(certificateRenewalCallback, null,
+                    TimeSpan.FromHours(1),
+                    TimeSpan.FromDays(1));
+        }
+
+        /// <summary>
+        /// Registers the server for remote control
+        /// </summary>
+        /// <param name="remoteControllerRegistration">The remote controller registration</param>
+        /// <param name="remoteController">The remote controller</param>
+        /// <param name="remoteControlUrl">The remote control URL</param>
+        /// <param name="reRegister">Whether to re-register</param>
+        /// <param name="logMessageToConsole">Callback to log messages to console</param>
         private static void RegisterForRemoteControl(IRemoteControllerRegistration remoteControllerRegistration, IRemoteController remoteController, string remoteControlUrl, bool reRegister, Action<string> logMessageToConsole)
         {
             if (remoteController.CanEnable)
@@ -471,7 +615,7 @@ namespace Duplicati.Server
             {
                 try
                 {
-                    var regTask = remoteControllerRegistration.RegisterMachine(remoteControlUrl);
+                    var regTask = remoteControllerRegistration.RegisterMachineAsync(remoteControlUrl);
                     while (!regTask.IsCompleted)
                     {
                         // Interface does not have events, so poll it every second
@@ -491,10 +635,17 @@ namespace Duplicati.Server
                 {
                     Log.WriteErrorMessage(LOGTAG, "RemoteControlRegistrationFailed", ex, Strings.Program.RemoteControlRegistrationFailed(ex.Message));
                 }
-            });
+            })
+            .FireAndForget();
         }
 
-        private static void AdjustApplicationSettings(Connection connection, Dictionary<string, string> commandlineOptions)
+        /// <summary>
+        /// Adjusts the application settings based on commandline options
+        /// </summary>
+        /// <param name="connection">The connection to use</param>
+        /// <param name="commandlineOptions">The commandline options</param>
+        /// <returns>The exit code, or null if no exit is required</returns>
+        private static int? AdjustApplicationSettings(Connection connection, Dictionary<string, string> commandlineOptions)
         {
             // This clears the JWT config, and a new will be generated, invalidating all existing tokens
             if (Library.Utility.Utility.ParseBoolOption(commandlineOptions, WebServerLoader.OPTION_WEBSERVICE_RESET_JWT_CONFIG))
@@ -508,15 +659,33 @@ namespace Duplicati.Server
                 connection.ApplicationSettings.EnableForeverTokens();
 
             if (commandlineOptions.ContainsKey(WebServerLoader.OPTION_WEBSERVICE_DISABLE_SIGNIN_TOKENS))
-                connection.ApplicationSettings.DisableSigninTokens = Library.Utility.Utility.ParseBool(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_DISABLE_SIGNIN_TOKENS], true);
+                connection.ApplicationSettings.DisableSigninTokens = Library.Utility.Utility.ParseBoolOption(commandlineOptions, WebServerLoader.OPTION_WEBSERVICE_DISABLE_SIGNIN_TOKENS);
 
             if (commandlineOptions.ContainsKey(WebServerLoader.OPTION_WEBSERVICE_DISABLEAPIEXTENSIONS))
                 connection.ApplicationSettings.DisabledAPIExtensions = commandlineOptions.GetValueOrDefault(WebServerLoader.OPTION_WEBSERVICE_DISABLEAPIEXTENSIONS)?
                     .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
 
+            if (commandlineOptions.ContainsKey(WebServerLoader.OPTION_WEBSERVICE_ENABLE_FOLDER_STATUS_SERVICE))
+                connection.ApplicationSettings.EnableFolderStatusService = Library.Utility.Utility.ParseBoolOption(commandlineOptions, WebServerLoader.OPTION_WEBSERVICE_ENABLE_FOLDER_STATUS_SERVICE);
+
             if (commandlineOptions.ContainsKey(WebServerLoader.OPTION_WEBSERVICE_PASSWORD))
                 connection.ApplicationSettings.SetWebserverPassword(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_PASSWORD]);
+
+            var initPassword = commandlineOptions.GetValueOrDefault(WebServerLoader.OPTION_WEBSERVICE_PASSWORD_INIT);
+            if (!string.IsNullOrWhiteSpace(initPassword))
+            {
+                // If initPassword is set, we want the initialization to stop now, so we throw an exception
+                if (connection.ApplicationSettings.AutogeneratedPassphrase)
+                {
+                    connection.ApplicationSettings.SetWebserverPassword(initPassword);
+                    return EXITCODE_INITPASSWORD_SUCCESS;
+                }
+                else
+                {
+                    return EXITCODE_INITPASSWORD_FAILED;
+                }
+            }
 
             if (commandlineOptions.ContainsKey(WebServerLoader.OPTION_WEBSERVICE_ALLOWEDHOSTNAMES))
                 connection.ApplicationSettings.SetAllowedHostnames(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_ALLOWEDHOSTNAMES]);
@@ -524,14 +693,14 @@ namespace Duplicati.Server
                 connection.ApplicationSettings.SetAllowedHostnames(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_ALLOWEDHOSTNAMES_ALT]);
 
             if (commandlineOptions.ContainsKey(WebServerLoader.OPTION_WEBSERVICE_TIMEZONE) && !string.IsNullOrEmpty(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_TIMEZONE]))
-                try
-                {
-                    connection.ApplicationSettings.Timezone = TimeZoneHelper.FindTimeZone(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_TIMEZONE]);
-                }
-                catch (Exception ex)
-                {
-                    throw new UserInformationException(Strings.Program.InvalidTimezone(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_TIMEZONE]), "InvalidTimeZone", ex);
-                }
+            {
+                // FindTimeZone reports an unknown timezone by returning null, not by
+                // throwing; assigning the null would silently clear the stored setting
+                var timezone = TimeZoneHelper.FindTimeZone(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_TIMEZONE]);
+                if (timezone == null)
+                    throw new UserInformationException(Strings.Program.InvalidTimezone(commandlineOptions[WebServerLoader.OPTION_WEBSERVICE_TIMEZONE]), "InvalidTimeZone");
+                connection.ApplicationSettings.Timezone = timezone;
+            }
 
             // The database has recorded a new version
             if (connection.ApplicationSettings.UpdatedVersion != null)
@@ -548,8 +717,16 @@ namespace Duplicati.Server
                     connection.ApplicationSettings.UpdatedVersion = null;
                 }
             }
+
+            return null;
         }
 
+        /// <summary>
+        /// Emits warnings for configuration issues
+        /// </summary>
+        /// <param name="connection">The connection</param>
+        /// <param name="applicationSettings">The application settings</param>
+        /// <param name="commandlineOptions">The commandline options</param>
         private static void EmitWarningsForConfigurationIssues(Connection connection, IApplicationSettings applicationSettings, Dictionary<string, string> commandlineOptions)
         {
             // First, remove any pending notifications, if the issue is resolved
@@ -558,6 +735,11 @@ namespace Duplicati.Server
                 // Remove any existing unencrypted database notification
                 var updateNotifications = connection.GetNotifications().Where(x => x.Action == "config:issue:unencrypted-database").ToList();
                 foreach (var n in updateNotifications)
+                    connection.DismissNotification(n.ID);
+
+                // Remove any existing HTTPS related notifications
+                var caKeyNotifications = connection.GetNotifications().Where(x => x.Action == NOTIFICATION_CA_KEY_UNENCRYPTED_DATABASE || x.Action == NOTIFICATION_CERTIFICATE_RENEWAL_FAILED).ToList();
+                foreach (var n in caKeyNotifications)
                     connection.DismissNotification(n.ID);
             }
 
@@ -568,6 +750,9 @@ namespace Duplicati.Server
                 foreach (var n in updateNotifications)
                     connection.DismissNotification(n.ID);
             }
+
+            // Check tempdir free space against volume sizes
+            CheckTempDirFreeSpace(connection, commandlineOptions);
 
             // Emit warnings if the application has been updated
             if (connection.ApplicationSettings.LastConfigIssueCheckVersion != UpdaterManager.SelfVersion.Version)
@@ -618,7 +803,138 @@ namespace Duplicati.Server
             }
         }
 
-        private static void CreateApplicationInstance(string dataFolder, bool writeToConsoleOnExceptionw)
+        /// <summary>
+        /// Checks if the tempdir has enough free space relative to the volume sizes of configured backups.
+        /// Emits a warning if free space is less than 4 times the volume size.
+        /// </summary>
+        /// <param name="connection">The database connection</param>
+        /// <param name="commandlineOptions">The commandline options</param>
+        private static void CheckTempDirFreeSpace(Connection connection, Dictionary<string, string> commandlineOptions)
+        {
+            const string TEMPDIR_WARNING_ACTION = "config:issue:tempdir-low-space";
+
+            // Get the tempdir path - check Connection settings first, then fall back to system default
+            var tempDir = TempFolder.SystemTempPath;
+            var serverSettings = connection.GetSettings(Connection.ANY_BACKUP_ID);
+            var tempDirSetting = serverSettings?.FirstOrDefault(s =>
+                string.Equals(s.Name, "tempdir", StringComparison.OrdinalIgnoreCase) || string.Equals(s.Name, "--tempdir", StringComparison.OrdinalIgnoreCase));
+            if (tempDirSetting != null && !string.IsNullOrEmpty(tempDirSetting.Value))
+                tempDir = tempDirSetting.Value;
+
+            // Get free space in tempdir using the Utility method
+            var spaceInfo = Library.Utility.Utility.GetFreeSpaceForPath(tempDir);
+            // Could not determine free space, skip the check
+            if (spaceInfo == null)
+                return;
+
+            // Get the maximum volume size from all configured backups
+            var maxVolumeSize = GetMaxVolumeSize(connection, commandlineOptions);
+
+            // Check if free space is less than 4 times the volume size
+            if (spaceInfo.Value.FreeSpace < maxVolumeSize * Library.Utility.Utility.VOLUME_SIZE_FREE_SPACE_MULTIPLIER)
+            {
+                // Emit warning
+                connection.RegisterNotification(
+                    Serialization.NotificationType.Warning,
+                    "Low temporary folder space",
+                    $"The temporary folder '{tempDir}' has limited free space ({Library.Utility.Utility.FormatSizeString(spaceInfo.Value.FreeSpace)}). " +
+                    $"It is recommended to have at least {Library.Utility.Utility.VOLUME_SIZE_FREE_SPACE_MULTIPLIER} times the volume size ({Library.Utility.Utility.FormatSizeString(maxVolumeSize * Library.Utility.Utility.VOLUME_SIZE_FREE_SPACE_MULTIPLIER)}) available for optimal operation.",
+                    null,
+                    null,
+                    TEMPDIR_WARNING_ACTION,
+                    null,
+                    "TempDirLowSpace",
+                    null,
+                    (self, all) =>
+                    {
+                        return all.FirstOrDefault(x => x.Action == TEMPDIR_WARNING_ACTION) ?? self;
+                    }
+                );
+            }
+            else
+            {
+                // Clear any existing warning
+                var existingNotifications = connection.GetNotifications().Where(x => x.Action == TEMPDIR_WARNING_ACTION).ToList();
+                foreach (var n in existingNotifications)
+                    connection.DismissNotification(n.ID);
+            }
+        }
+
+        /// <summary>
+        /// Gets the maximum volume size from all configured backups.
+        /// </summary>
+        /// <param name="connection">The database connection</param>
+        /// <param name="commandlineOptions">The commandline options</param>
+        /// <returns>The maximum volume size in bytes</returns>
+        private static long GetMaxVolumeSize(Connection connection, Dictionary<string, string> commandlineOptions)
+        {
+            const string DEFAULT_VOLUME_SIZE = "50mb";
+            long maxVolumeSize = 0;
+
+            // Check if there's a global dblock-size in commandline options
+            if (commandlineOptions.TryGetValue("dblock-size", out var globalDblockSize) && !string.IsNullOrEmpty(globalDblockSize))
+            {
+                try
+                {
+                    maxVolumeSize = Sizeparser.ParseSize(globalDblockSize, "mb");
+                }
+                catch
+                {
+                    // Ignore parsing errors
+                }
+            }
+
+            // Check if there's a global dblock-size in the database settings
+            var serverSettings = connection.GetSettings(Connection.ANY_BACKUP_ID);
+            var defaultDblockSize = serverSettings?.FirstOrDefault(s => string.Equals(s.Name, "dblock-size", StringComparison.OrdinalIgnoreCase) || string.Equals(s.Name, "--dblock-size", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(defaultDblockSize?.Value))
+                try
+                {
+                    maxVolumeSize = Math.Max(Sizeparser.ParseSize(defaultDblockSize.Value, "mb"), maxVolumeSize);
+                }
+                catch
+                {
+                    // Ignore parsing errors
+                }
+
+            // If no global setting, use default
+            maxVolumeSize = Math.Max(maxVolumeSize, Sizeparser.ParseSize(DEFAULT_VOLUME_SIZE, "mb"));
+
+            // Check all configured backups for their volume sizes
+            foreach (var backup in connection.Backups)
+            {
+                try
+                {
+                    // Get settings for this backup
+                    var backupId = long.Parse(backup.ID);
+                    var settings = connection.GetSettings(backupId);
+
+                    // Look for dblock-size setting
+                    var dblockSizeSetting = settings?.FirstOrDefault(s =>
+                        string.Equals(s.Name, "dblock-size", StringComparison.OrdinalIgnoreCase) || string.Equals(s.Name, "--dblock-size", StringComparison.OrdinalIgnoreCase));
+
+                    if (dblockSizeSetting != null && !string.IsNullOrEmpty(dblockSizeSetting.Value))
+                    {
+                        var backupVolumeSize = Sizeparser.ParseSize(dblockSizeSetting.Value, "mb");
+                        if (backupVolumeSize > maxVolumeSize)
+                            maxVolumeSize = backupVolumeSize;
+                    }
+                }
+                catch
+                {
+                    // Ignore errors for individual backups
+                }
+            }
+
+            return maxVolumeSize;
+        }
+
+        /// <summary>
+        /// Creates the application instance to ensure a single instance is running for the current user
+        /// </summary>
+        /// <param name="dataFolder">The data folder to use for single instance locking</param>
+        /// <param name="writeToConsoleOnException">Write to console on exception</param>
+        private static void CreateApplicationInstance(string dataFolder, bool writeToConsoleOnException)
         {
             try
             {
@@ -627,7 +943,7 @@ namespace Duplicati.Server
             }
             catch (Exception ex)
             {
-                if (writeToConsoleOnExceptionw)
+                if (writeToConsoleOnException)
                 {
                     Console.WriteLine(Strings.Program.StartupFailure(ex));
                     Environment.Exit(200);
@@ -638,7 +954,7 @@ namespace Duplicati.Server
 
             if (!ApplicationInstance.IsFirstInstance)
             {
-                if (writeToConsoleOnExceptionw)
+                if (writeToConsoleOnException)
                 {
                     Console.WriteLine(Strings.Program.AnotherInstanceDetected);
                     Environment.Exit(200);
@@ -648,6 +964,10 @@ namespace Duplicati.Server
             }
         }
 
+        /// <summary>
+        /// Applies environment variables by converting them to commandline options
+        /// </summary>
+        /// <param name="commandlineOptions">The commandline options</param>
         private static void ApplyEnvironmentVariables(Dictionary<string, string> commandlineOptions)
         {
             foreach (var key in SupportedCommands.SelectMany(x => (x.Aliases ?? []).Prepend(x.Name)).Distinct())
@@ -667,11 +987,23 @@ namespace Duplicati.Server
                 commandlineOptions[SETTINGS_ENCRYPTION_KEY_OPTION] = Environment.GetEnvironmentVariable(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME);
         }
 
-        private static async Task ApplySecretProvider(IApplicationSettings applicationSettings, Dictionary<string, string> commandlineOptions, CancellationToken cancellationToken)
+        /// <summary>
+        /// Applies the secret provider to the commandline options and application settings
+        /// </summary>
+        /// <param name="applicationSettings">The application settings</param>
+        /// <param name="commandlineOptions">The commandline options</param>
+        /// <param name="cancellationToken">The cancellation token</param>
+        /// <returns>A task that represents the asynchronous operation</returns>
+        private static async Task ApplySecretProviderAsync(IApplicationSettings applicationSettings, Dictionary<string, string> commandlineOptions, CancellationToken cancellationToken)
             => applicationSettings.SecretProvider = await SecretProviderHelper.ApplySecretProviderAsync([], [], commandlineOptions, TempFolder.SystemTempPath, applicationSettings.SecretProvider, cancellationToken).ConfigureAwait(false);
 
+        /// <summary>
+        /// A log destination that writes to the console
+        /// </summary>
+        /// <param name="level">The minimum log level</param>
         private class ConsoleLogDestination(LogMessageType level) : ILogDestination
         {
+            /// <inheritdoc />
             public void WriteMessage(LogEntry entry)
             {
                 if (entry.Level >= level)
@@ -679,6 +1011,12 @@ namespace Duplicati.Server
             }
         }
 
+        /// <summary>
+        /// Configures logging based on commandline options
+        /// </summary>
+        /// <param name="logWriteHandler">The log write handler</param>
+        /// <param name="commandlineOptions">The commandline options</param>
+        /// <returns>A disposable log scope</returns>
         private static IDisposable ConfigureLogging(ILogWriteHandler logWriteHandler, Dictionary<string, string> commandlineOptions)
         {
             IDisposable logScope;
@@ -748,9 +1086,14 @@ namespace Duplicati.Server
             return logScope;
         }
 
-        private static int ShowHelp(bool writeToConsoleOnExceptionw)
+        /// <summary>
+        /// Shows the help information
+        /// </summary>
+        /// <param name="writeToConsoleOnException">Whether to write to console on exception</param>
+        /// <returns>An integer indicating the result</returns>
+        private static int ShowHelp(bool writeToConsoleOnException)
         {
-            if (writeToConsoleOnExceptionw)
+            if (writeToConsoleOnException)
             {
                 Console.WriteLine(Strings.Program.HelpDisplayDialog);
 
@@ -763,6 +1106,14 @@ namespace Duplicati.Server
             throw new Exception("Server invoked with --help");
         }
 
+        /// <summary>
+        /// Gets the database connection, upgrading the database if needed
+        /// </summary>
+        /// <param name="applicationSettings">The application settings</param>
+        /// <param name="commandlineOptions">The commandline options</param>
+        /// <param name="silentConsole">Whether to suppress console output</param>
+        /// <param name="changeDbEncryption">Whether to change the database encryption state if the arguments require it</param>
+        /// <returns>The database connection</returns>
         public static Connection GetDatabaseConnection(IApplicationSettings applicationSettings, Dictionary<string, string> commandlineOptions, bool silentConsole, bool changeDbEncryption)
         {
             // Emit a warning if the database is stored in the Windows folder
@@ -785,8 +1136,11 @@ namespace Duplicati.Server
             {
                 var databasePath = System.IO.Path.Combine(applicationSettings.DataFolder, DataFolderManager.SERVER_DATABASE_FILENAME);
 
-                if (!System.IO.Directory.Exists(System.IO.Path.GetDirectoryName(databasePath)))
-                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(databasePath));
+                // Ensure the directory holding the database exists and has secure permissions.
+                // This creates and locks down a missing folder, and verifies (rejecting an
+                // insecure, non-canonical folder unless the user has opted out) an existing one,
+                // guarding against the database being written into an unprotected directory.
+                DataFolderManager.PrepareSecureDataFolder(System.IO.Path.GetDirectoryName(databasePath), createIfMissing: true);
 
                 // Attempt to open the database, removing any encryption present
                 Library.SQLiteHelper.SQLiteLoader.OpenDatabaseAsync(con, databasePath, Library.SQLiteHelper.SQLiteRC4Decrypter.GetEncryptionPassword(commandlineOptions)).Await();
@@ -808,12 +1162,15 @@ namespace Duplicati.Server
             var usingBlacklistedKey = encKey?.IsBlacklisted ?? false;
             var hasValidEncryptionKey = encKey != null;
 
-            applicationSettings.SettingsEncryptionKeyProvidedExternally = hasValidEncryptionKey;
-
-            if (requireDbEncryptionKey && !(hasValidEncryptionKey || disableDbEncryption))
-                throw new UserInformationException(Strings.Program.DatabaseEncryptionKeyRequired(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME, DISABLE_DB_ENCRYPTION_OPTION), "RequireDbEncryptionKey");
+            // Don't encrypt the database in debug mode, unless explicitly requested
+            if (DEBUG_MODE)
+            {
+                if (string.IsNullOrWhiteSpace(commandlineOptions.GetValueOrDefault(DISABLE_DB_ENCRYPTION_OPTION)))
+                    disableDbEncryption = true;
+            }
 
             var hasEncryptedFields = false;
+            var warnedAboutEncryptedDb = false;
             try
             {
                 using (var cmd = con.CreateCommand(@$"SELECT ""Value"" FROM ""Option"" WHERE ""Name"" = @Name AND ""BackupID"" = @BackupId"))
@@ -823,6 +1180,7 @@ namespace Duplicati.Server
 
                 if (hasEncryptedFields && !hasValidEncryptionKey)
                 {
+                    warnedAboutEncryptedDb = true;
                     Log.WriteWarningMessage(LOGTAG, "EncryptionKeyMissing", null, Strings.Program.EncryptionKeyMissing(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME));
                     if (!silentConsole)
                         Console.WriteLine(Strings.Program.EncryptionKeyMissing(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME));
@@ -834,12 +1192,76 @@ namespace Duplicati.Server
                 // Only negative effect is that we do not show a potentially helpful warning
             }
 
+            var defaultSecretProvider = SecretProviderHelper.GetDefaultSecretProviderAsync(commandlineOptions, CancellationToken.None).Await();
+
+            // If we are supposed to have an encryption key, but do not, try to get it from the (default) secret provider
+            if (!hasValidEncryptionKey && defaultSecretProvider != null)
+            {
+                string encryptionKey = null;
+                try
+                {
+                    encryptionKey = defaultSecretProvider.ResolveSecretAsync(DATABASE_SECRET_VALUE_NAME, CancellationToken.None).Await();
+                }
+                catch
+                {
+                    Log.WriteInformationMessage(LOGTAG, "SecretProviderFailedToGetEncryptionKey", null, Strings.Program.SecretProviderFailedToGetEncryptionKey);
+                    if (!silentConsole)
+                        Console.WriteLine(Strings.Program.SecretProviderFailedToGetEncryptionKey);
+                }
+
+                // If there is no encryption key, and the secret provider supports setting secrets, try to set the encryption key
+                // Avoid generating a new key if the database is already encrypted as this will make a new key that will not work
+                if (!disableDbEncryption && string.IsNullOrWhiteSpace(encryptionKey) && defaultSecretProvider.IsSetSupported && !hasEncryptedFields)
+                {
+                    var tmpkey = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+                    try
+                    {
+                        defaultSecretProvider.SetSecretAsync(
+                            DATABASE_SECRET_VALUE_NAME, tmpkey, false,
+                            CancellationToken.None).Await();
+
+                        // For some cloud providers, this can sometimes fail due to eventual consistency
+                        // For now, the solution is that settings will be encrypted in the next run
+                        var tmp = defaultSecretProvider.ResolveSecretAsync(DATABASE_SECRET_VALUE_NAME, CancellationToken.None).Await();
+
+                        if (tmp != tmpkey)
+                            throw new Exception("Secret provider did not return the expected value");
+
+                        encryptionKey = tmpkey;
+                    }
+                    catch
+                    {
+                        Log.WriteVerboseMessage(LOGTAG, "SecretProviderFailedToSetEncryptionKey", null, Strings.Program.SecretProviderFailedToSetEncryptionKey);
+                        if (!silentConsole)
+                            Console.WriteLine(Strings.Program.SecretProviderFailedToSetEncryptionKey);
+                    }
+                }
+
+                // If we got an encryption key (or created one), apply it
+                if (!string.IsNullOrWhiteSpace(encryptionKey))
+                {
+                    encKey = EncryptedFieldHelper.KeyInstance.CreateKeyIfValid(encryptionKey);
+                    hasValidEncryptionKey = encKey != null;
+                }
+            }
+
+
+            if (requireDbEncryptionKey && !(hasValidEncryptionKey || disableDbEncryption))
+                throw new UserInformationException(Strings.Program.DatabaseEncryptionKeyRequired(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME, DISABLE_DB_ENCRYPTION_OPTION), "RequireDbEncryptionKey");
+
+            applicationSettings.SettingsEncryptionKeyProvidedExternally = hasValidEncryptionKey;
+
+
             if (!hasValidEncryptionKey && !disableDbEncryption)
             {
                 disableDbEncryption = true;
-                Log.WriteWarningMessage(LOGTAG, "MissingEncryptionKey", null, Strings.Program.NoEncryptionKeySpecified(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME, DISABLE_DB_ENCRYPTION_OPTION));
-                if (!silentConsole)
-                    Console.WriteLine(Strings.Program.NoEncryptionKeySpecified(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME, DISABLE_DB_ENCRYPTION_OPTION));
+                if (!warnedAboutEncryptedDb)
+                {
+                    warnedAboutEncryptedDb = true;
+                    Log.WriteWarningMessage(LOGTAG, "MissingEncryptionKey", null, Strings.Program.NoEncryptionKeySpecified(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME, DISABLE_DB_ENCRYPTION_OPTION));
+                    if (!silentConsole)
+                        Console.WriteLine(Strings.Program.NoEncryptionKeySpecified(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME, DISABLE_DB_ENCRYPTION_OPTION));
+                }
             }
 
             if (usingBlacklistedKey && !disableDbEncryption)
@@ -850,14 +1272,13 @@ namespace Duplicati.Server
                     Console.WriteLine(Strings.Program.BlacklistedEncryptionKey(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME, DISABLE_DB_ENCRYPTION_OPTION));
             }
 
-            // If the database is not encrypted, and we are not changing the encryption
-            // don't pass the key, as that would cause the database to be encrypted
-            if (!hasEncryptedFields && !changeDbEncryption && hasValidEncryptionKey)
-                encKey = null;
-
             return new Connection(con, disableDbEncryption, encKey, applicationSettings.DataFolder, applicationSettings.StartOrStopUsageReporter);
         }
 
+        /// <summary>
+        /// Starts or stops the usage reporter based on application settings
+        /// </summary>
+        /// <param name="connection">The connection</param>
         private static void StartOrStopUsageReporter(Connection connection)
         {
             var disableUsageReporter =
@@ -883,14 +1304,14 @@ namespace Duplicati.Server
                 case LiveControls.LiveControlState.Paused:
                     {
                         queueRunnerService.Pause();
-                        queueRunnerService.GetCurrentTask()?.Pause(e.TransfersPaused);
+                        queueRunnerService.GetCurrentTask()?.PauseAsync(e.TransfersPaused).Await();
                         appSettings.PausedUntil = e.WaitTimeExpiration;
                         break;
                     }
                 case LiveControls.LiveControlState.Running:
                     {
                         queueRunnerService.Resume();
-                        queueRunnerService.GetCurrentTask()?.Resume();
+                        queueRunnerService.GetCurrentTask()?.ResumeAsync().Await();
                         schedulerService?.Reschedule();
                         appSettings.PausedUntil = null;
                         break;
@@ -930,6 +1351,183 @@ namespace Duplicati.Server
         }
 
         /// <summary>
+        /// Handles the --configure-https option by generating and installing HTTPS certificates.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        /// <param name="commandlineOptions">The commandline options.</param>
+        private static void HandleConfigureHttps(Connection connection, Dictionary<string, string> commandlineOptions)
+        {
+            var hostnames = commandlineOptions.GetValueOrDefault(WebServerLoader.OPTION_CONFIGURE_HTTPS_HOSTNAMES);
+
+            // Read existing certificate data from database
+            var isAutogenerated = connection.ApplicationSettings.ServerSSLCertificateAutogenerated;
+            var serverCert = connection.ApplicationSettings.ServerSSLCertificate;
+            var caCert = connection.ApplicationSettings.ServerCACertificate;
+            var caKey = connection.ApplicationSettings.ServerCACertificateKey;
+            var caPassword = connection.ApplicationSettings.ServerCACertificatePassword;
+
+            CACertificateData caData = null;
+            if (!string.IsNullOrEmpty(caCert) && !string.IsNullOrEmpty(caKey) && !string.IsNullOrEmpty(caPassword))
+            {
+                caData = new CACertificateData
+                {
+                    CACertificate = caCert,
+                    CAKey = caKey,
+                    CAPassword = caPassword
+                };
+            }
+
+            var result = CertificateRenewalChecker.GenerateAndInstallCertificates(
+                isAutogenerated,
+                serverCert,
+                caData,
+                hostnames,
+                skipTrustInstallation: false);
+
+            if (result.Success)
+            {
+                Log.WriteInformationMessage(LOGTAG, "ConfigureHttpsComplete", "HTTPS certificates configured successfully.");
+
+                // Store generated/renewed certificates in database
+                if (result.CACertificate != null && result.ServerCertificate != null)
+                {
+                    // New CA + server certificate generated
+                    var settings = new Dictionary<string, string>
+                    {
+                        [Database.ServerSettings.CONST.SERVER_CA_CERTIFICATE] = result.CACertificate.CACertificate,
+                        [Database.ServerSettings.CONST.SERVER_CA_CERTIFICATE_KEY] = result.CACertificate.CAKey,
+                        [Database.ServerSettings.CONST.SERVER_CA_CERTIFICATE_PASSWORD] = result.CACertificate.CAPassword,
+                        [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATE] = result.ServerCertificate.ServerCertificate,
+                        [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATEPASSWORD] = result.ServerCertificate.Password,
+                        [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATE_AUTOGENERATED] = "true"
+                    };
+
+                    connection.ApplicationSettings.UpdateSettings(settings, false);
+
+                    // Check if database is encrypted and emit warning if not
+                    if (!connection.IsEncryptingFields)
+                        EmitUnencryptedDatabaseWarning(connection);
+                }
+                else if (result.ServerCertificate != null)
+                {
+                    // Server certificate renewed using existing CA
+                    var settings = new Dictionary<string, string>
+                    {
+                        [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATE] = result.ServerCertificate.ServerCertificate,
+                        [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATEPASSWORD] = result.ServerCertificate.Password,
+                        [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATE_AUTOGENERATED] = "true"
+                    };
+
+                    connection.ApplicationSettings.UpdateSettings(settings, false);
+
+                    // Check if database is encrypted and emit warning if not
+                    if (!connection.IsEncryptingFields)
+                        EmitUnencryptedDatabaseWarning(connection);
+                }
+            }
+            else
+            {
+                Log.WriteErrorMessage(LOGTAG, "ConfigureHttpsFailed", null, "Failed to configure HTTPS certificates.");
+            }
+        }
+
+        /// <summary>
+        /// Checks if the server certificate needs renewal and performs renewal if necessary.
+        /// Handles database I/O for the renewal process.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        /// <returns>A result object containing renewal status and any failure reason.</returns>
+        private static CertificateRenewalResult CheckAndRenewCertificate(Connection connection)
+        {
+            // Read certificate data from database
+            var isAutogenerated = connection.ApplicationSettings.ServerSSLCertificateAutogenerated;
+            var serverCert = connection.ApplicationSettings.ServerSSLCertificate;
+            var caCert = connection.ApplicationSettings.ServerCACertificate;
+            var caKey = connection.ApplicationSettings.ServerCACertificateKey;
+            var caPassword = connection.ApplicationSettings.ServerCACertificatePassword;
+
+            CACertificateData caData = null;
+            if (!string.IsNullOrEmpty(caCert) && !string.IsNullOrEmpty(caKey) && !string.IsNullOrEmpty(caPassword))
+            {
+                caData = new CACertificateData
+                {
+                    CACertificate = caCert,
+                    CAKey = caKey,
+                    CAPassword = caPassword
+                };
+            }
+
+            // Check and renew if needed
+            var result = CertificateRenewalChecker.CheckAndRenewIfNeeded(isAutogenerated, serverCert, caData);
+
+            // If renewed, store the new certificate in database
+            if (result.Renewed && result.RenewedCertificate != null)
+            {
+                var settings = new Dictionary<string, string>
+                {
+                    [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATE] = result.RenewedCertificate.ServerCertificate,
+                    [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATEPASSWORD] = result.RenewedCertificate.Password,
+                    [Database.ServerSettings.CONST.SERVER_SSL_CERTIFICATE_AUTOGENERATED] = "true"
+                };
+
+                connection.ApplicationSettings.UpdateSettings(settings, false);
+
+                // Check if database is encrypted and emit warning if not
+                if (!connection.IsEncryptingFields)
+                    EmitUnencryptedDatabaseWarning(connection);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Emits a warning notification if the database is not encrypted.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        private static void EmitUnencryptedDatabaseWarning(Connection connection)
+        {
+            connection.RegisterNotification(
+                Serialization.NotificationType.Warning,
+                "Unencrypted database with CA key",
+                "The database is not encrypted and contains the CA private key. This is a major security risk and could allow MitM attacks on all HTTPS connections. Consider enabling database encryption.",
+                null,
+                null,
+                NOTIFICATION_CA_KEY_UNENCRYPTED_DATABASE,
+                null,
+                "UnencryptedDatabaseWithCAKey",
+                null,
+                (self, all) =>
+                {
+                    return all.FirstOrDefault(x => x.Action == NOTIFICATION_CA_KEY_UNENCRYPTED_DATABASE) ?? self;
+                }
+            );
+        }
+
+        /// <summary>
+        /// Registers a notification for certificate renewal failure.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        /// <param name="reason">The reason for the failure.</param>
+        private static void RegisterRenewalFailedNotification(Connection connection, string reason)
+        {
+            connection.RegisterNotification(
+                Serialization.NotificationType.Error,
+                "Certificate renewal failed",
+                $"The automatic renewal of the HTTPS certificate failed: {reason}. Please run '{PackageHelper.GetExecutableName(PackageHelper.NamedExecutable.ConfigureTool)} https regenerate-ca' to generate new certificates.",
+                null,
+                null,
+                NOTIFICATION_CERTIFICATE_RENEWAL_FAILED,
+                null,
+                "CertificateRenewalFailed",
+                null,
+                (self, all) =>
+                {
+                    return all.FirstOrDefault(x => x.Action == NOTIFICATION_CERTIFICATE_RENEWAL_FAILED) ?? self;
+                }
+            );
+        }
+
+        /// <summary>
         /// The default log retention
         /// </summary>
         private static readonly string DEFAULT_LOG_RETENTION = "30D";
@@ -937,14 +1535,19 @@ namespace Duplicati.Server
         /// <summary>
         /// The options related to the secret provider
         /// </summary>
-        private static readonly IReadOnlyList<ICommandLineArgument> SECRET_PROVIDER_OPTIONS = new Options(new Dictionary<string, string>()).SupportedCommands.Where(x => x.Name.StartsWith("secret-provider")).ToList();
+        /// <remarks>
+        /// This call will invoke the DataFolderManager and read the installid/machineid, which are not yet created.
+        /// Keeping this as a property ensures we delay-load this instead of statically initialize it.
+        /// </remarks>
+        private static IReadOnlyList<ICommandLineArgument> SECRET_PROVIDER_OPTIONS => new Options(new Dictionary<string, string>())
+            .SupportedCommands.Where(x => x.Name.StartsWith("secret-provider")).ToList();
 
         /// <summary>
         /// Gets additional commandline arguments support on Windows
         /// </summary>
-        private static readonly ICommandLineArgument[] WindowsOptions = OperatingSystem.IsWindows()
+        private static ICommandLineArgument[] WindowsOptions => OperatingSystem.IsWindows()
             ? [
-                new CommandLineArgument(WINDOWS_EVENTLOG_OPTION, CommandLineArgument.ArgumentType.Boolean, Strings.Program.LogwindowseventlogShort, Strings.Program.LogwindowseventlogLong),
+                new CommandLineArgument(WINDOWS_EVENTLOG_OPTION, CommandLineArgument.ArgumentType.String, Strings.Program.LogwindowseventlogShort, Strings.Program.LogwindowseventlogLong),
                 new CommandLineArgument(WINDOWS_EVENTLOG_LEVEL_OPTION, CommandLineArgument.ArgumentType.Enumeration, Strings.Program.LogwindowseventloglevelShort, Strings.Program.LogwindowseventloglevelLong, Library.Logging.LogMessageType.Information.ToString(), null, Enum.GetNames(typeof(Duplicati.Library.Logging.LogMessageType)))
             ]
             : [];
@@ -970,6 +1573,7 @@ namespace Duplicati.Server
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_SSLCERTIFICATEFILEPASSWORD, CommandLineArgument.ArgumentType.String, Strings.Program.WebserverCertificatePasswordDescription, Strings.Program.WebserverCertificatePasswordDescription),
             new CommandLineArgument(WebServerLoader.OPTION_INTERFACE, CommandLineArgument.ArgumentType.String, Strings.Program.WebserverInterfaceDescription, Strings.Program.WebserverInterfaceDescription, WebServerLoader.DEFAULT_OPTION_INTERFACE),
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_PASSWORD, CommandLineArgument.ArgumentType.Password, Strings.Program.WebserverPasswordDescription, Strings.Program.WebserverPasswordDescription),
+            new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_PASSWORD_INIT, CommandLineArgument.ArgumentType.Password, Strings.Program.WebserverPasswordInitDescription, Strings.Program.WebserverPasswordInitDescription),
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_ALLOWEDHOSTNAMES, CommandLineArgument.ArgumentType.String, Strings.Program.WebserverAllowedhostnamesDescription, Strings.Program.WebserverAllowedhostnamesDescription, null, [WebServerLoader.OPTION_WEBSERVICE_ALLOWEDHOSTNAMES_ALT]),
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_RESET_JWT_CONFIG, CommandLineArgument.ArgumentType.Boolean, Strings.Program.WebserverResetJwtConfigDescription, Strings.Program.WebserverResetJwtConfigDescription),
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_ENABLE_FOREVER_TOKEN, CommandLineArgument.ArgumentType.Boolean, Strings.Program.WebserverEnableForeverTokenDescription, Strings.Program.WebserverEnableForeverTokenDescription),
@@ -981,11 +1585,17 @@ namespace Duplicati.Server
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_CORS_ORIGINS, CommandLineArgument.ArgumentType.Path, Strings.Program.WebserverCorsOriginsDescription, Strings.Program.WebserverCorsOriginsDescription, WebServerLoader.DEFAULT_OPTION_SPAPATHS),
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_PRE_AUTH_TOKENS, CommandLineArgument.ArgumentType.String, Strings.Program.WebserverPreAuthTokensDescription, Strings.Program.WebserverPreAuthTokensDescription),
             new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_TOKENDURATION, CommandLineArgument.ArgumentType.Timespan, Strings.Program.WebserverTokenDurationDescription, Strings.Program.WebserverTokenDurationDescription, WebServerLoader.DEFAULT_OPTION_TOKENDURATION),
+            new CommandLineArgument(WebServerLoader.OPTION_WEBSERVICE_ENABLE_FOLDER_STATUS_SERVICE, CommandLineArgument.ArgumentType.Boolean, Strings.Program.WebserverEnableFolderStatusServiceDescription, Strings.Program.WebserverEnableFolderStatusServiceDescription),
+            new CommandLineArgument(WebServerLoader.OPTION_CONFIGURE_HTTPS, CommandLineArgument.ArgumentType.Boolean, Strings.Program.ConfigureHttpsShort, Strings.Program.ConfigureHttpsLong),
+            new CommandLineArgument(WebServerLoader.OPTION_CONFIGURE_HTTPS_HOSTNAMES, CommandLineArgument.ArgumentType.String, Strings.Program.ConfigureHttpsHostnamesShort, Strings.Program.ConfigureHttpsHostnamesLong),
+            new CommandLineArgument(WebServerLoader.OPTION_SUPPRESS_WELCOME_PAGE, CommandLineArgument.ArgumentType.Boolean, Strings.Program.SuppressWelcomePageShort, Strings.Program.SuppressWelcomePageLong),
             new CommandLineArgument(PING_PONG_KEEPALIVE_OPTION, CommandLineArgument.ArgumentType.Boolean, Strings.Program.PingpongkeepaliveShort, Strings.Program.PingpongkeepaliveLong),
             new CommandLineArgument(DISABLE_UPDATE_CHECK_OPTION, CommandLineArgument.ArgumentType.Boolean, Strings.Program.DisableupdatecheckShort, Strings.Program.DisableupdatecheckLong),
             new CommandLineArgument(LOG_RETENTION_OPTION, CommandLineArgument.ArgumentType.Timespan, Strings.Program.LogretentionShort, Strings.Program.LogretentionLong, DEFAULT_LOG_RETENTION),
             new CommandLineArgument(DataFolderManager.SERVER_DATAFOLDER_OPTION, CommandLineArgument.ArgumentType.Path, Strings.Program.ServerdatafolderShort, Strings.Program.ServerdatafolderLong(DataFolderManager.DATAFOLDER_ENV_NAME), DataFolderManager.GetDataFolder(DataFolderManager.AccessMode.ProbeOnly)),
+            new CommandLineArgument(DataFolderManager.ALLOW_INSECURE_DATAFOLDER_OPTION, CommandLineArgument.ArgumentType.Boolean, Strings.Program.AllowInsecureDatafolderShort, Strings.Program.AllowInsecureDatafolderLong, false.ToString()),
             new CommandLineArgument(DISABLE_DB_ENCRYPTION_OPTION, CommandLineArgument.ArgumentType.Boolean, Strings.Program.DisabledbencryptionShort, Strings.Program.DisabledbencryptionLong),
+            new CommandLineArgument(DISABLE_DEFAULT_SECRET_PROVIDER_OPTION, CommandLineArgument.ArgumentType.Boolean, Strings.Program.DisabledefaultsecretproviderShort, Strings.Program.DisabledefaultsecretproviderLong),
             new CommandLineArgument(REQUIRE_DB_ENCRYPTION_KEY_OPTION, CommandLineArgument.ArgumentType.Boolean, Strings.Program.RequiredbencryptionShort, Strings.Program.RequiredbencryptionLong),
             new CommandLineArgument(SETTINGS_ENCRYPTION_KEY_OPTION, CommandLineArgument.ArgumentType.Password, Strings.Program.SettingsencryptionkeyShort, Strings.Program.SettingsencryptionkeyLong(EncryptedFieldHelper.ENVIROMENT_VARIABLE_NAME)),
             new CommandLineArgument(REGISTER_REMOTE_CONTROL_OPTION, CommandLineArgument.ArgumentType.String, Strings.Program.RegisterRemoteControlShort, Strings.Program.RegisterRemoteControlLong),
@@ -999,9 +1609,17 @@ namespace Duplicati.Server
         /// <summary>
         /// List of known duplicate option names
         /// </summary>
-        public static readonly HashSet<string> KnownDuplicateOptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        public static readonly HashSet<string> KnownDuplicateOptions = new(StringComparer.OrdinalIgnoreCase);
 
-        private static bool ReadOptionsFromFile(string filename, ref IFilter filter, List<string> cargs, Dictionary<string, string> options)
+        /// <summary>
+        /// Reads options from a file and applies them to the current commandline arguments and options
+        /// </summary>
+        /// <param name="filename">The filename</param>
+        /// <param name="filter">The filter</param>
+        /// <param name="cargs">The commandline arguments</param>
+        /// <param name="options">The options</param>
+        /// <returns>True if successful</returns>
+        private static void ReadOptionsFromFile(string filename, ref IFilter filter, List<string> cargs, Dictionary<string, string> options)
         {
             try
             {
@@ -1055,13 +1673,13 @@ namespace Duplicati.Server
                     filter = newfilter;
 
                 if (!string.IsNullOrWhiteSpace(prependfilter))
-                    filter = FilterExpression.Combine(FilterExpression.Deserialize(prependfilter.Split(new string[] { System.IO.Path.PathSeparator.ToString() }, StringSplitOptions.RemoveEmptyEntries)), filter);
+                    filter = FilterExpression.Combine(FilterExpression.Deserialize(prependfilter.Split([System.IO.Path.PathSeparator.ToString()], StringSplitOptions.RemoveEmptyEntries)), filter);
 
                 if (!string.IsNullOrWhiteSpace(appendfilter))
-                    filter = FilterExpression.Combine(filter, FilterExpression.Deserialize(appendfilter.Split(new string[] { System.IO.Path.PathSeparator.ToString() }, StringSplitOptions.RemoveEmptyEntries)));
+                    filter = FilterExpression.Combine(filter, FilterExpression.Deserialize(appendfilter.Split([System.IO.Path.PathSeparator.ToString()], StringSplitOptions.RemoveEmptyEntries)));
 
                 if (!string.IsNullOrWhiteSpace(replacefilter))
-                    filter = FilterExpression.Deserialize(replacefilter.Split(new string[] { System.IO.Path.PathSeparator.ToString() }, StringSplitOptions.RemoveEmptyEntries));
+                    filter = FilterExpression.Deserialize(replacefilter.Split([System.IO.Path.PathSeparator.ToString()], StringSplitOptions.RemoveEmptyEntries));
 
                 foreach (var keyvalue in opt)
                     options[keyvalue.Key] = keyvalue.Value;
@@ -1078,8 +1696,6 @@ namespace Duplicati.Server
                     cargs.AddRange(newsource);
                 else if (newsource.Count > 0)
                     Log.WriteVerboseMessage(LOGTAG, "NotUsingBackupSources", Strings.Program.SkippingSourceArgumentsOnNonBackupOperation);
-
-                return true;
             }
             catch (Exception e)
             {

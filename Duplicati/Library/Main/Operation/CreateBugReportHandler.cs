@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -20,11 +20,10 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Duplicati.Library.Interface;
-using Duplicati.Library.Main.Database;
+using Duplicati.Library.Main.Database.Local;
 using Duplicati.Library.Utility;
 
 namespace Duplicati.Library.Main.Operation
@@ -70,9 +69,9 @@ namespace Duplicati.Library.Main.Operation
                 File.Copy(m_options.Dbpath, tmp, true);
                 await using (var db = await LocalBugReportDatabase.CreateAsync(tmp, null, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                 {
-                    await db.Fix(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+                    await db.ObfuscateAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
                     if (m_options.AutoVacuum)
-                        await db.Vacuum(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+                        await db.VacuumAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
                 }
 
                 using (var stream = new FileStream(m_targetpath, FileMode.Create, FileAccess.Write, FileShare.Read))
@@ -84,7 +83,7 @@ namespace Duplicati.Library.Main.Operation
 
                     using (var cs = new StreamWriter(cm.CreateFile("system-info.txt", CompressionHint.Compressible, DateTime.UtcNow)))
                         foreach (var line in SystemInfoHandler.GetSystemInfo())
-                            cs.WriteLine(line);
+                            await cs.WriteLineAsync(line);
                 }
 
                 m_result.TargetPath = m_targetpath;

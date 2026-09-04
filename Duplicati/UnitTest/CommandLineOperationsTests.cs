@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -62,12 +62,12 @@ namespace Duplicati.UnitTest
         }
 
         [SetUp]
-        public void SetUp()
+        public async Task SetUpAsync()
         {
             if (!systemIO.FileExists(zipAlternativeFilepath))
             {
                 var url = $"{S3_URL}{this.zipFilename}";
-                DownloadS3FileIfNewer(zipFilepath, url);
+                await DownloadS3FileIfNewerAsync(zipFilepath, url);
                 ZipFileExtractToDirectory(this.zipFilepath, BASEFOLDER);
             }
             else
@@ -75,9 +75,6 @@ namespace Duplicati.UnitTest
                 ZipFileExtractToDirectory(this.zipAlternativeFilepath, BASEFOLDER);
             }
         }
-
-        private void DownloadS3FileIfNewer(string destinationFilePath, string url, int retries = 5)
-            => DownloadS3FileIfNewerAsync(destinationFilePath, url, retries).Await();
 
         public static async Task DownloadS3FileIfNewerAsync(string destinationFilePath, string url, int retries = 5)
         {
@@ -100,6 +97,13 @@ namespace Duplicati.UnitTest
                     }
                     else
                     {
+                        // An error response is not a download. Without this check the error body
+                        // is written out as if it were the archive, and the length check below
+                        // compares it against the Content-Length of that same response, so it
+                        // passes. The failure then surfaces much later as a corrupt archive, and
+                        // the retry below never happens because nothing threw.
+                        response.EnsureSuccessStatusCode();
+
                         using var tmpFile = new TempFile();
                         Console.WriteLine($"Downloading file from {url} to: {tmpFile}");
                         var contentStream = await response.Content.ReadAsStreamAsync();
@@ -128,7 +132,7 @@ namespace Duplicati.UnitTest
                     await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
                     try
                     {
-                        System.Net.Dns.GetHostEntry(new System.Uri(url).Host);
+                        await System.Net.Dns.GetHostEntryAsync(new System.Uri(url).Host);
                     }
                     catch (Exception)
                     {

@@ -2,17 +2,23 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <IsPublishable>false</IsPublishable>
     <RootNamespace>Duplicati.UnitTest</RootNamespace>
-    <Copyright>Copyright © 2025 Team Duplicati, MIT license</Copyright>
+    <Copyright>Copyright © 2026 Team Duplicati, MIT license</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="nunit" Version="4.3.2" />
     <PackageReference Include="NUnit3TestAdapter" Version="5.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Testcontainers" Version="3.4.0" />
+    <PackageReference Include="TestContainers.Container.Abstractions" Version="1.5.4" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,6 +30,7 @@
     <ProjectReference Include="..\Library\DynamicLoader\Duplicati.Library.DynamicLoader.csproj" />
     <ProjectReference Include="..\Library\Logging\Duplicati.Library.Logging.csproj" />
     <ProjectReference Include="..\Library\Main\Duplicati.Library.Main.csproj" />
+    <ProjectReference Include="..\Library\Parity\Duplicati.Library.Parity.csproj" />
     <ProjectReference Include="..\Library\Utility\Duplicati.Library.Utility.csproj" />
     <ProjectReference Include="..\License\Duplicati.License.csproj" />
     <ProjectReference Include="..\Server\Duplicati.Server.Serialization\Duplicati.Server.Serialization.csproj" />
@@ -37,15 +44,16 @@
     <ProjectReference Include="..\Library\UsageReporter\Duplicati.Library.UsageReporter.csproj" />
     <ProjectReference Include="..\Tools\Duplicati.Tools.csproj" />
     <ProjectReference Include="..\..\Tools\RemoteSynchronization\RemoteSynchronization.csproj" />
+    <ProjectReference Include="..\..\proprietary\DiskImage\Duplicati.Proprietary.DiskImage.csproj" />
+    <ProjectReference Include="..\WebserverCore\Duplicati.WebserverCore.csproj" />
+    <ProjectReference Include="..\Library\Certificates\Duplicati.Library.Certificates.csproj" />
+    <ProjectReference Include="..\GUI\Duplicati.GUI.TrayIcon\Duplicati.GUI.TrayIcon.csproj" />
   </ItemGroup>
 
-  <!-- Copy in WindowsModules for easier debug, or if we are targeting Windows -->
-  <Target Name="CopyWindowsModulesRuntime" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
-    <ItemGroup>
-      <_WinMods Include="..\Library\WindowsModules\bin\$(Configuration)\net8.0-windows7.0\**\*.dll" />
-    </ItemGroup>
-
-    <Copy SourceFiles="@(_WinMods)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
-  </Target>  
+  <!-- Copy in WindowsModules on Windows so the tests can load the snapshot providers -->
+  <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
+    <_CopyWinModules>True</_CopyWinModules>
+  </PropertyGroup>
+  <Import Project="..\Library\WindowsModules\WindowsModules.Runtime.targets" />
 
 </Project>

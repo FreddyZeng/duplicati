@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -49,6 +49,14 @@ namespace Duplicati.Server.Serialization.Interface
         /// The lookups supported by the module
         /// </summary>
         IDictionary<string, IDictionary<string, string>> Lookups { get; }
+        /// <summary>
+        /// Indicated the module is deprecated
+        /// </summary>
+        bool IsDeprecated { get; }
+        /// <summary>
+        /// Indicated the module is untested
+        /// </summary>
+        bool IsUntested { get; }
     }
 }
 

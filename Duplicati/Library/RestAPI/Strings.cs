@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -57,6 +57,7 @@ Error message: {0}", error); }
         public static string WebserverCertificatePasswordDescription { get { return LC.L(@"The password for decryption of the provided certificate PKCS #12 file."); } }
         public static string WebserverInterfaceDescription { get { return LC.L(@"The interface the webserver listens on. The special values ""*"" and ""any"" means any interface. The special value ""loopback"" means the loopback adapter."); } }
         public static string WebserverPasswordDescription { get { return LC.L(@"The password required to access the webserver. This option is saved so you do not need to set it on each run. An access password is mandatory."); } }
+        public static string WebserverPasswordInitDescription { get { return LC.L(@"Access password feature for automated installation. Sets the password only if not already set, and then exits."); } }
         public static string WebserverAllowedhostnamesDescription { get { return LC.L(@"The hostnames that are accepted, separated with semicolons. If any of the hostnames are ""*"", all hostnames are allowed and the hostname checking is disabled."); } }
         public static string PingpongkeepaliveLong { get { return LC.L(@"When running as a server, the service daemon must verify that the process is responding. If this option is enabled, the server reads stdin and writes a reply to each line read."); } }
         public static string PingpongkeepaliveShort { get { return LC.L(@"Enable the ping-pong responder"); } }
@@ -66,6 +67,8 @@ Error message: {0}", error); }
         public static string LogretentionShort { get { return LC.L(@"Clean up old log data"); } }
         public static string ServerdatafolderLong(string envname) { return LC.L(@"Duplicati needs to store a small database with all settings. Use this option to choose where the settings are stored. This option can also be set with the environment variable {0}.", envname); }
         public static string ServerdatafolderShort { get { return LC.L(@"Set the folder where settings are stored"); } }
+        public static string AllowInsecureDatafolderLong { get { return LC.L(@"Allow the data folder to be placed in a shared location without restricting the permissions to SYSTEM and Administrators. This bypasses the security check that prevents using a world-readable folder for the database and configuration. Only use this option if you understand the risks and have restricted the permissions manually."); } }
+        public static string AllowInsecureDatafolderShort { get { return LC.L(@"Allow the data folder to be in a shared location without restricted permissions"); } }
         public static string ServerencryptionkeyLong(string envname, string decryptionoption) { return LC.L(@"This option sets the encryption key used to scramble the local settings database. This option can also be set with the environment variable {0}. Use the option --{1} to disable the database scrambling.", envname, decryptionoption); }
         public static string ServerencryptionkeyShort { get { return LC.L(@"Set the database encryption key"); } }
         public static string TempdirLong { get { return LC.L(@"Use this option to supply an alternative folder for temporary storage. By default the system default temporary folder is used. Note that also SQLite will put temporary files in this temporary folder."); } }
@@ -80,9 +83,12 @@ Error message: {0}", error); }
         public static string WebserverPreAuthTokensDescription { get { return LC.L(@"A list of pre-authenticated tokens, separated with semicolons. These can be used in cases where the authentication is provided by a proxy. Each token must be at least 10 characters and not contain extended characters. The token must be provided by setting the header on each request to contain: Authentication: PreAuth <token>"); } }
         public static string WebserverDisableApiExtensionsDescription { get { return LC.L(@"Disable the API extensions reported by the server. This will not disable the functionality, but will not report the extensions in the API responses. Use this option to degrade the server to a more basic API."); } }
         public static string WebserverTokenDurationDescription { get { return LC.L(@"The duration of the refresh tokens issued by the server. This value indicates how much time can pass without activity before the user is asked to log in again. The value must be greater than zero and is capped at 30 days."); } }
+        public static string WebserverEnableFolderStatusServiceDescription { get { return LC.L(@"Enable the folder status service for showing overlay icons in the file explorer"); } }
         public static string DisabledbencryptionLong { get { return LC.L(@"Use this option to disable database encryption of sensitive fields"); } }
         public static string DisabledbencryptionShort { get { return LC.L(@"Disable database encryption"); } }
-        public static string LogwindowseventlogLong { get { return LC.L(@"Use this option to log to the Windows event log. The provided name is in the format Log:Source. If no log name is provided, Duplicati is used."); } }
+        public static string DisabledefaultsecretproviderLong { get { return LC.L(@"Use this option to disable the default secret provider"); } }
+        public static string DisabledefaultsecretproviderShort { get { return LC.L(@"Disable the default secret provider"); } }
+        public static string LogwindowseventlogLong { get { return LC.L(@"Use this option to log to the Windows event log. The provided name is in the format Log:Source. If no log name is provided, ""Duplicati 2"" is used."); } }
         public static string LogwindowseventlogShort { get { return LC.L(@"Log to the Windows event log"); } }
         public static string LogwindowseventloglevelLong { get { return LC.L(@"Use this option to set the log level for the Windows event log."); } }
         public static string LogwindowseventloglevelShort { get { return LC.L(@"Set the log level for the Windows event log"); } }
@@ -101,6 +107,7 @@ Error message: {0}", error); }
         public static string NoEncryptionKeySpecified(string envkey, string disableoptionname) { return LC.L(@"No database encryption key was found. The database will be stored unencrypted. Supply an encryption key via the environment variable {0} or disable database encryption with the option --{1}", envkey, disableoptionname); }
         public static string EncryptionKeyMissing(string envkey) { return LC.L(@"The database appears to be encrypted, but no key was specified. Opening the database will likely fail. Use the environment variable {0} to specify the key.", envkey); }
         public static string InvalidTimezone(string timezone) { return LC.L(@"The timezone {0} is not valid", timezone); }
+        public static string InvalidUpdateCheckInterval(string interval) { return LC.L(@"The update check interval {0} is not valid", interval); }
         public static string SettingsencryptionkeyShort { get { return LC.L(@"Set the encryption key for the settings database"); } }
         public static string SettingsencryptionkeyLong(string envname) { return LC.L(@"Use this option to set the encryption key for the settings database. This option can also be set with the environment variable {0}.", envname); }
         public static string InvalidPauseResumeState(LiveControls.LiveControlState state) { return LC.L(@"Invalid pause/resume state: {0}", state); }
@@ -117,6 +124,16 @@ Error message: {0}", error); }
         public static string AllowedEncryptionModulesLong { get { return LC.L(@"Set the allowed encryption modules for remote control. The value is a comma-separated list of encryption module names. If this option is not set, all encryption modules are allowed. Use this option to restrict the encryption modules that can be used to encrypt data."); } }
         public static string AllowedCompressionModulesShort { get { return LC.L(@"Set the allowed compression modules for remote control"); } }
         public static string AllowedCompressionModulesLong { get { return LC.L(@"Set the allowed compression modules for remote control. The value is a comma-separated list of compression module names. If this option is not set, all compression modules are allowed. Use this option to restrict the compression modules that can be used to compress data."); } }
+        public static string SecretProviderFailedToGetEncryptionKey { get { return LC.L(@"Failed to get encryption key from secret provider"); } }
+        public static string SecretProviderFailedToSetEncryptionKey { get { return LC.L(@"Failed to set encryption key in secret provider"); } }
+        public static string ConfigureHttpsShort { get { return LC.L(@"Configure HTTPS certificates"); } }
+        public static string ConfigureHttpsLong { get { return LC.L(@"Automatically generate and configure HTTPS certificates for the server"); } }
+        public static string ConfigureHttpsHostnamesShort { get { return LC.L(@"HTTPS hostnames"); } }
+        public static string ConfigureHttpsHostnamesLong { get { return LC.L(@"Comma-separated list of hostnames to include in the HTTPS certificate (used with --configure-https)"); } }
+        public static string SuppressWelcomePageShort { get { return LC.L(@"Suppress the initial welcome page"); } }
+        public static string SuppressWelcomePageLong { get { return LC.L(@"Suppress the welcome page that is shown when first using the web interface"); } }
+        public static string StoretaskconfigShort { get { return LC.L(@"Store task configuration with backup"); } }
+        public static string StoretaskconfigLong { get { return LC.L(@$"Controls whether the backup configuration is stored as a control file in the backup. When encryption is enabled, {StoreTaskConfigMode.Auto} is equivalent to {StoreTaskConfigMode.Self} and {StoreTaskConfigMode.None} otherwise. The mode {StoreTaskConfigMode.Self} and {StoreTaskConfigMode.All} store the configuration without secrets (for the current job or all jobs, respectively). The options {StoreTaskConfigMode.SelfWithSecrets} and {StoreTaskConfigMode.AllWithSecrets} include all secrets in the configuration, which makes it easier to recreate, but is less secure. Note that configuration is only uploaded if the backup has changed, and a configuration change alone will not be treated as a new backup version."); } }
     }
     internal static class Scheduler
     {

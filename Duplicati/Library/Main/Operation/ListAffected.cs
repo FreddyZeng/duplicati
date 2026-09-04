@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -21,7 +21,6 @@
 
 using System;
 using System.Linq;
-using System.Collections.Generic;
 using Duplicati.Library.Interface;
 using System.Threading.Tasks;
 using System.IO;
@@ -39,26 +38,26 @@ namespace Duplicati.Library.Main.Operation
             m_result = result;
         }
 
-        public async Task RunAsync(List<string> args, Action<IListAffectedResults> callback = null)
+        public async Task RunAsync(string[] args, Action<IListAffectedResults> callback = null)
         {
             if (!File.Exists(m_options.Dbpath))
                 throw new UserInformationException(string.Format("Database file does not exist: {0}", m_options.Dbpath), "DatabaseDoesNotExist");
 
-            await using var db = await Database.LocalListAffectedDatabase.CreateAsync(m_options.Dbpath, null, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+            await using var db = await Database.Local.LocalListAffectedDatabase.CreateAsync(m_options.Dbpath, null, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
             if (callback == null)
             {
                 m_result.SetResult(
-                    await db.GetFilesets(args, m_result.TaskControl.ProgressToken)
+                    await db.GetFilesetsAsync(args, m_result.TaskControl.ProgressToken)
                         .OrderByDescending(x => x.Time)
                         .ToArrayAsync()
                         .ConfigureAwait(false),
-                    await db.GetFiles(args, m_result.TaskControl.ProgressToken)
+                    await db.GetFilesAsync(args, m_result.TaskControl.ProgressToken)
                         .ToArrayAsync()
                         .ConfigureAwait(false),
-                    await db.GetLogLines(args, m_result.TaskControl.ProgressToken)
+                    await db.GetLogLinesAsync(args, m_result.TaskControl.ProgressToken)
                         .ToArrayAsync()
                         .ConfigureAwait(false),
-                    await db.GetVolumes(args, m_result.TaskControl.ProgressToken)
+                    await db.GetVolumesAsync(args, m_result.TaskControl.ProgressToken)
                         .ToArrayAsync()
                         .ConfigureAwait(false)
                 );
@@ -66,17 +65,17 @@ namespace Duplicati.Library.Main.Operation
             else
             {
                 m_result.SetResult(
-                    await db.GetFilesets(args, m_result.TaskControl.ProgressToken)
+                    await db.GetFilesetsAsync(args, m_result.TaskControl.ProgressToken)
                         .OrderByDescending(x => x.Time)
                         .ToArrayAsync()
                         .ConfigureAwait(false),
-                    await db.GetFiles(args, m_result.TaskControl.ProgressToken)
+                    await db.GetFilesAsync(args, m_result.TaskControl.ProgressToken)
                         .ToArrayAsync()
                         .ConfigureAwait(false),
-                    await db.GetLogLines(args, m_result.TaskControl.ProgressToken)
+                    await db.GetLogLinesAsync(args, m_result.TaskControl.ProgressToken)
                         .ToArrayAsync()
                         .ConfigureAwait(false),
-                    await db.GetVolumes(args, m_result.TaskControl.ProgressToken)
+                    await db.GetVolumesAsync(args, m_result.TaskControl.ProgressToken)
                         .ToArrayAsync()
                         .ConfigureAwait(false)
                 );

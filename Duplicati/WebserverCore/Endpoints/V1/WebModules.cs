@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -19,10 +19,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
 // DEALINGS IN THE SOFTWARE.
 using Duplicati.Library.Interface;
-using Duplicati.Library.Main;
 using Duplicati.Server;
 using Duplicati.Server.Database;
 using Duplicati.WebserverCore.Abstractions;
+using Duplicati.WebserverCore.Endpoints.Shared;
 using Duplicati.WebserverCore.Exceptions;
 using Microsoft.AspNetCore.Mvc;
 
@@ -34,14 +34,15 @@ public record WebModules : IEndpointV1
     {
         group.MapGet("/webmodules", ExecuteGet).RequireAuthorization();
         group.MapPost("/webmodule/{modulekey}", ([FromServices] Connection connection, [FromServices] IApplicationSettings applicationSettings, [FromRoute] string modulekey, [FromBody] Dictionary<string, string> options, CancellationToken cancellationToken)
-            => ExecutePost(connection, applicationSettings, modulekey, options, cancellationToken))
+            => ExecutePostAsync(connection, applicationSettings, modulekey, options, cancellationToken))
             .RequireAuthorization();
     }
 
     private static IEnumerable<IWebModule> ExecuteGet()
         => Library.DynamicLoader.WebLoader.Modules;
 
-    private static async Task<Dto.WebModuleOutputDto> ExecutePost(Connection connection, IApplicationSettings applicationSettings, string modulekey, Dictionary<string, string> inputOptions, CancellationToken cancellationToken)
+
+    private static async Task<Dto.WebModuleOutputDto> ExecutePostAsync(Connection connection, IApplicationSettings applicationSettings, string modulekey, Dictionary<string, string> inputOptions, CancellationToken cancellationToken)
     {
         var m = Library.DynamicLoader.WebLoader.Modules.FirstOrDefault(x => x.Key.Equals(modulekey, StringComparison.OrdinalIgnoreCase))
             ?? throw new NotFoundException("No such module found");
@@ -50,12 +51,29 @@ public record WebModules : IEndpointV1
         foreach (var k in inputOptions.Keys)
             options[k] = inputOptions[k];
 
-        await SecretProviderHelper.ApplySecretProviderAsync([], [], options, Library.Utility.TempFolder.SystemTempPath, applicationSettings.SecretProvider, cancellationToken);
+        var url = options.GetValueOrDefault("url");
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            var (newUrl, opts) = await SharedRemoteOperation.ExpandUrlAsync(connection, applicationSettings, url, options.GetValueOrDefault("backup-id"), Library.Utility.Utility.ParseLongOption(options, "connection-string-id", -1), options.GetValueOrDefault("source-prefix"), cancellationToken);
+            options["url"] = newUrl;
+            foreach (var k in opts.Keys)
+                options[k] = opts[k];
+        }
 
-        return new Dto.WebModuleOutputDto(
-            Status: "OK",
-            Result: m.Execute(options)
-        );
+        try
+        {
+            return new Dto.WebModuleOutputDto(
+                Status: "OK",
+                Result: await m.Execute(options, cancellationToken).ConfigureAwait(false)
+            );
+        }
+        catch (Exception ex)
+        {
+            return new Dto.WebModuleOutputDto(
+                Status: "FAILED",
+                Result: new Dictionary<string, string> { { "error", ex.Message } }
+            );
+        }
     }
 
 }

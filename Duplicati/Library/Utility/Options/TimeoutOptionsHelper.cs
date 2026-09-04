@@ -1,5 +1,5 @@
 
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -92,5 +92,21 @@ public static class TimeoutOptionsHelper
     /// <param name="ShortTimeout">The timeout in seconds for short operations like delete and create folder</param>
     /// <param name="ListTimeout">The timeout in seconds for listing files and folders</param>
     /// <param name="ReadWriteTimeout">The timeout in seconds for read and write operations.</param>
-    public sealed record Timeouts(TimeSpan ShortTimeout, TimeSpan ListTimeout, TimeSpan ReadWriteTimeout);
+    public sealed record Timeouts(TimeSpan ShortTimeout, TimeSpan ListTimeout, TimeSpan ReadWriteTimeout)
+    {
+        /// <summary>
+        /// Applies the timeout configuration to a dictionary
+        /// </summary>
+        /// <param name="target">The target dictionary</param>
+        /// <param name="overwrite">Whether to overwrite existing values</param>
+        public void ApplyTo(IDictionary<string, string?> target, bool overwrite = false, string? prefix = null)
+        {
+            if (overwrite || !target.ContainsKey(ReadWriteTimeoutOption))
+                target[$"{prefix}{ReadWriteTimeoutOption}"] = ((long)ReadWriteTimeout.TotalSeconds).ToString() + "s";
+            if (overwrite || !target.ContainsKey(ListTimeoutOption))
+                target[$"{prefix}{ListTimeoutOption}"] = ((long)ListTimeout.TotalSeconds).ToString() + "s";
+            if (overwrite || !target.ContainsKey(ShortTimeoutOption))
+                target[$"{prefix}{ShortTimeoutOption}"] = ((long)ShortTimeout.TotalSeconds).ToString() + "s";
+        }
+    }
 }

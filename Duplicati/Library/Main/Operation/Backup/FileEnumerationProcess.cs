@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 #nullable enable
@@ -33,6 +33,7 @@ using Duplicati.Library.Interface;
 using System.Runtime.CompilerServices;
 using Duplicati.Library.SourceProvider;
 using Duplicati.Library.Snapshots.USN;
+using System.Collections.ObjectModel;
 
 namespace Duplicati.Library.Main.Operation.Backup
 {
@@ -48,7 +49,218 @@ namespace Duplicati.Library.Main.Operation.Backup
         /// </summary>
         private static readonly string FILTER_LOGTAG = Logging.Log.LogTagFromType(typeof(FileEnumerationProcess));
 
-        public static Task Run(
+        /// <summary>
+        /// Enumerates the source entries with the same filtering and recursion logic used by the backup process.
+        /// This method is shared between backup and sync to ensure consistent file enumeration behavior.
+        /// </summary>
+        internal static async IAsyncEnumerable<ISourceProviderEntry> EnumerateAsync(
+            ISourceProvider sourceProvider,
+            UsnJournalService? journalService,
+            FileAttributes fileAttributeFilter,
+            Library.Utility.IFilter emitfilter,
+            Options.SymlinkStrategy symlinkPolicy,
+            Options.HardlinkStrategy hardlinkPolicy,
+            bool disableBackupExclusionXattr,
+            bool excludeemptyfolders,
+            string[]? ignorenames,
+            HashSet<string> blacklistPaths,
+            IEnumerable<string>? changedfilelist,
+            [EnumeratorCancellation] CancellationToken token)
+        {
+            if (token.IsCancellationRequested)
+                yield break;
+
+            // The hardlink map tracks the hardlink targets we have seen
+            // and avoid multiple processing of the same contents
+            var hardlinkmap = new Dictionary<string, string>();
+
+            // The mixin queue is used to store symlinks that should be processed
+            // The symlinks are emitted during the enumeration process when they are found
+            var mixinqueue = new Queue<ISourceProviderEntry>();
+
+            // The enumeration filter is used to determine what paths to
+            // recurse into. If the emit filter only has includes,
+            // the enumeration filter will also include all folders,
+            // as nothing will match otherwise
+            var enumeratefilter = emitfilter;
+
+            Library.Utility.FilterExpression.AnalyzeFilters(emitfilter, out var includes, out var excludes);
+            if (includes && !excludes)
+                enumeratefilter = Library.Utility.FilterExpression.Combine(emitfilter, new Duplicati.Library.Utility.FilterExpression("*" + System.IO.Path.DirectorySeparatorChar, true))
+                    ?? new Duplicati.Library.Utility.FilterExpression();
+
+            // Simplify checking for an empty list
+            if (ignorenames != null && ignorenames.Length == 0)
+                ignorenames = null;
+
+            // Shared filter function with bound variables
+            ValueTask<bool> FilterEntry(ISourceProviderEntry entry)
+                => SourceFileEntryFilterAsync(entry, blacklistPaths, hardlinkPolicy, symlinkPolicy, hardlinkmap, fileAttributeFilter, enumeratefilter, ignorenames, mixinqueue, disableBackupExclusionXattr, token);
+
+            // Prepare the work list
+            IAsyncEnumerable<ISourceProviderEntry> worklist;
+
+            // If we have a specific list, use that instead of enumerating the filesystem
+            if (changedfilelist != null && changedfilelist.Any())
+            {
+                async IAsyncEnumerable<ISourceProviderEntry> ExpandSources(IEnumerable<string> list)
+                {
+                    foreach (var s in list)
+                    {
+                        var r = await sourceProvider.GetEntryAsync(s, s.EndsWith(Path.DirectorySeparatorChar), token).ConfigureAwait(false);
+                        if (r != null)
+                        {
+                            //TODO: Set r.IsRoot = true for source elements
+                            yield return r;
+                        }
+                    }
+                }
+
+                async IAsyncEnumerable<ISourceProviderEntry> FilterExpandedSources(IAsyncEnumerable<ISourceProviderEntry> source, [EnumeratorCancellation] CancellationToken token)
+                {
+                    await foreach (var entry in source.WithCancellation(token).ConfigureAwait(false))
+                    {
+                        if (await FilterEntry(entry).ConfigureAwait(false))
+                            yield return entry;
+                    }
+                }
+
+                worklist = FilterExpandedSources(ExpandSources(changedfilelist), token);
+            }
+            else if (journalService != null)
+            {
+                if (!OperatingSystem.IsWindows())
+                    throw new NotSupportedException("USN is only supported on Windows");
+
+                var fileProviders = (sourceProvider is Combiner c ? c.Providers.AsEnumerable() : [sourceProvider])
+                    .OfType<SourceProvider.LocalFileSource>()
+                    .ToList();
+
+                if (fileProviders.Count <= 0)
+                    throw new InvalidOperationException("No file providers found, but USN was enabled?");
+                if (fileProviders.Count > 1)
+                    throw new InvalidOperationException("Multiple file providers found, but USN only supports one");
+
+                // TODO: This is not as effecient as possible.
+                // If the root folder is marked changed by USN, the expansion with RecurseEntries
+                // will cause a full regular scan. It should be possible to *only* process the
+                // changed elements as returned from the USN journal.
+                // It should be possible to remove RecurseEntries from the GetModifiedSources()
+                // enumeration result.
+                // Such a change requires significant testing as there are many pitfalls with USN.
+                worklist = RecurseEntriesAsync(journalService.GetModifiedSources(FilterEntry, token),
+                    FilterEntry,
+                    token
+                )
+                .Concat(
+                    RecurseEntriesAsync(journalService.GetFullScanSources(token),
+                    FilterEntry,
+                    token)
+                );
+            }
+            else
+            {
+                worklist = RecurseEntriesAsync(sourceProvider.EnumerateAsync(token),
+                    FilterEntry,
+                    token
+                );
+            }
+
+            if (token.IsCancellationRequested)
+                yield break;
+
+            var source = ExpandWorkListAsync(worklist, mixinqueue, emitfilter, enumeratefilter, token);
+            // TODO: There was a call to DistinctBy here, but this would cause all paths to be stored in memory
+            //.DistinctBy(x => x.Path, Library.Utility.Utility.IsFSCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+
+            if (excludeemptyfolders)
+                source = ExcludeEmptyFoldersAsync(source, token);
+
+            await foreach (var s in source.WithCancellation(token).ConfigureAwait(false))
+                yield return s;
+        }
+
+        /// <summary>
+        /// Enumerates the direct children of a single folder entry, applying the same
+        /// per-entry filtering (attribute, hardlink, symlink, blacklist, ignore-names,
+        /// xattr backup-exclusion) used by <see cref="EnumerateAsync"/>, but WITHOUT
+        /// recursing into sub-folders. Sub-folder entries that pass the filter are
+        /// yielded (so the caller can enqueue them) alongside file entries.
+        /// </summary>
+        /// <remarks>
+        /// This is the per-folder building block used by the folder-by-folder sync
+        /// handler: it lets the handler walk the local source tree one folder at a
+        /// time, processing each folder's files before moving on, instead of
+        /// materializing the whole tree into memory or a temp table. The filtering
+        /// logic is shared with <see cref="EnumerateAsync"/> via
+        /// <see cref="SourceFileEntryFilterAsync"/> so behavior stays consistent
+        /// between backup and sync. Symlinks with a "store" policy are NOT enqueued
+        /// into a mixin queue here (there is no recursion to defer them past); they
+        /// are simply yielded to the caller, which treats them as regular files for
+        /// sync purposes. The hardlink map is created fresh per call, so hardlink
+        /// de-duplication is scoped to a single folder; cross-folder hardlinks are
+        /// not de-duplicated, matching the previous behavior of the in-memory diff
+        /// which never de-duplicated hardlinks at all.
+        /// </remarks>
+        /// <param name="folder">The folder entry to enumerate. Must be a folder.</param>
+        /// <param name="fileAttributeFilter">The file attributes to exclude.</param>
+        /// <param name="emitfilter">The emit filter (include/exclude expressions).</param>
+        /// <param name="symlinkPolicy">The symlink policy.</param>
+        /// <param name="hardlinkPolicy">The hardlink policy.</param>
+        /// <param name="disableBackupExclusionXattr">Whether to disable xattr-based backup exclusion.</param>
+        /// <param name="ignorenames">The ignore-marker filenames, if any.</param>
+        /// <param name="blacklistPaths">The blacklisted paths.</param>
+        /// <param name="token">Cancellation token.</param>
+        /// <returns>An async stream of the filtered direct children of <paramref name="folder"/>.</returns>
+        internal static async IAsyncEnumerable<ISourceProviderEntry> EnumerateFolderAsync(
+            ISourceProviderEntry folder,
+            FileAttributes fileAttributeFilter,
+            Library.Utility.IFilter emitfilter,
+            Options.SymlinkStrategy symlinkPolicy,
+            Options.HardlinkStrategy hardlinkPolicy,
+            bool disableBackupExclusionXattr,
+            string[]? ignorenames,
+            HashSet<string> blacklistPaths,
+            [EnumeratorCancellation] CancellationToken token)
+        {
+            if (token.IsCancellationRequested)
+                yield break;
+
+            if (!folder.IsFolder)
+                throw new ArgumentException("The entry is not a folder.", nameof(folder));
+
+            // The hardlink map is scoped to this folder call. The mixin queue is not
+            // used here (no recursion to defer symlinks past); a "store" symlink is
+            // yielded directly to the caller.
+            var hardlinkmap = new Dictionary<string, string>();
+            var mixinqueue = new Queue<ISourceProviderEntry>();
+
+            // The enumerate filter mirrors EnumerateAsync: if the emit filter only has
+            // includes, folders are always accepted for enumeration so includes can
+            // match nested files.
+            var enumeratefilter = emitfilter;
+            Library.Utility.FilterExpression.AnalyzeFilters(emitfilter, out var includes, out var excludes);
+            if (includes && !excludes)
+                enumeratefilter = Library.Utility.FilterExpression.Combine(emitfilter, new Duplicati.Library.Utility.FilterExpression("*" + System.IO.Path.DirectorySeparatorChar, true))
+                    ?? new Duplicati.Library.Utility.FilterExpression();
+
+            if (ignorenames != null && ignorenames.Length == 0)
+                ignorenames = null;
+
+            await foreach (var entry in folder.Enumerate(token).WithCancellation(token).ConfigureAwait(false))
+            {
+                if (await SourceFileEntryFilterAsync(entry, blacklistPaths, hardlinkPolicy, symlinkPolicy, hardlinkmap, fileAttributeFilter, enumeratefilter, ignorenames, mixinqueue, disableBackupExclusionXattr, token).ConfigureAwait(false))
+                    yield return entry;
+
+                // "Store" symlinks were enqueued by the filter instead of being yielded.
+                // For sync there is no recursion to defer them past, so drain them out
+                // now and yield them to the caller as regular entries.
+                while (mixinqueue.Count > 0)
+                    yield return mixinqueue.Dequeue();
+            }
+        }
+
+        public static Task RunAsync(
             Channels channels,
             ISourceProvider sourceProvider,
             UsnJournalService? journalService,
@@ -56,6 +268,7 @@ namespace Duplicati.Library.Main.Operation.Backup
             Library.Utility.IFilter emitfilter,
             Options.SymlinkStrategy symlinkPolicy,
             Options.HardlinkStrategy hardlinkPolicy,
+            bool disableBackupExclusionXattr,
             bool excludeemptyfolders,
             string[]? ignorenames,
             HashSet<string> blacklistPaths,
@@ -72,125 +285,30 @@ namespace Duplicati.Library.Main.Operation.Backup
 
             async self =>
             {
-                if (!token.IsCancellationRequested)
+                if (token.IsCancellationRequested)
+                    return;
+
+                var source = EnumerateAsync(sourceProvider, journalService, fileAttributeFilter, emitfilter, symlinkPolicy, hardlinkPolicy, disableBackupExclusionXattr, excludeemptyfolders, ignorenames, blacklistPaths, changedfilelist, token);
+
+                await foreach (var s in source.WithCancellation(token).ConfigureAwait(false))
                 {
-                    // The hardlink map tracks the hardlink targets we have seen
-                    // and avoid multiple processing of the same contents
-                    var hardlinkmap = new Dictionary<string, string>();
-
-                    // The mixin queue is used to store symlinks that should be processed
-                    // The symlinks are emitted during the enumeration process when they are found
-                    var mixinqueue = new Queue<ISourceProviderEntry>();
-
-                    // The enumeration filter is used to determine what paths to
-                    // recurse into. If the emit filter only has includes,
-                    // the enumeration filter will also include all folders,
-                    // as nothing will match otherwise
-                    var enumeratefilter = emitfilter;
-
-                    Library.Utility.FilterExpression.AnalyzeFilters(emitfilter, out var includes, out var excludes);
-                    if (includes && !excludes)
-                        enumeratefilter = Library.Utility.FilterExpression.Combine(emitfilter, new Duplicati.Library.Utility.FilterExpression("*" + System.IO.Path.DirectorySeparatorChar, true))
-                            ?? new Duplicati.Library.Utility.FilterExpression();
-
-                    // Simplify checking for an empty list
-                    if (ignorenames != null && ignorenames.Length == 0)
-                        ignorenames = null;
-
-                    // Shared filter function with bound variables
-                    ValueTask<bool> FilterEntry(ISourceProviderEntry entry)
-                        => SourceFileEntryFilter(entry, blacklistPaths, hardlinkPolicy, symlinkPolicy, hardlinkmap, fileAttributeFilter, enumeratefilter, ignorenames, mixinqueue, token);
-
-                    // Prepare the work list
-                    IAsyncEnumerable<ISourceProviderEntry> worklist;
-
-                    // If we have a specific list, use that instead of enumerating the filesystem
-                    if (changedfilelist != null && changedfilelist.Any())
-                    {
-                        async IAsyncEnumerable<ISourceProviderEntry> ExpandSources(IEnumerable<string> list)
-                        {
-                            foreach (var s in list)
-                            {
-                                var r = await sourceProvider.GetEntry(s, s.EndsWith(Path.DirectorySeparatorChar), token).ConfigureAwait(false);
-                                if (r != null)
-                                {
-                                    //TODO: Set r.IsRoot = true for source elements
-                                    yield return r;
-                                }
-                            }
-                        }
-                        worklist = ExpandSources(changedfilelist).WhereAwait(FilterEntry);
-                    }
-                    else if (journalService != null)
-                    {
-                        if (!OperatingSystem.IsWindows())
-                            throw new NotSupportedException("USN is only supported on Windows");
-
-                        var fileProviders = (sourceProvider is Combiner c ? c.Providers.AsEnumerable() : [sourceProvider])
-                            .OfType<SourceProvider.LocalFileSource>()
-                            .ToList();
-
-                        if (fileProviders.Count <= 0)
-                            throw new InvalidOperationException("No file providers found, but USN was enabled?");
-                        if (fileProviders.Count > 1)
-                            throw new InvalidOperationException("Multiple file providers found, but USN only supports one");
-
-                        // TODO: This is not as effecient as possible.
-                        // If the root folder is marked changed by USN, the expansion with RecurseEntries
-                        // will cause a full regular scan. It should be possible to *only* process the
-                        // changed elements as returned from the USN journal.
-                        // It should be possible to remove RecurseEntries from the GetModifiedSources()
-                        // enumeration result.
-                        // Such a change requires significant testing as there are many pitfalls with USN.
-                        worklist = RecurseEntries(journalService.GetModifiedSources(FilterEntry, token),
-                            FilterEntry,
-                            token
-                        )
-                        .Concat(
-                            RecurseEntries(journalService.GetFullScanSources(token),
-                            FilterEntry,
-                            token)
-                        );
-                    }
-                    else
-                    {
-                        worklist = RecurseEntries(sourceProvider.Enumerate(token),
-                            FilterEntry,
-                            token
-                        );
-                    }
-
-                    if (token.IsCancellationRequested)
-                        return;
-
-                    var source = ExpandWorkList(worklist, mixinqueue, emitfilter, enumeratefilter, token);
-                    // TODO: There was a call to DistinctBy here, but this would cause all paths to be stored in memory
-                    //.DistinctBy(x => x.Path, Library.Utility.Utility.IsFSCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
-
-                    if (excludeemptyfolders)
-                        source = ExcludeEmptyFolders(source, token);
-
-                    // Process each path, and dequeue the mixins with symlinks as we go
-                    await foreach (var s in source.WithCancellation(token).ConfigureAwait(false))
-                    {
 #if DEBUG
-                        // For testing purposes, we need exact control
-                        // when requesting a process stop.
-                        // The "onStopRequested" callback is used to detect
-                        // if the process is the real file enumeration process
-                        // because the counter processe does not have a callback
-                        if (onStopRequested != null)
-                            taskreader.TestMethodCallback?.Invoke(s.Path);
+                    // For testing purposes, we need exact control
+                    // when requesting a process stop.
+                    // The "onStopRequested" callback is used to detect
+                    // if the process is the real file enumeration process
+                    // because the counter processe does not have a callback
+                    if (onStopRequested != null)
+                        taskreader.TestMethodCallback?.Invoke(s.Path);
 #endif
-                        // Stop if requested
-                        if (token.IsCancellationRequested || !await taskreader.ProgressRendevouz().ConfigureAwait(false))
-                        {
-                            onStopRequested?.Invoke();
-                            return;
-                        }
-
-                        await self.Output.WriteAsync(s);
+                    // Stop if requested
+                    if (token.IsCancellationRequested || !await taskreader.ProgressRendevouzAsync().ConfigureAwait(false))
+                    {
+                        onStopRequested?.Invoke();
+                        return;
                     }
+
+                    await self.Output.WriteAsync(s);
                 }
             });
         }
@@ -216,15 +334,14 @@ namespace Duplicati.Library.Main.Operation.Backup
         /// </summary>
         /// <returns>The list without empty folders.</returns>
         /// <param name="source">The list with potential empty folders.</param>
-        private static async IAsyncEnumerable<ISourceProviderEntry> ExcludeEmptyFolders(IAsyncEnumerable<ISourceProviderEntry> source, [EnumeratorCancellation] CancellationToken cancellationToken)
+        private static async IAsyncEnumerable<ISourceProviderEntry> ExcludeEmptyFoldersAsync(IAsyncEnumerable<ISourceProviderEntry> source, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var pathstack = new Stack<DirectoryStackEntry>();
 
             await foreach (var s in source.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 // Keep track of directories
-                var isDirectory = s.Path[s.Path.Length - 1] == System.IO.Path.DirectorySeparatorChar;
-                if (isDirectory)
+                if (s.IsFolder)
                 {
                     while (pathstack.Count > 0 && !s.Path.StartsWith(pathstack.Peek().Item.Path, Library.Utility.Utility.ClientFilenameStringComparison))
                     {
@@ -276,7 +393,7 @@ namespace Duplicati.Library.Main.Operation.Backup
         /// <param name="entries">The entries to recurse</param>
         /// <param name="filter">The filter to apply</param>
         /// <returns></returns>
-        private static async IAsyncEnumerable<ISourceProviderEntry> RecurseEntries(IAsyncEnumerable<ISourceProviderEntry> entries, Func<ISourceProviderEntry, ValueTask<bool>> filter, [EnumeratorCancellation] CancellationToken cancellationToken)
+        private static async IAsyncEnumerable<ISourceProviderEntry> RecurseEntriesAsync(IAsyncEnumerable<ISourceProviderEntry> entries, Func<ISourceProviderEntry, ValueTask<bool>> filter, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var work = new Stack<ISourceProviderEntry>();
 
@@ -294,14 +411,26 @@ namespace Duplicati.Library.Main.Operation.Backup
 
                 if (e.IsFolder)
                 {
+#if DEBUG
+                    if (!e.Path.EndsWith(Path.DirectorySeparatorChar))
+                        throw new Exception($"Expected folder entry to end with directory separator char: {e.Path}");
+#endif
                     try
                     {
+                        // Guard against duplicate paths from the source provider
+                        var known = new HashSet<string>(Library.Utility.Utility.ClientFilenameStringComparer);
+
                         // We only filter new items, as we assume the input is already filtered
                         await foreach (var r in e.Enumerate(cancellationToken).ConfigureAwait(false))
                             if (await filter(r).ConfigureAwait(false))
-                                work.Push(r);
+                            {
+                                if (known.Add(r.Path))
+                                    work.Push(r);
+                                else
+                                    Logging.Log.WriteWarningMessage(FILTER_LOGTAG, "DuplicatePath", null, "Duplicate path found: {0}", r.Path);
+                            }
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         LogExceptionHelper.LogCommonWarning(ex, FILTER_LOGTAG, "PathProcessingErrorEnumerate", e.Path, "Failed to enumerate path: {0}");
                     }
@@ -317,7 +446,7 @@ namespace Duplicati.Library.Main.Operation.Backup
         /// <param name="mixinqueue">The mix in queue.</param>
         /// <param name="emitfilter">The emitfilter.</param>
         /// <param name="enumeratefilter">The enumeratefilter.</param>
-        private static async IAsyncEnumerable<ISourceProviderEntry> ExpandWorkList(IAsyncEnumerable<ISourceProviderEntry> worklist, Queue<ISourceProviderEntry> mixinqueue, Library.Utility.IFilter emitfilter, Library.Utility.IFilter? enumeratefilter, [EnumeratorCancellation] CancellationToken cancellationToken)
+        private static async IAsyncEnumerable<ISourceProviderEntry> ExpandWorkListAsync(IAsyncEnumerable<ISourceProviderEntry> worklist, Queue<ISourceProviderEntry> mixinqueue, Library.Utility.IFilter emitfilter, Library.Utility.IFilter? enumeratefilter, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             // Process each path, and dequeue the mixins with symlinks as we go
             await foreach (var s in worklist.WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -358,6 +487,15 @@ namespace Duplicati.Library.Main.Operation.Backup
                 return false;
             }
 
+            // Exclude the "System Volume Information" folder,
+            // which contains system internal data that should not be backed up,
+            // even if the process holds the backup privilege that allows reading it
+            if (OperatingSystem.IsWindows() && entry.IsFolder && IsSystemVolumeInformationFolder(entry))
+            {
+                Logging.Log.WriteVerboseMessage(FILTER_LOGTAG, "ExcludingSystemVolumeInformationFolder", "Excluding System Volume Information folder: {0}", entry.Path);
+                return false;
+            }
+
             // Exclude block devices
             try
             {
@@ -392,10 +530,35 @@ namespace Duplicati.Library.Main.Operation.Backup
         }
 
         /// <summary>
+        /// Checks if the given entry is a "System Volume Information" folder,
+        /// based on the name, location, and attributes of the folder.
+        /// This method is not inlined to prevent loading the snapshot types on non-Windows platforms.
+        /// </summary>
+        /// <param name="entry">The entry to evaluate.</param>
+        /// <returns>True if the entry is a "System Volume Information" folder, false otherwise.</returns>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+        private static bool IsSystemVolumeInformationFolder(ISourceProviderEntry entry)
+        {
+            // If we cannot read the attributes, we cannot verify the folder
+            FileAttributes attributes;
+            try
+            {
+                attributes = entry.Attributes;
+            }
+            catch (Exception ex)
+            {
+                LogExceptionHelper.LogCommonWarning(ex, FILTER_LOGTAG, "PathProcessingErrorAttributes", entry.Path);
+                return false;
+            }
+
+            return Duplicati.Library.Snapshots.WindowsSnapshot.IsSystemVolumeInformationFolder(entry.Path, attributes);
+        }
+
+        /// <summary>
         /// Evaluates a single entry for inclusion in the backup
         /// </summary>
         /// <param name="entry">The current entry.</param>
-        /// <param name="snapshot">The snapshot service.</param>
         /// <param name="blacklistPaths">The blacklist paths.</param>
         /// <param name="hardlinkPolicy">The hardlink policy.</param>
         /// <param name="symlinkPolicy">The symlink policy.</param>
@@ -405,7 +568,7 @@ namespace Duplicati.Library.Main.Operation.Backup
         /// <param name="ignorenames">The ignore names.</param>
         /// <param name="mixinqueue">The mixin queue.</param>
         /// <returns>True if the path should be returned, false otherwise.</returns>
-        private static async ValueTask<bool> SourceFileEntryFilter(ISourceProviderEntry entry, HashSet<string> blacklistPaths, Options.HardlinkStrategy hardlinkPolicy, Options.SymlinkStrategy symlinkPolicy, Dictionary<string, string> hardlinkmap, FileAttributes fileAttributeFilter, Duplicati.Library.Utility.IFilter enumeratefilter, string[]? ignorenames, Queue<ISourceProviderEntry> mixinqueue, CancellationToken cancellationToken)
+        private static async ValueTask<bool> SourceFileEntryFilterAsync(ISourceProviderEntry entry, HashSet<string> blacklistPaths, Options.HardlinkStrategy hardlinkPolicy, Options.SymlinkStrategy symlinkPolicy, Dictionary<string, string> hardlinkmap, FileAttributes fileAttributeFilter, Duplicati.Library.Utility.IFilter enumeratefilter, string[]? ignorenames, Queue<ISourceProviderEntry> mixinqueue, bool disableBackupExclusionXattr, CancellationToken cancellationToken)
         {
             // Do the course pre-filtering first
             if (!PreFilterSourceEntry(entry, blacklistPaths))
@@ -503,6 +666,13 @@ namespace Duplicati.Library.Main.Operation.Backup
                 Logging.Log.WriteVerboseMessage(FILTER_LOGTAG, "IncludingPathFromFilter", "Including path due to filter: {0} => {1}", entry.Path, match.ToString());
             }
 
+            // Filter entries that are marked as excluded from backups via filesystem extended attributes
+            if (!disableBackupExclusionXattr && await HasBackupExclusionAttributeAsync(entry, cancellationToken).ConfigureAwait(false))
+            {
+                Logging.Log.WriteVerboseMessage(FILTER_LOGTAG, "ExcludingPathFromBackupAttribute", "Excluding path marked as excluded from backups via filesystem attribute: {0}", entry.Path);
+                return false;
+            }
+
             // If the file is a symlink, apply special handling
             string? symlinkTarget = null;
             try
@@ -545,6 +715,43 @@ namespace Duplicati.Library.Main.Operation.Backup
 
             // All the way through, yes!
             return true;
+        }
+
+        /// <summary>
+        /// Extended attribute prefix for files that should be excluded from backup.
+        /// The "unix-ext:" prefix is added when reading the xattrs via the ISourceProviderEntry interface.
+        /// </summary>
+        private static readonly ReadOnlySet<string> ExcludedBackupAttributes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            // macOS common backup exclusion attributes
+            "unix-ext:com.apple.metadata:com_apple_backup_excludeItem",
+            // Linux custom attributes
+            "unix-ext:duplicati.exclude",
+            "unix-ext:user.duplicati.exclude"
+        }.AsReadOnly();
+
+        /// <summary>
+        /// Checks if the entry has an attribute marking it as excluded from backups
+        /// </summary>
+        /// <param name="entry">The entry to check.</param>
+        /// <returns>True if the entry has the attribute, false otherwise.</returns>
+        private static async Task<bool> HasBackupExclusionAttributeAsync(ISourceProviderEntry entry, CancellationToken token)
+        {
+            try
+            {
+                var metadata = await entry.GetMinorMetadata(token).ConfigureAwait(false);
+                if (metadata == null || metadata.Count == 0)
+                    return false;
+
+                if (metadata.Keys.Any(k => ExcludedBackupAttributes.Contains(k)))
+                    return true;
+            }
+            catch (Exception ex)
+            {
+                LogExceptionHelper.LogCommonWarning(ex, FILTER_LOGTAG, "PathProcessingErrorMetadata", entry.Path, "Failed to process extended attributes for path: {0}");
+            }
+
+            return false;
         }
     }
 }

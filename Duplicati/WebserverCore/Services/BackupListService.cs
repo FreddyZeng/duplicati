@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -19,6 +19,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
 // DEALINGS IN THE SOFTWARE.
 using Duplicati.Library.RestAPI;
+using Duplicati.Server;
 using Duplicati.Server.Database;
 using Duplicati.WebserverCore.Abstractions;
 using Duplicati.WebserverCore.Dto;
@@ -50,6 +51,8 @@ public class BackupListService(Connection connection) : IBackupListService
                 Description = data.Backup.Description,
                 Tags = data.Backup.Tags,
                 TargetURL = data.Backup.TargetURL,
+                ConnectionStringID = data.Backup.ConnectionStringID,
+                OperationType = data.Backup.OperationType,
                 Sources = data.Backup.Sources,
                 Settings = settings.Select(x => new Setting()
                 {
@@ -63,8 +66,26 @@ public class BackupListService(Connection connection) : IBackupListService
                     Include = x.Include,
                     Expression = x.Expression
                 }).ToArray(),
-                Metadata = data.Backup.Metadata ?? new Dictionary<string, string>()
+                Metadata = data.Backup.Metadata ?? new Dictionary<string, string>(),
+                AdditionalTargetURLs = data.Backup.AdditionalTargetURLs?.Select(x => new TargetUrlEntry
+                {
+                    TargetUrlKey = x.UrlKey ?? Guid.NewGuid().ToString("D"),
+                    TargetUrl = x.TargetUrl,
+                    Mode = x.Mode ?? "inline",
+                    Interval = x.Interval,
+                    ConnectionStringID = x.ConnectionStringID,
+                    Options = x.Options
+                }).ToList() ?? new List<TargetUrlEntry>()
             };
+
+            if (backup.ConnectionStringID > 0)
+            {
+                var cs = connection.GetConnectionString(backup.ConnectionStringID);
+                if (cs != null)
+                {
+                    backup.TargetURL = QuerystringMasking.Unmask(backup.TargetURL, cs.BaseUrl);
+                }
+            }
 
             var schedule = data.Schedule == null ? null : new Schedule()
             {
@@ -77,18 +98,19 @@ public class BackupListService(Connection connection) : IBackupListService
                 AllowedDays = data.Schedule.AllowedDays
             };
 
+            string assignedId;
             if (temporary)
             {
                 using (var tf = new Library.Utility.TempFile())
                     backup.SetDBPath(tf);
 
-                connection.RegisterTemporaryBackup(backup);
+                assignedId = connection.RegisterTemporaryBackup(backup, schedule);
             }
             else
             {
                 if (existingDb)
                 {
-                    backup.SetDBPath(Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(data.Backup.TargetURL, null, false, false));
+                    backup.SetDBPath(Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(data.Backup.TargetURL, null, false, false, false));
                     if (string.IsNullOrWhiteSpace(data.Backup.DBPath))
                         throw new Exception("Unable to find remote db path?");
                 }
@@ -103,10 +125,11 @@ public class BackupListService(Connection connection) : IBackupListService
                         throw new BadRequestException(err);
 
                     connection.AddOrUpdateBackupAndSchedule(backup, schedule);
+                    assignedId = backup.ID!;
                 }
             }
 
-            return new Dto.CreateBackupDto(backup.ID, backup.IsTemporary);
+            return new Dto.CreateBackupDto(assignedId, backup.IsTemporary);
         }
         catch (Exception ex)
         {
@@ -121,7 +144,7 @@ public class BackupListService(Connection connection) : IBackupListService
     }
 
     /// <inheritdoc/>
-    public ImportBackupOutputDto Import(bool cmdline, bool import_metadata, bool direct, bool temporary, string passphrase, string tempfile)
+    public ImportBackupOutputDto Import(bool cmdline, bool import_metadata, bool direct, bool temporary, string passphrase, string tempfile, Dictionary<string, string>? replace_settings)
     {
         try
         {
@@ -129,8 +152,35 @@ public class BackupListService(Connection connection) : IBackupListService
                 throw new BadRequestException("Import from commandline not yet implemented");
 
             var ipx = BackupImportExportHandler.LoadConfiguration(tempfile, import_metadata, () => passphrase);
+            if (replace_settings != null)
+            {
+                foreach (var kvp in replace_settings.Where(k => k.Value != null && k.Key.StartsWith("settings.", StringComparison.OrdinalIgnoreCase)).ToDictionary(k => k.Key.Substring("settings.".Length), v => v.Value))
+                {
+                    var setting = ipx.Backup.Settings?.FirstOrDefault(x => string.Equals(x.Name, kvp.Key, StringComparison.OrdinalIgnoreCase));
+                    if (setting == null)
+                    {
+                        ipx.Backup.Settings = (ipx.Backup.Settings ?? []).Append(new Duplicati.Server.Serialization.Implementations.Setting { Name = kvp.Key, Value = kvp.Value, Filter = string.Empty }).ToArray();
+                    }
+                    else
+                    {
+                        setting.Value = kvp.Value;
+                    }
+                }
+
+                if (replace_settings.TryGetValue("name", out var name) && !string.IsNullOrWhiteSpace(name))
+                    ipx.Backup.Name = name;
+                if (replace_settings.TryGetValue("targeturl", out var url) && !string.IsNullOrWhiteSpace(url))
+                    ipx.Backup.TargetURL = url;
+                if (replace_settings.TryGetValue("dbpath", out var dbpath) && !string.IsNullOrWhiteSpace(dbpath))
+                    ipx.Backup.SetDBPath(dbpath);
+                if (replace_settings.TryGetValue("description", out var desc) && !string.IsNullOrWhiteSpace(desc))
+                    ipx.Backup.Description = desc;
+                if (replace_settings.TryGetValue("sources", out var sources) && !string.IsNullOrWhiteSpace(sources))
+                    ipx.Backup.Sources = sources.Split([Path.PathSeparator], StringSplitOptions.RemoveEmptyEntries);
+            }
             if (direct)
             {
+                string assignedId;
                 lock (connection.m_lock)
                 {
                     var basename = ipx.Backup.Name;
@@ -146,12 +196,15 @@ public class BackupListService(Connection connection) : IBackupListService
                         throw new BadRequestException(err);
 
                     if (temporary)
-                        connection.RegisterTemporaryBackup(ipx.Backup);
+                        assignedId = connection.RegisterTemporaryBackup(ipx.Backup, ipx.Schedule);
                     else
+                    {
                         connection.AddOrUpdateBackupAndSchedule(ipx.Backup, ipx.Schedule);
+                        assignedId = ipx.Backup.ID;
+                    }
                 }
 
-                return new ImportBackupOutputDto(ipx.Backup.ID, null);
+                return new ImportBackupOutputDto(assignedId, null);
             }
             else
             {
@@ -276,7 +329,7 @@ public class BackupListService(Connection connection) : IBackupListService
                 IsTemporary = x.Backup.IsTemporary,
                 IsUnencryptedOrPassphraseStored = x.IsUnencryptedOrPassphraseStored,
                 Metadata = x.Backup.Metadata,
-                Sources = x.Backup.Sources,
+                Sources = Server.SourceMasking.MaskSources(x.Backup.Sources, Connection.PasswordFieldNames),
                 Settings = x.Backup.Settings?.Select(y => new Dto.SettingDto()
                 {
                     Name = y.Name,
@@ -291,9 +344,20 @@ public class BackupListService(Connection connection) : IBackupListService
                     Expression = y.Expression,
                 }),
                 TargetURL = x.Backup.TargetURL,
+                ConnectionStringID = x.Backup.ConnectionStringID,
+                OperationType = x.Backup.OperationType,
                 DBPath = x.Backup.DBPath,
                 DBPathExists = File.Exists(x.Backup.DBPath),
-                Tags = x.Backup.Tags
+                Tags = x.Backup.Tags,
+                AdditionalTargetURLs = x.Backup.AdditionalTargetURLs?.Select(t => new Dto.TargetUrlDto
+                {
+                    UrlKey = t.TargetUrlKey,
+                    TargetUrl = t.TargetUrl,
+                    Mode = t.Mode,
+                    Interval = t.Interval,
+                    ConnectionStringID = t.ConnectionStringID,
+                    Options = t.Options
+                }).ToArray() ?? Array.Empty<Dto.TargetUrlDto>()
             },
             Schedule = x.Schedule == null ? null : new Dto.ScheduleDto()
             {

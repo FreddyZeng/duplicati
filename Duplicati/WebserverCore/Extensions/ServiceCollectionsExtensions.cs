@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -67,10 +67,12 @@ public static class ServiceCollectionsExtensions
             .AddSingleton<IRemoteControllerRegistration, RemoteControllerRegistrationService>()
             .AddSingleton<ISystemInfoProvider, SystemInfoProvider>()
             .AddSingleton<IQueueRunnerService, QueueRunnerService>()
+            .AddSingleton<IDatabaseLockTracker, DatabaseLockTracker>()
             .AddSingleton<IProgressStateProviderService, ProgressStateProviderService>()
             .AddTransient<INotificationService, NotificationService>()
             .AddTransient<IBackupListService, BackupListService>()
             .AddTransient<ITaskQueueService, TaskQueueService>()
+            .AddTransient<IFolderStatusService, FolderStatusService>()
             .AddSingleton<IWebsocketAuthenticator, WebsocketAuthenticator>()
             .AddSingleton(logWriteHandler)
             .AddSingleton(applicationSettings);

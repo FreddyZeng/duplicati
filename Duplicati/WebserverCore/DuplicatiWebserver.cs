@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2025, The Duplicati Team
+﻿// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -19,12 +19,15 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System.Collections.Concurrent;
 using System.Net;
-using System.Security.Cryptography.X509Certificates;
+using System.Net.Security;
+using System.Security.Authentication;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
+using Duplicati.Server;
 using Duplicati.Server.Database;
 using Duplicati.WebserverCore.Abstractions;
 using Duplicati.WebserverCore.Dto.V2;
@@ -39,7 +42,7 @@ using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 
 namespace Duplicati.WebserverCore;
 
@@ -102,12 +105,26 @@ public class DuplicatiWebserver
 #endif
 
     /// <summary>
+    /// Gets server-only options that are consumed by the server and not passed to the command-line client.
+    /// </summary>
+    public static ICommandLineArgument[] ServerOnlyOptions =>
+    [
+        new CommandLineArgument(
+            "store-task-config",
+            CommandLineArgument.ArgumentType.Enumeration,
+            Server.Strings.Program.StoretaskconfigShort,
+            Server.Strings.Program.StoretaskconfigLong,
+            StoreTaskConfigMode.Auto.ToString(),
+            null,
+            Enum.GetNames(typeof(StoreTaskConfigMode)))
+    ];
+
+    /// <summary>
     /// The settings used for stating the server
     /// </summary>
     /// <param name="WebRoot">The root folder with static files</param>
     /// <param name="Port">The listining port</param>
     /// <param name="Interface">The listening interface</param>
-    /// <param name="Certificate">The certificate, if using SSL</param>
     /// <param name="AllowedHostnames">The allowed hostnames</param>
     /// <param name="DisableStaticFiles">If static files should be disabled</param>
     /// <param name="TokenLifetimeInMinutes">The lifetime of refresh tokens in minutes</param>
@@ -117,8 +134,7 @@ public class DuplicatiWebserver
     public record InitSettings(
         string WebRoot,
         int Port,
-        System.Net.IPAddress Interface,
-        X509Certificate2Collection? Certificate,
+        IPAddress Interface,
         IEnumerable<string> AllowedHostnames,
         bool DisableStaticFiles,
         int TokenLifetimeInMinutes,
@@ -152,31 +168,32 @@ public class DuplicatiWebserver
             builder.Configuration.Sources.Remove(appCfgSource);
         }
 
+        var useHttps = connection.ApplicationSettings.UseHTTPS && connection.ApplicationSettings.ServerSSLCertificate != null;
         builder.WebHost.ConfigureKestrel(options =>
         {
             // Handle IPv6 addresses
-            if (settings.Interface == System.Net.IPAddress.Any)
+            if (settings.Interface == IPAddress.Any)
             {
                 options.ListenAnyIP(settings.Port, listenOptions =>
                 {
-                    if (settings.Certificate != null)
-                        ConfigureHttps(listenOptions, settings.Certificate);
+                    if (useHttps)
+                        ConfigureHttps(listenOptions, connection);
                 });
             }
-            else if (settings.Interface == System.Net.IPAddress.Loopback)
+            else if (settings.Interface == IPAddress.Loopback)
             {
                 options.ListenLocalhost(settings.Port, listenOptions =>
                 {
-                    if (settings.Certificate != null)
-                        ConfigureHttps(listenOptions, settings.Certificate);
+                    if (useHttps)
+                        ConfigureHttps(listenOptions, connection);
                 });
             }
             else
             {
                 options.Listen(settings.Interface, settings.Port, listenOptions =>
                 {
-                    if (settings.Certificate != null)
-                        ConfigureHttps(listenOptions, settings.Certificate);
+                    if (useHttps)
+                        ConfigureHttps(listenOptions, connection);
                 });
             }
         });
@@ -230,6 +247,7 @@ public class DuplicatiWebserver
 
         builder.Services
             .AddHttpContextAccessor()
+            .AddMemoryCache()
             .AddSingleton<IHostnameValidator>(new HostnameValidator(settings.AllowedHostnames))
             .AddSingleton(jwtConfig)
             .AddSingleton(new PreAuthTokenConfig(settings.PreAuthTokens))
@@ -279,7 +297,7 @@ public class DuplicatiWebserver
                     OnTokenValidated = context =>
                     {
                         var store = context.HttpContext.RequestServices.GetRequiredService<ITokenFamilyStore>();
-                        return JWTTokenProvider.ValidateAccessToken(context, store);
+                        return JWTTokenProvider.ValidateAccessTokenAsync(context, store);
                     }
                 };
             });
@@ -326,6 +344,9 @@ public class DuplicatiWebserver
 
         app.UseAuthentication();
         app.UseAuthorization();
+
+        app.UseSynologyDsmAuthIfEnabled();
+        app.UseQnapAuthIfEnabled();
 
         if (EnableSwagger)
         {
@@ -388,6 +409,8 @@ public class DuplicatiWebserver
                     app.ApplicationServices.GetRequiredService<ILogger<DuplicatiWebserver>>()
                         .LogError(thrownException, "Unhandled exception");
 
+                    Library.Logging.Log.WriteErrorMessage(LOGTAG, "UnhandledException", thrownException, "Unhandled exception in webserver request to {0}", context.Request.Path);
+
                     context.Response.StatusCode = 500;
                     context.Response.ContentType = "application/json";
                     await context.Response.WriteAsync(JsonSerializer.Serialize(new { Error = "An error occurred", Code = 500 }));
@@ -396,7 +419,7 @@ public class DuplicatiWebserver
         });
 
         if (connection.ApplicationSettings.RemoteControlEnabled)
-            app.Services.GetRequiredService<IRemoteController>().Enable();
+            app.Services.GetRequiredService<IRemoteController>().Enable(false);
 
         // Preload static system info, for better first-load experience
         _ = Task.Run(() => app.Services.GetRequiredService<ISystemInfoProvider>().GetSystemInfo(null));
@@ -425,27 +448,38 @@ public class DuplicatiWebserver
     }
 
     /// <summary>
-    /// Configures HTTPS for the server
+    /// Configures HTTPS for the server with dynamic certificate loading.
+    /// This allows certificates to be renewed without restarting the server.
     /// </summary>
     /// <param name="listenOptions">The listen options</param>
-    /// <param name="certificates">The certificates to use</param>
-    private static void ConfigureHttps(Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions listenOptions, X509Certificate2Collection? certificates)
+    /// <param name="connection">The connection</param>
+    private static void ConfigureHttps(Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions listenOptions, Connection connection)
     {
-        var servedCert = certificates?.FirstOrDefault(x => x.HasPrivateKey)
-            ?? throw new Exception("No certificate with private key found");
+        var _contextCache = new ConcurrentDictionary<string, SslStreamCertificateContext>();
 
-        listenOptions.UseHttps(new HttpsConnectionAdapterOptions()
+        listenOptions.UseHttps(new TlsHandshakeCallbackOptions
         {
-            ServerCertificate = servedCert,
-            ServerCertificateChain = certificates
-        });
+            OnConnection = context =>
+            {
+                var collection = connection.ApplicationSettings.ServerSSLCertificate;
+                var leafCert = collection?.FirstOrDefault(x => x.HasPrivateKey);
+                if (leafCert == null || collection == null)
+                {
+                    Library.Logging.Log.WriteWarningMessage(LOGTAG, "NoCertificateAvailable", null, "No SSL certificate available for HTTPS connection.");
+                    throw new AuthenticationException("No certificates found");
+                }
 
-        // This does not appear to have any effect,
-        // but setting it anyway in case it is needed in the future
-        listenOptions.UseHttps(new HttpsConnectionAdapterOptions()
-        {
-            ServerCertificate = servedCert,
-            ServerCertificateChain = certificates
+                // We only expect a single active certificate
+                if (_contextCache.Count > 2)
+                    _contextCache.Clear();
+
+                // Reuse cert context across connections
+                var certContext = _contextCache.GetOrAdd(leafCert.Thumbprint, _ => SslStreamCertificateContext.Create(leafCert, collection));
+                return new ValueTask<SslServerAuthenticationOptions>(new SslServerAuthenticationOptions
+                {
+                    ServerCertificateContext = certContext
+                });
+            }
         });
     }
 
@@ -453,7 +487,7 @@ public class DuplicatiWebserver
     /// Starts the webserver
     /// </summary>
     /// <returns>The task that will be set when the server is terminated</returns>
-    public Task Start()
+    public Task StartAsync()
     {
         App.MapHealthChecks("/health");
         App.AddEndpoints(CorsEnabled)
@@ -466,8 +500,6 @@ public class DuplicatiWebserver
     /// Stops the webserver
     /// </summary>
     /// <returns>An awaitable task</returns>
-    public async Task Stop()
-    {
-        await App.StopAsync();
-    }
+    public Task StopAsync()
+        => App.StopAsync();
 }

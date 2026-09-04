@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -64,7 +64,7 @@ namespace Duplicati.Library.Main.Operation.Backup
             public bool TimestampChanged;
         }
 
-        public static Task Run(Channels channels, Options options, BackupDatabase database, long lastfilesetid, ITaskReader taskreader)
+        public static Task RunAsync(Channels channels, Options options, BackupDatabase database, long lastfilesetid, ITaskReader taskreader)
         {
             return AutomationExtensions.RunTask(new
             {
@@ -86,7 +86,7 @@ namespace Duplicati.Library.Main.Operation.Backup
                     var entry = await self.Input.ReadAsync();
 
                     // We ignore the stop signal, but not the pause and terminate
-                    await taskreader.ProgressRendevouz().ConfigureAwait(false);
+                    await taskreader.ProgressRendevouzAsync().ConfigureAwait(false);
 
                     var lastwrite = new DateTime(0, DateTimeKind.Utc);
                     var attributes = entry.IsFolder
@@ -112,18 +112,18 @@ namespace Duplicati.Library.Main.Operation.Backup
                     }
 
                     // If we only have metadata, stop here
-                    if (await ProcessMetadata(entry, attributes, lastwrite, options, emptymetadata, database, self.StreamBlockChannel, taskreader.ProgressToken).ConfigureAwait(false))
+                    if (await ProcessMetadataAsync(entry, attributes, lastwrite, options, emptymetadata, database, self.StreamBlockChannel, taskreader.ProgressToken).ConfigureAwait(false))
                     {
                         try
                         {
-                            var split = Database.LocalDatabase.SplitIntoPrefixAndName(entry.Path);
+                            var split = Database.Local.LocalDatabase.SplitIntoPrefixAndName(entry.Path);
 
                             long prefixid;
                             if (string.Equals(prevprefix.Key, split.Key, StringComparison.Ordinal))
                                 prefixid = prevprefix.Value;
                             else
                             {
-                                prefixid = await database.GetOrCreatePathPrefix(split.Key, taskreader.ProgressToken);
+                                prefixid = await database.GetOrCreatePathPrefixAsync(split.Key, taskreader.ProgressToken);
                                 prevprefix = new KeyValuePair<string, long>(split.Key, prefixid);
                             }
 
@@ -188,7 +188,7 @@ namespace Duplicati.Library.Main.Operation.Backup
         /// <param name="streamblockchannel">The channel to write stream blocks to.</param>
         /// <param name="cancellationToken">The cancellation token to use for the operation.</param>
         /// <returns><c>True</c> if the path should be submitted to more analysis, <c>false</c> if there is nothing else to do</returns>
-        private static async Task<bool> ProcessMetadata(ISourceProviderEntry entry, FileAttributes attributes, DateTime lastwrite, Options options, IMetahash emptymetadata, BackupDatabase database, IWriteChannel<StreamBlock> streamblockchannel, CancellationToken cancellationToken)
+        private static async Task<bool> ProcessMetadataAsync(ISourceProviderEntry entry, FileAttributes attributes, DateTime lastwrite, Options options, IMetahash emptymetadata, BackupDatabase database, IWriteChannel<StreamBlock> streamblockchannel, CancellationToken cancellationToken)
         {
             if (entry.IsSymlink)
             {
@@ -216,7 +216,7 @@ namespace Duplicati.Library.Main.Operation.Backup
 
                     if (options.SymlinkPolicy == Options.SymlinkStrategy.Store)
                     {
-                        var metadata = MetadataGenerator.GenerateMetadata(entry, attributes, options);
+                        var metadata = await MetadataGenerator.GenerateMetadataAsync(entry, attributes, options, cancellationToken);
 
                         if (!metadata.ContainsKey("CoreSymlinkTarget"))
                             metadata["CoreSymlinkTarget"] = symlinkTarget;
@@ -242,7 +242,7 @@ namespace Duplicati.Library.Main.Operation.Backup
 
                 if (!options.SkipMetadata)
                 {
-                    metahash = Utility.WrapMetadata(MetadataGenerator.GenerateMetadata(entry, attributes, options), options);
+                    metahash = Utility.WrapMetadata(await MetadataGenerator.GenerateMetadataAsync(entry, attributes, options, cancellationToken), options);
                 }
                 else
                 {
@@ -271,9 +271,9 @@ namespace Duplicati.Library.Main.Operation.Backup
         {
             StreamProcessResult res;
             using (var ms = new MemoryStream(meta.Blob))
-                res = await StreamBlock.ProcessStream(streamblockchannel, path, ms, true, CompressionHint.Default);
+                res = await StreamBlock.ProcessStreamAsync(streamblockchannel, path, ms, true, CompressionHint.Default);
 
-            return await database.AddMetadatasetAsync(res.Streamhash, res.Streamlength, res.Blocksetid, cancellationToken).ConfigureAwait(false);
+            return await database.AddMetadatasetAsync(res.Streamhash, res.Streamlength, res.Blocksetid, meta, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>

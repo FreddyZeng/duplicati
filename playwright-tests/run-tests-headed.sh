@@ -1,0 +1,2 @@
+#!/bin/bash
+WEBSERVICE_PASSWORD=easy1234 DUPLICATI__WEBSERVICE_SUPPRESS_WELCOME_PAGE=true npx playwright test --headed

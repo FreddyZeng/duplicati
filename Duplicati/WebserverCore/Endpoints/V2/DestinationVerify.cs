@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,13 +20,11 @@
 // DEALINGS IN THE SOFTWARE.
 
 using Duplicati.Library.Interface;
-using Duplicati.Library.Main;
 using Duplicati.Library.Main.Volumes;
-using Duplicati.Library.Utility;
-using Duplicati.Server;
 using Duplicati.Server.Database;
 using Duplicati.WebserverCore.Abstractions;
 using Duplicati.WebserverCore.Dto.V2;
+using Duplicati.WebserverCore.Endpoints.Shared;
 using Microsoft.AspNetCore.Mvc;
 using InvalidCertificateException = Duplicati.Library.Utility.SslCertificateValidator.InvalidCertificateException;
 
@@ -37,138 +35,93 @@ public class DestinationVerify : IEndpointV2
     public static void Map(RouteGroupBuilder group)
     {
         group.MapPost("/destination/test", ([FromServices] Connection connection, [FromServices] IApplicationSettings applicationSettings, [FromBody] Dto.V2.DestinationTestRequestDto input, CancellationToken cancelToken)
-            => ExecuteTest(connection, applicationSettings, input, cancelToken))
+            => ExecuteTestAsync(connection, applicationSettings, input, cancelToken))
             .RequireAuthorization();
     }
 
-    private record TupleDisposeWrapper(IBackend Backend, IEnumerable<IGenericModule> Modules) : IDisposable
+    private static async Task<DestinationTestResponseDto> ExecuteTestAsync(Connection connection, IApplicationSettings applicationSettings, DestinationTestRequestDto input, CancellationToken cancelToken)
     {
-        public void Dispose()
-        {
-            Backend.Dispose();
-            foreach (var n in Modules)
-                if (n is IDisposable disposable)
-                    disposable.Dispose();
-        }
-    }
-
-    private static Dictionary<string, string?> ParseUrlOptions(Connection connection, Library.Utility.Uri uri)
-    {
-        var qp = uri.QueryParameters;
-
-        var opts = Runner.GetCommonOptions(connection);
-        foreach (var k in qp.Keys.Cast<string>())
-            opts[k] = qp[k];
-
-        return opts;
-    }
-
-    private static IEnumerable<IGenericModule> ConfigureModules(IDictionary<string, string?> opts)
-    {
-        var modules = Library.DynamicLoader.GenericLoader.Modules.OfType<IConnectionModule>()
-            .Select(x => Library.DynamicLoader.GenericLoader.GetModule(x.Key))
-            .WhereNotNull()
-            .ToArray();
-
-        foreach (var n in modules)
-            n.Configure(opts);
-
-        return modules;
-    }
-
-    private static async Task<TupleDisposeWrapper> GetBackend(Connection connection, IApplicationSettings applicationSettings, string url, CancellationToken cancelToken)
-    {
-        var uri = new Library.Utility.Uri(url);
-        var opts = ParseUrlOptions(connection, uri);
-
-        var tmp = new[] { uri };
-        await SecretProviderHelper.ApplySecretProviderAsync([], tmp, opts, Library.Utility.TempFolder.SystemTempPath, applicationSettings.SecretProvider, cancelToken);
-        url = tmp[0].ToString();
-
-        var modules = ConfigureModules(opts);
-        var backend = Library.DynamicLoader.BackendLoader.GetBackend(url, new Dictionary<string, string>());
-        return new TupleDisposeWrapper(backend, modules);
-    }
-
-    private static Exception GetInnerException<T>(Exception ex) where T : Exception
-    {
-        var original = ex;
-        while (true)
-        {
-            if (ex == null)
-                return original;
-
-            if (ex is T)
-                return (T)ex;
-
-            if (ex.InnerException == null)
-                throw new ArgumentNullException(nameof(ex.InnerException));
-
-            ex = ex.InnerException;
-        }
-    }
-
-    private static string UnmaskUrl(Connection connection, string maskedurl, string? backupId)
-    {
-        var previousUrl = !string.IsNullOrWhiteSpace(backupId) ? connection.GetBackup(backupId)?.TargetURL : null;
-        var unmasked = string.IsNullOrWhiteSpace(previousUrl)
-            ? maskedurl
-            : QuerystringMasking.Unmask(maskedurl, previousUrl);
-
-        if (Connection.UrlContainsPasswordPlaceholder(unmasked))
-            throw new ArgumentException("Unmasked URL contains password placeholder");
-
-        return unmasked;
-    }
-
-    private static async Task<DestinationTestResponseDto> ExecuteTest(Connection connection, IApplicationSettings applicationSettings, DestinationTestRequestDto input, CancellationToken cancelToken)
-    {
-        TupleDisposeWrapper? wrapper = null;
+        var destinationType = input.DestinationType ?? RemoteDestinationType.Backend;
 
         try
         {
-            var url = UnmaskUrl(connection, input.DestinationUrl, input.BackupId);
-            wrapper = await GetBackend(connection, applicationSettings, url, cancelToken);
-
-            using (var b = wrapper.Backend)
+            if (destinationType == RemoteDestinationType.SourceProvider)
             {
-                try { await b.TestAsync(cancelToken).ConfigureAwait(false); }
-                catch (Exception ex) when (GetInnerException<FolderMissingException>(ex) is FolderMissingException)
-                {
-                    if (!input.AutoCreate)
-                        throw;
+                using var wrapper = await SharedRemoteOperation.GetSourceProviderForTestingAsync(connection, applicationSettings, input.DestinationUrl, null, input.BackupId, input.ConnectionStringId ?? -1, input.SourcePrefix, cancelToken);
 
-                    await b.CreateFolderAsync(cancelToken).ConfigureAwait(false);
-                    await b.TestAsync(cancelToken).ConfigureAwait(false);
-                }
-
-                var anyFiles = false;
-                var anyBackups = false;
-                var anyEncryptedFiles = false;
-                await foreach (var f in b.ListAsync(cancelToken).ConfigureAwait(false))
-                {
-                    if (f.IsFolder)
-                        continue;
-
-                    anyFiles = true;
-                    var parsed = VolumeBase.ParseFilename(f.Name);
-                    if (parsed != null)
-                    {
-                        anyBackups = true;
-                        anyEncryptedFiles = !string.IsNullOrWhiteSpace(parsed.EncryptionModule);
-                        break;
-                    }
-                }
+                // Call the specific Test method on the ISourceProvider (read-only test)
+                await wrapper.SourceProvider.TestAsync(cancelToken);
 
                 return DestinationTestResponseDto.Create(
-                    anyFiles,
-                    anyBackups,
-                    anyEncryptedFiles
+                    anyFiles: true,
+                    anyBackups: false,
+                    anyEncryptedFiles: false
                 );
+            }
+            else if (destinationType == RemoteDestinationType.RestoreDestinationProvider)
+            {
+                using var wrapper = await SharedRemoteOperation.GetRestoreDestinationProviderForTestingAsync(connection, applicationSettings, input.DestinationUrl, null, input.BackupId, input.ConnectionStringId ?? -1, input.SourcePrefix, cancelToken);
 
+                // Call the specific Test method on the IRestoreDestinationProvider (should be a write test)
+                await wrapper.RestoreDestinationProvider.Test(cancelToken);
+
+                return DestinationTestResponseDto.Create(
+                    anyFiles: true,
+                    anyBackups: false,
+                    anyEncryptedFiles: false
+                );
+            }
+            else
+            {
+                using var wrapper = await SharedRemoteOperation.GetBackendAsync(connection, applicationSettings, input.DestinationUrl, null, input.BackupId, input.ConnectionStringId ?? -1, cancelToken);
+
+                using (var b = wrapper.Backend)
+                {
+                    try { await b.TestAsync(!input.ReadOnlyTest, cancelToken).ConfigureAwait(false); }
+                    catch (Exception ex) when (SharedRemoteOperation.GetInnerException<FolderMissingException>(ex) is FolderMissingException)
+                    {
+                        if (!input.AutoCreate || input.ReadOnlyTest)
+                            throw;
+
+                        try
+                        {
+                            await b.CreateFolderAsync(cancelToken).ConfigureAwait(false);
+                        }
+                        catch (FolderAreadyExistedException)
+                        {
+                            // The folder is already there, which is the desired outcome
+                        }
+
+                        await b.TestAsync(!input.ReadOnlyTest, cancelToken).ConfigureAwait(false);
+                    }
+
+                    var anyFiles = false;
+                    var anyBackups = false;
+                    var anyEncryptedFiles = false;
+                    await foreach (var f in b.ListAsync(cancelToken).ConfigureAwait(false))
+                    {
+                        if (f.IsFolder)
+                            continue;
+
+                        anyFiles = true;
+                        var parsed = VolumeBase.ParseFilename(f.Name);
+                        if (parsed != null)
+                        {
+                            anyBackups = true;
+                            anyEncryptedFiles = !string.IsNullOrWhiteSpace(parsed.EncryptionModule);
+                            break;
+                        }
+                    }
+
+                    return DestinationTestResponseDto.Create(
+                        anyFiles,
+                        anyBackups,
+                        anyEncryptedFiles
+                    );
+                }
             }
         }
-        catch (Exception ex) when (GetInnerException<FolderMissingException>(ex) is FolderMissingException)
+        catch (Exception ex) when (SharedRemoteOperation.GetInnerException<FolderMissingException>(ex) is FolderMissingException)
         {
             if (input.AutoCreate)
                 return DestinationTestResponseDto.Failure(
@@ -185,7 +138,7 @@ public class DestinationVerify : IEndpointV2
                 afterConnect: ex is TestAfterConnectException
             );
         }
-        catch (Exception ex) when (GetInnerException<InvalidCertificateException>(ex) is InvalidCertificateException icex)
+        catch (Exception ex) when (SharedRemoteOperation.GetInnerException<InvalidCertificateException>(ex) is InvalidCertificateException icex)
         {
             if (string.IsNullOrWhiteSpace(icex.Certificate))
                 return DestinationTestResponseDto.Failure(
@@ -201,7 +154,7 @@ public class DestinationVerify : IEndpointV2
                 hostCertificate: icex.Certificate
             );
         }
-        catch (Exception ex) when (GetInnerException<Library.Utility.HostKeyException>(ex) is Library.Utility.HostKeyException hex)
+        catch (Exception ex) when (SharedRemoteOperation.GetInnerException<Library.Utility.HostKeyException>(ex) is Library.Utility.HostKeyException hex)
         {
             if (string.IsNullOrWhiteSpace(hex.ReportedHostKey))
                 return DestinationTestResponseDto.Failure(
@@ -239,10 +192,6 @@ public class DestinationVerify : IEndpointV2
                 ex.Message,
                 "error"
             );
-        }
-        finally
-        {
-            wrapper?.Dispose();
         }
     }
 }

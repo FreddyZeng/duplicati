@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,21 +20,24 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.CommandLine;
-using System.CommandLine.NamingConventionBinder;
 
 namespace Duplicati.CommandLine.ServerUtil.Commands;
 
 public static class ServerStatus
 {
-    public static Command Create() =>
-        new Command("status", "Gets the server status")
-        .WithHandler(CommandHandler.Create<Settings, OutputInterceptor>(async (settings, output) =>
+    public static Command Create()
+    {
+        var cmd = new Command("status", "Gets the server status");
+        cmd.SetAction(async (parseResult, cancellationToken) =>
         {
-            var state = await (await settings.GetConnection(output)).GetServerState();
-            
+            var settings = SettingsBinder.GetSettings(parseResult);
+            var output = OutputInterceptorBinder.GetConsoleInterceptor(parseResult);
+
+            var state = await (await settings.GetConnectionAsync(output)).GetServerStateAsync();
+
             output.AppendConsoleMessage($"Server state: {state.ProgramState}");
             output.AppendCustomObject("ServerState", state.ProgramState);
-            
+
             if (state.ActiveTask != null)
             {
                 output.AppendConsoleMessage(
@@ -59,7 +62,9 @@ public static class ServerStatus
                 output.AppendConsoleMessage("Scheduler tasks: Empty");
                 output.AppendCustomObject("SchedulerTasks", null);
             }
-            
+
             output.SetResult(true);
-        }));
+        });
+        return cmd;
+    }
 }

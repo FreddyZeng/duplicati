@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -44,6 +44,8 @@ namespace Duplicati.Server.Serializable
                 this.Description = backend.Description;
                 this.DisplayName = backend.DisplayName;
                 this.Options = backend.SupportedCommands?.ToArray() ?? [];
+                this.IsDeprecated = Duplicati.Library.Backends.BackendModules.DeprecatedBackendModules.Contains(backend.ProtocolKey);
+                this.IsUntested = Duplicati.Library.Backends.BackendModules.UntestedBackendModules.Contains(backend.ProtocolKey);
             }
 
             /// <summary>
@@ -101,27 +103,46 @@ namespace Duplicati.Server.Serializable
                 this.DisplayName = module.DisplayName;
                 this.Options = module.SupportedCommands?.ToArray() ?? [];
             }
+
             /// <summary>
-            /// The module key
+            /// Constructor for sourceprovider interface
             /// </summary>
+            public DynamicModule(Library.Interface.ISourceProviderModule module)
+            {
+                this.Key = module.Key;
+                this.Description = module.Description;
+                this.DisplayName = module.DisplayName;
+                this.Options = module.SupportedCommands?.ToArray() ?? [];
+            }
+
+            /// <summary>
+            /// Constructor for restoredestinationprovider interface
+            /// </summary>
+            public DynamicModule(Library.Interface.IRestoreDestinationProviderModule module)
+            {
+                this.Key = module.Key;
+                this.Description = module.Description;
+                this.DisplayName = module.DisplayName;
+                this.Options = module.SupportedCommands?.ToArray() ?? [];
+            }
+
+            /// <inheritdoc/>
             public string Key { get; private set; }
-            /// <summary>
-            /// The localized module description
-            /// </summary>
+            /// <inheritdoc/>
             public string Description { get; private set; }
             /// <summary>
-            /// Gets the localized display name
-            /// </summary>
-            /// <value>The display name.</value>
+            /// <inheritdoc/>
             public string DisplayName { get; private set; }
             /// <summary>
-            /// The options supported by the module
-            /// </summary>
+            /// <inheritdoc/>
             public Library.Interface.ICommandLineArgument[] Options { get; private set; }
             /// <summary>
-            /// The lookups supported by the module
-            /// </summary>
+            /// <inheritdoc/>
             public IDictionary<string, IDictionary<string, string>> Lookups { get; private set; }
+            /// <inheritdoc/>
+            public bool IsDeprecated { get; private set; }
+            /// <inheritdoc/>
+            public bool IsUntested { get; private set; }
         }
 
         /// <summary>
@@ -214,6 +235,38 @@ namespace Duplicati.Server.Serializable
                 return
                     (from n in Library.DynamicLoader.GenericLoader.Modules
                      where n is Library.Interface.IConnectionModule
+                     select new DynamicModule(n))
+                    .ToArray();
+            }
+        }
+
+        /// <summary>
+        /// The source provider modules known by the server
+        /// </summary>
+        public static IDynamicModule[] SourceProviderModules
+        {
+            get
+            {
+                return
+                    (from n in Library.DynamicLoader.SourceProviderLoader.Modules
+                     select new DynamicModule(n))
+                     .Concat(
+                        from n in Library.DynamicLoader.BackendLoader.Backends
+                        where n is Library.Interface.IFolderEnabledBackend
+                        select new DynamicModule(n))
+                    .ToArray();
+            }
+        }
+
+        /// <summary>
+        /// The restore destination provider modules known by the server
+        /// </summary>
+        public static IDynamicModule[] RestoreDestinationProviderModules
+        {
+            get
+            {
+                return
+                    (from n in Library.DynamicLoader.RestoreDestinationProviderLoader.Modules
                      select new DynamicModule(n))
                     .ToArray();
             }

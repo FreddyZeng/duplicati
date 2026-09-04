@@ -1,26 +1,109 @@
-# 
 # Translators:
 # Myung Joon Shin <mj.shin1999@gmail.com>, 2019
 # arn junmo <comqlalf@naver.com>, 2019
 # joyfuI <jong970105@gmail.com>, 2020
+# KyungWoo Seo, 2026
 # 
 msgid ""
 msgstr ""
 "Project-Id-Version: \n"
-"Last-Translator: joyfuI <jong970105@gmail.com>, 2020\n"
+"Last-Translator: KyungWoo Seo, 2026\n"
 "Language-Team: Korean (https://app.transifex.com/duplicati/teams/67655/ko/)\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Language: ko\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
+#: templates/backup-result/entryline.html:5
+msgid "(1 error{{item.Result.Interrupted? (', interrupted'|translate) : ''}})"
+msgid_plural ""
+"({{$count}} errors{{item.Result.Interrupted? (', interrupted'|translate) : "
+"''}})"
+msgstr[0] ""
+"({{$count}}개 오류{{item.Result.Interrupted? (', interrupted'|translate) : "
+"''}})"
+
+#: templates/backup-result/entryline.html:10
+msgid ""
+"(1 warning{{item.Result.Interrupted? (', interrupted'|translate) : ''}})"
+msgid_plural ""
+"({{$count}} warnings{{item.Result.Interrupted? (', interrupted'|translate) :"
+" ''}})"
+msgstr[0] ""
+"({{$count}}개 경고{{item.Result.Interrupted? (', interrupted'|translate) : "
+"''}})"
+
+#: templates/backup-result/entryline.html:15
+msgid "(interrupted)"
+msgstr "(중단됨)"
+
 #: templates/advancedoptionseditor.html:50
 msgid "- pick an option -"
-msgstr "- 옵션을 선택하십시오 -"
+msgstr "- 옵션 선택 -"
 
 #: scripts/controllers/SystemSettingsController.js:217 templates/delete.html:7
 msgid "...loading..."
-msgstr "...로딩..."
+msgstr "...불러오는 중..."
+
+#: templates/commandline.html:25
+msgid "<i class=\"fa fa-check\"></i> Edit as text"
+msgstr "<i class=\"fa fa-check\"></i> 텍스트로 편집"
+
+#: templates/commandline.html:32
+msgid "<i class=\"fa\"></i> Edit as text"
+msgstr "<i class=\"fa\"></i> 텍스트로 편집"
+
+#: templates/addoredit.html:312
+msgid ""
+"<p ng-show=\"(parseSizeString(Options['dblock-size']) &gt; 1024 * 1024 * 1024 * 2) || (parseSizeString(Options['dblock-size']) &lt; 1024 * 1024 * 5)\" class=\"warning\" translate>\n"
+"                            The chosen size is outside the recommended range. This may cause performance issues, excessively large temporary files or other problems.\n"
+"                        </p>\n"
+"                        The backups will be split up into multiple files called volumes. Here you can set the maximum size of the individual volume files. <external-link link=\"'https://forum.duplicati.com/t/choosing-sizes-in-duplicati/17683'\">See this page for more information.</external-link>"
+msgstr ""
+"<p ng-show=\"(parseSizeString(Options['dblock-size']) &gt; 1024 * 1024 * 1024 * 2) || (parseSizeString(Options['dblock-size']) &lt; 1024 * 1024 * 5)\" class=\"warning\" translate>\n"
+"                            선택한 크기가 권장 범위를 벗어났습니다. 성능 문제, 지나치게 큰 임시 파일 또는 기타 문제가 발생할 수 있습니다.\n"
+"                        </p>\n"
+"                        백업은 볼륨이라는 여러 파일로 나뉩니다. 여기에서 각 볼륨 파일의 최대 크기를 설정할 수 있습니다. <external-link link=\"'https://forum.duplicati.com/t/choosing-sizes-in-duplicati/17683'\">자세한 내용은 이 페이지를 참조합니다.</external-link>"
+
+#: index.html:298
+msgid ""
+"<p>Connection to server was rejected due to invalid authentication.</p>\n"
+"                <p>Log in again, or re-open the page from the TrayIcon (if applicable)</p>"
+msgstr ""
+"<p>잘못된 인증으로 인해 서버 연결이 거부되었습니다.</p>\n"
+"                <p>다시 로그인하거나 TrayIcon에서 페이지를 다시 엽니다(해당하는 경우).</p>"
+
+#: templates/backends/filejump.html:30
+msgid ""
+"<span ng-show=\"!$parent.UsernamePasswordAuth\" translate>Use username and password authentication</span>\n"
+"        <span ng-show=\"$parent.UsernamePasswordAuth\" translate>Use API token authentication (recommended)</span>"
+msgstr ""
+"<span ng-show=\"!$parent.UsernamePasswordAuth\" translate>사용자 이름 및 비밀번호 인증 사용</span>\n"
+"        <span ng-show=\"$parent.UsernamePasswordAuth\" translate>API 토큰 인증 사용(권장)</span>"
+
+#: scripts/services/EditUriBuiltins.js:1061
+msgid "API Token"
+msgstr "API 토큰"
+
+#: scripts/services/EditUriBuiltins.js:1314
+#: templates/backends/openstack.html:44 templates/backends/storj.html:21
+#: templates/backends/storj.html:22
+msgid "API key"
+msgstr "API 키"
+
+#: scripts/services/EditUriBuiltins.js:1204 templates/backends/s3.html:66
+#: templates/backends/s3.html:68
+msgid "AWS Access ID"
+msgstr "AWS Access ID"
+
+#: scripts/services/EditUriBuiltins.js:1205 templates/backends/s3.html:71
+#: templates/backends/s3.html:73
+msgid "AWS Access Key"
+msgstr "AWS Access Key"
+
+#: scripts/services/EditUriBuiltins.js:157
+msgid "AWS IAM Policy"
+msgstr "AWS IAM Policy"
 
 #: index.html:223 index.html:239
 msgid "About"
@@ -32,15 +115,31 @@ msgstr "{{appname}} 정보"
 
 #: scripts/services/EditUriBuiltins.js:1153
 msgid "Access Key"
-msgstr "접근 키"
+msgstr "액세스 키"
+
+#: templates/backends/e2.html:2
+msgid "Access Key ID"
+msgstr "Access Key ID"
+
+#: templates/backends/e2.html:6
+msgid "Access Key Secret"
+msgstr "Access Key Secret"
 
 #: scripts/services/AppUtils.js:76
 msgid "Access denied"
-msgstr "접근 불가"
+msgstr "접근 거부"
+
+#: templates/backends/storj.html:33 templates/backends/storj.html:34
+msgid "Access grant"
+msgstr "Access grant"
+
+#: templates/backends/azure.html:11 templates/backends/azure.html:12
+msgid "Access key"
+msgstr "액세스 키"
 
 #: templates/settings.html:5
 msgid "Access to user interface"
-msgstr "액세스 설정"
+msgstr "사용자 인터페이스 액세스"
 
 #: scripts/services/EditUriBuiltins.js:1152 templates/backends/azure.html:7
 #: templates/backends/azure.html:8
@@ -78,20 +177,36 @@ msgstr "추가됨"
 #: scripts/services/EditUriBuiltins.js:1215
 #: scripts/services/EditUriBuiltins.js:1231
 msgid "Adjust bucket name?"
-msgstr "버켓 이름을 적용 하시겠습니까?"
+msgstr "버킷 이름을 조정하시겠습니까?"
 
 #: templates/restoredirect.html:66 templates/restoredirect.html:74
 msgid "Advanced Options"
 msgstr "고급 옵션"
 
 #: templates/addoredit.html:378 templates/commandline.html:23
-#: templates/commandline.html:31 templates/edituri.html:28
+#: templates/commandline.html:31 templates/edituri.html:29
 msgid "Advanced options"
 msgstr "고급 옵션"
 
 #: templates/home.html:64
 msgid "Advanced:"
 msgstr "고급:"
+
+#: templates/backends/aliyunoss.html:4
+msgid "Aliyun OSS Endpoint"
+msgstr "Aliyun OSS Endpoint"
+
+#: templates/backends/aliyunoss.html:35
+msgid "Aliyun OSS documents and resources"
+msgstr "Aliyun OSS 문서 및 리소스"
+
+#: scripts/directives/sourceFolderPicker.js:279
+msgid "All Hyper-V Machines"
+msgstr "모든 Hyper-V Machine"
+
+#: scripts/directives/sourceFolderPicker.js:319
+msgid "All Microsoft SQL Servers"
+msgstr "모든 Microsoft SQL Server"
 
 #: templates/settings.html:175
 msgid ""
@@ -101,21 +216,61 @@ msgid ""
 "similar data. They do not contain paths, filenames, usernames, passwords or "
 "similar sensitive information."
 msgstr ""
-"모든 사용 보고서는 익명으로 전송되며 개인 정보를 포함하지 않습니다. 여기에는 하드웨어 및 운영 체제, 백엔드 유형, 백업 기간, 원본 "
-"데이터의 전체 크기 및 이와 유사한 데이터에 대한 정보가 포함되어 있습니다. 경로, 파일 이름, 사용자 이름, 암호 또는 이와 유사한 "
-"중요한 정보는 포함되어 있지 않습니다."
+"모든 사용 보고서는 익명으로 전송되며 개인 정보를 포함하지 않습니다. 하드웨어 및 운영 체제, 백엔드 유형, 백업 시간, 백업할 데이터의"
+" 전체 크기 및 유사한 데이터에 대한 정보를 포함합니다. 경로, 파일 이름, 사용자 이름, 비밀번호 또는 이와 유사한 민감한 정보는 "
+"포함하지 않습니다."
 
 #: templates/settings.html:20
 msgid "Allow remote access (requires restart)"
-msgstr "원격 액세스 허용 (다시 시작 필요)"
+msgstr "원격 액세스 허용(다시 시작 필요)"
 
 #: templates/addoredit.html:278
 msgid "Allowed days"
 msgstr "허용된 요일"
 
+#: templates/pause.html:52
+msgid "Also pause transfers"
+msgstr "전송도 일시 중지"
+
+#: scripts/controllers/LocalDatabaseController.js:103
+msgid "An existing file was found at the new location"
+msgstr "새 위치에서 기존 파일을 찾았습니다"
+
+#: scripts/controllers/LocalDatabaseController.js:72
+msgid ""
+"An existing file was found at the new location\n"
+"Are you sure you want the database to point to an existing file?"
+msgstr ""
+"새 위치에서 기존 파일을 찾았습니다\n"
+"데이터베이스가 기존 파일을 가리키도록 하시겠습니까?"
+
+#: scripts/controllers/EditBackupController.js:458
+msgid ""
+"An existing local database for the storage has been found.\n"
+"Re-using the database will allow the command-line and server instances to work on the same remote storage.\n"
+"\n"
+" Do you wish to use the existing database?"
+msgstr ""
+"저장소의 기존 로컬 데이터베이스를 찾았습니다.\n"
+"데이터베이스를 재사용하면 명령줄 및 서버 인스턴스가 같은 원격 저장소에서 작업할 수 있습니다.\n"
+"\n"
+" 기존 데이터베이스를 사용하시겠습니까?"
+
 #: templates/settings.html:163
 msgid "Anonymous usage reports"
 msgstr "익명 사용 보고서"
+
+#: scripts/services/AppUtils.js:212
+msgid "Applications"
+msgstr "애플리케이션"
+
+#: scripts/controllers/SystemSettingsController.js:194
+msgid "Are you sure you want to delete the remote control registration?"
+msgstr "원격 제어 등록을 삭제하시겠습니까?"
+
+#: templates/export.html:8
+msgid "As Command-line"
+msgstr "명령줄로 보기"
 
 #: scripts/services/EditUriBuiltins.js:1110
 #: scripts/services/EditUriBuiltins.js:1120 templates/backends/gcs.html:8
@@ -128,13 +283,86 @@ msgstr "익명 사용 보고서"
 msgid "AuthID"
 msgstr "AuthID"
 
+#: templates/backends/smb.html:34
+msgid "Authentication Domain"
+msgstr "인증 도메인"
+
+#: scripts/services/EditUriBuiltins.js:1305 templates/backends/storj.html:2
+msgid "Authentication method"
+msgstr "인증 방법"
+
+#: templates/backends/storj.html:5
+msgid "Authentication method ({{auth_method}})"
+msgstr "인증 방법({{auth_method}})"
+
+#: templates/backends/filejump.html:26 templates/backends/filen.html:12
+#: templates/backends/generic.html:23 templates/backends/openstack.html:35
+#: templates/backends/smb.html:43
+msgid "Authentication password"
+msgstr "인증 비밀번호"
+
+#: templates/backends/filejump.html:22 templates/backends/filen.html:8
+#: templates/backends/generic.html:19 templates/backends/openstack.html:31
+#: templates/backends/smb.html:39
+msgid "Authentication username"
+msgstr "인증 사용자 이름"
+
+#: scripts/controllers/EditBackupController.js:367
+msgid "Autogenerated passphrase"
+msgstr "자동 생성된 암호 문구"
+
+#: templates/addoredit.html:258
+msgid "Automatically run backups"
+msgstr "자동으로 백업 실행"
+
+#: templates/backends/b2.html:12
+msgid "B2 Application ID"
+msgstr "B2 Application ID"
+
+#: templates/backends/b2.html:16
+msgid "B2 Application Key"
+msgstr "B2 Application Key"
+
+#: scripts/services/EditUriBuiltins.js:1250
+msgid "B2 Cloud Storage Account ID"
+msgstr "B2 Cloud Storage Account ID"
+
+#: templates/backends/b2.html:13
+msgid "B2 Cloud Storage Application ID"
+msgstr "B2 Cloud Storage Application ID"
+
+#: scripts/services/EditUriBuiltins.js:1251 templates/backends/b2.html:17
+msgid "B2 Cloud Storage Application Key"
+msgstr "B2 Cloud Storage Application Key"
+
 #: templates/restore.html:138 templates/restore.html:70
 msgid "Back"
 msgstr "이전"
 
+#: templates/about.html:66
+msgid ""
+"Backend modules: <p style=\"display: inline\" ng-repeat=\"item in "
+"sysinfo.BackendModules\">{{item.Key}} </p>"
+msgstr ""
+"백엔드 모듈: <p style=\"display: inline\" ng-repeat=\"item in "
+"sysinfo.BackendModules\">{{item.Key}} </p>"
+
+#: scripts/services/ServerStatus.js:47
+msgid "Backup complete!"
+msgstr "백업 완료!"
+
 #: templates/addoredit.html:92
 msgid "Backup destination"
-msgstr "백업 대상"
+msgstr "백업 저장소"
+
+#: templates/restore.html:131
+msgid ""
+"Backup is encrypted but no passphrase is available. Type a passphrase below "
+"to use for restoring your files, or, in case of GPG encryption, leave blank "
+"to let gpg retrieve the passphrase by invoking your system's keychain."
+msgstr ""
+"백업이 암호화되어 있지만 사용할 수 있는 암호 문구가 없습니다. 파일 복원에 사용할 암호 문구를 아래에 입력합니다. GPG 암호화의 경우"
+" 비워 두면 gpg가 시스템 키체인을 호출하여 암호 문구를 가져옵니다."
 
 #: templates/restore.html:21 templates/restoredirect.html:21
 #: templates/restoredirect.html:31
@@ -153,9 +381,21 @@ msgstr "백업:"
 msgid "Beta"
 msgstr "Beta"
 
+#: scripts/services/AppUtils.js:74
+msgid "Broken access"
+msgstr "손상된 액세스"
+
 #: templates/backends/file.html:8 templates/restore.html:91
 msgid "Browse"
 msgstr "찾아보기"
+
+#: scripts/controllers/SystemSettingsController.js:39
+msgid "Browser default"
+msgstr "브라우저 기본값"
+
+#: templates/backends/gcs.html:15
+msgid "Bucket create location"
+msgstr "버킷 생성 위치"
 
 #: scripts/services/EditUriBuiltins.js:1163
 #: scripts/services/EditUriBuiltins.js:1203
@@ -171,7 +411,41 @@ msgstr "찾아보기"
 #: templates/backends/s3.html:22 templates/backends/s3.html:23
 #: templates/backends/storj.html:37 templates/backends/storj.html:38
 msgid "Bucket name"
-msgstr "Bucket 이름"
+msgstr "버킷 이름"
+
+#: scripts/services/EditUriBuiltins.js:1328
+msgid ""
+"Bucket name can only be between 3 and 63 characters long and contain only "
+"lower-case characters, numbers, periods and dashes"
+msgstr "버킷 이름은 3~63자여야 하며 소문자, 숫자, 마침표 및 대시만 포함할 수 있습니다"
+
+#: templates/backends/s3.html:29
+msgid "Bucket region"
+msgstr "버킷 리전"
+
+#: templates/backends/cos.html:21
+msgid "Bucket region ap-guangzhou"
+msgstr "버킷 리전 ap-guangzhou"
+
+#: templates/backends/gcs.html:26
+msgid "Bucket storage class"
+msgstr "버킷 저장소 클래스"
+
+#: templates/backends/cos.html:26
+msgid "Bucket, format: BucketName-APPID"
+msgstr "버킷, 형식: BucketName-APPID"
+
+#: scripts/services/ServerStatus.js:52
+msgid "Building list of files to restore …"
+msgstr "복원할 파일 목록 작성 중 …"
+
+#: scripts/controllers/RestoreController.js:373
+msgid "Building partial temporary database …"
+msgstr "부분 임시 데이터베이스 작성 중 …"
+
+#: templates/restore.html:59
+msgid "Busy …"
+msgstr "작업 중 …"
 
 #: templates/settings.html:21
 msgid ""
@@ -179,8 +453,8 @@ msgid ""
 "on your network. If you enable this option, make sure you are always using "
 "the computer on a secure firewall protected network."
 msgstr ""
-"원격 액세스를 허용하면 서버는 네트워크의 모든 컴퓨터에서 접속할 수 있습니다. 이 옵션을 사용하도록 설정하려면 방화벽으로 보호된 "
-"네트워크에서 컴퓨터를 사용하고 있는지 확인하십시오."
+"원격 액세스를 허용하면 서버가 네트워크의 모든 컴퓨터에서 오는 요청을 수신합니다. 이 옵션을 활성화하는 경우 컴퓨터가 항상 안전한 "
+"방화벽으로 보호되는 네트워크에 있는지 확인합니다."
 
 #: templates/settings.html:31
 msgid ""
@@ -190,55 +464,94 @@ msgid ""
 " you prefer having to type in the password, even when accessing the user "
 "interface from the tray icon, enable this option."
 msgstr ""
-"기본적으로 트레이 아이콘은 토큰으로 잠금을 해제합니다. 이렇게 하면 다른 사용자가 암호를 입력하도록 요구하면서 트레이 아이콘에서는 사용자"
-" 인터페이스에 액세스할 수 있습니다. 트레이 아이콘에서 사용자 인터페이스에 액세스하는 때도 암호를 입력해야 하는 경우 이 옵션을 "
-"사용하도록 설정하십시오."
+"기본적으로 트레이 아이콘은 사용자 인터페이스 잠금을 해제하는 토큰으로 사용자 인터페이스를 엽니다. 이렇게 하면 다른 사용자는 비밀번호를 "
+"입력해야 하지만 트레이 아이콘에서는 사용자 인터페이스에 액세스할 수 있습니다. 트레이 아이콘에서 사용자 인터페이스에 액세스할 때도 "
+"비밀번호를 입력하도록 하려면 이 옵션을 활성화합니다."
+
+#: templates/backends/cos.html:2
+msgid "COS App ID"
+msgstr "COS App ID"
+
+#: templates/backends/cos.html:32
+msgid "COS Path or subfolder in the bucket"
+msgstr "버킷의 COS 경로 또는 하위 폴더"
+
+#: templates/backends/cos.html:8
+msgid "COS Secret ID"
+msgstr "COS Secret ID"
+
+#: templates/backends/cos.html:14
+msgid "COS Secret Key"
+msgstr "COS Secret Key"
+
+#: scripts/services/AppUtils.js:206
+msgid "Cache Files"
+msgstr "캐시 파일"
 
 #: templates/settings.html:150
 msgid "Canary"
 msgstr "Canary"
 
-#: scripts/controllers/AppController.js:200
-#: scripts/controllers/AppController.js:54
-#: scripts/controllers/AppController.js:70
+#: scripts/controllers/AppController.js:204
+#: scripts/controllers/AppController.js:58
+#: scripts/controllers/AppController.js:74
 #: scripts/controllers/DeleteController.js:67
-#: scripts/controllers/EditBackupController.js:348
-#: scripts/controllers/EditBackupController.js:363
-#: scripts/controllers/EditBackupController.js:397
-#: scripts/controllers/EditBackupController.js:406
-#: scripts/controllers/EditBackupController.js:433
-#: scripts/controllers/EditBackupController.js:454
-#: scripts/controllers/EditBackupController.js:99
+#: scripts/controllers/EditBackupController.js:103
+#: scripts/controllers/EditBackupController.js:352
+#: scripts/controllers/EditBackupController.js:367
+#: scripts/controllers/EditBackupController.js:401
+#: scripts/controllers/EditBackupController.js:410
+#: scripts/controllers/EditBackupController.js:437
+#: scripts/controllers/EditBackupController.js:458
 #: scripts/controllers/ExportController.js:13
 #: scripts/controllers/LocalDatabaseController.js:72
 #: scripts/controllers/LocalDatabaseController.js:88
 #: scripts/controllers/RestoreDirectController.js:24
-#: scripts/controllers/StateController.js:108
-#: scripts/controllers/StateController.js:117
+#: scripts/controllers/StateController.js:119
+#: scripts/controllers/StateController.js:128
 #: scripts/services/DialogService.js:50
 #: scripts/services/EditUriBuiltins.js:1215
 #: scripts/services/EditUriBuiltins.js:1231
 #: scripts/services/EditUriBuiltins.js:61 templates/delete.html:54
 #: templates/export.html:34 templates/settings.html:205
-#: templates/waitarea.html:19
 msgid "Cancel"
 msgstr "취소"
+
+#: templates/settings.html:56
+msgid "Cancel registration"
+msgstr "등록 취소"
+
+#: scripts/directives/sourceFolderPicker.js:460
+msgid "Cannot include \"{{text}}\""
+msgstr "\"{{text}}\"을(를) 포함할 수 없습니다"
 
 #: scripts/controllers/LocalDatabaseController.js:103
 msgid "Cannot move to existing file"
 msgstr "기존 파일로 이동할 수 없습니다"
 
+#: scripts/services/AppUtils.js:348
+msgid "Cannot specify filter include or excludes in extra options"
+msgstr "추가 옵션에서 포함 또는 제외 필터를 지정할 수 없습니다"
+
+#: templates/settings.html:8
+msgid "Change server passphrase"
+msgstr "서버 암호 문구 변경"
+
+#: scripts/controllers/AppController.js:202
+msgid "Change server password"
+msgstr "서버 비밀번호 변경"
+
 #: templates/about.html:5
 msgid "Changelog"
-msgstr "변경로그"
+msgstr "변경 로그"
 
 #: templates/updatechangelog.html:2
 msgid "Changelog for {{appname}} {{version}}"
-msgstr "{{appname}} {{version}}에 대한 변경로그"
+msgstr "{{appname}} {{version}} 변경 로그"
 
 #: scripts/controllers/UpdateChangelogController.js:16
 msgid "Check failed:"
-msgstr "확인 실패:"
+msgstr "검사 실패:"
 
 #: templates/about.html:34
 msgid "Check for updates now"
@@ -250,27 +563,85 @@ msgstr "업데이트 확인 중 …"
 
 #: templates/edituri.html:16
 msgid "Chose a storage type to get started"
-msgstr "시작할 저장소 유형을 선택하세요"
+msgstr "시작할 저장소 유형 선택"
+
+#: templates/backends/gcs.html:11 templates/backends/jottacloud.html:11
+#: templates/backends/msgroup.html:16 templates/backends/oauth.html:11
+#: templates/backends/pcloud.html:24 templates/backends/sharepoint.html:11
+msgid "Click the AuthID link to create an AuthID"
+msgstr "AuthID 링크를 클릭하여 AuthID 생성"
+
+#: templates/backends/filejump.html:10
+msgid "Click the Filejump API token link to set up an API token"
+msgstr "Filejump API 토큰 링크를 클릭하여 API 토큰 설정"
 
 #: index.html:148 index.html:199
 msgid "Click to set throttle options"
 msgstr "속도 제한 옵션을 설정하려면 클릭"
 
+#: templates/backends/s3.html:78
+msgid "Client library to use"
+msgstr "사용할 클라이언트 라이브러리"
+
+#: templates/backends/cos.html:10
+msgid "Cloud API Secret ID"
+msgstr "Cloud API Secret ID"
+
+#: templates/backends/cos.html:16
+msgid "Cloud API Secret Key"
+msgstr "Cloud API Secret Key"
+
+#: templates/commandline.html:8
+msgid "Command"
+msgstr "명령"
+
+#: templates/commandline.html:18
+msgid "Commandline arguments"
+msgstr "명령줄 인수"
+
 #: templates/home.html:69
 msgid "Commandline …"
 msgstr "명령줄 …"
 
+#: templates/backup-result/phases/compact.html:3
+msgid "Compact Phase"
+msgstr "정리 단계"
+
 #: templates/home.html:68
 msgid "Compact now"
-msgstr "최적화 실행"
+msgstr "지금 정리"
 
-#: scripts/directives/sourceFolderPicker.js:539
+#: scripts/services/ServerStatus.js:44 scripts/services/ServerStatus.js:70
+msgid "Compacting remote data …"
+msgstr "원격 데이터 정리 중 …"
+
+#: templates/backup-result/box.html:35
+msgid "Complete log"
+msgstr "전체 로그"
+
+#: scripts/services/ServerStatus.js:41
+msgid "Completing backup …"
+msgstr "백업 완료 중 …"
+
+#: scripts/services/ServerStatus.js:39
+msgid "Completing previous backup …"
+msgstr "이전 백업 완료 중 …"
+
+#: templates/about.html:67
+msgid ""
+"Compression modules: <p style=\"display: inline\" ng-repeat=\"item in "
+"sysinfo.CompressionModules\">{{item.Key}} </p>"
+msgstr ""
+"압축 모듈: <p style=\"display: inline\" ng-repeat=\"item in "
+"sysinfo.CompressionModules\">{{item.Key}} </p>"
+
+#: scripts/directives/sourceFolderPicker.js:582
 msgid "Computer"
 msgstr "내 PC"
 
 #: templates/import.html:9
 msgid "Configuration file:"
-msgstr "구성 파일:"
+msgstr "설정 파일:"
 
 #: templates/home.html:56
 msgid "Configuration:"
@@ -278,11 +649,29 @@ msgstr "구성:"
 
 #: templates/addwizard.html:9
 msgid "Configure a new backup"
-msgstr "새 백업 구성"
+msgstr "새 백업 설정"
+
+#: scripts/controllers/DeleteController.js:65
+#: scripts/controllers/DeleteController.js:99
+#: scripts/controllers/LocalDatabaseController.js:28
+msgid "Confirm delete"
+msgstr "삭제 확인"
 
 #: templates/export.html:30
 msgid "Confirm encryption passphrase"
-msgstr "암호화 암호 확인"
+msgstr "암호화 암호 문구 확인"
+
+#: templates/changepassword.html:14 templates/settings.html:15
+msgid "Confirm new password"
+msgstr "새 비밀번호 확인"
+
+#: templates/export.html:29
+msgid "Confirm passphrase"
+msgstr "암호 문구 확인"
+
+#: scripts/services/EditUriBackendConfig.js:74
+msgid "Confirmation required"
+msgstr "확인 필요"
 
 #: templates/restoredirect.html:80
 msgid "Connect"
@@ -296,18 +685,39 @@ msgstr "지금 연결하기"
 msgid "Connecting to server …"
 msgstr "서버에 연결하는 중 …"
 
+#: templates/commandline.html:48
+msgid "Connecting to task …"
+msgstr "작업에 연결 중 …"
+
+#: index.html:313
+msgid "Connecting …"
+msgstr "연결 중 …"
+
 #: index.html:297
 msgid "Connection lost"
 msgstr "연결이 끊어짐"
 
-#: scripts/directives/backupEditUri.js:50
-#: scripts/directives/backupEditUri.js:53
+#: scripts/directives/backupEditUri.js:52
+#: scripts/directives/backupEditUri.js:55
 msgid "Connection worked!"
 msgstr "연결되었습니다!"
+
+#: scripts/services/EditUriBuiltins.js:1154 templates/backends/azure.html:2
+#: templates/backends/azure.html:3
+msgid "Container name"
+msgstr "컨테이너 이름"
+
+#: templates/backends/openstack.html:49
+msgid "Container region"
+msgstr "컨테이너 리전"
 
 #: templates/restore.html:69
 msgid "Continue"
 msgstr "계속"
+
+#: scripts/controllers/EditBackupController.js:437
+msgid "Continue without encryption"
+msgstr "암호화 없이 계속"
 
 #: scripts/controllers/DialogController.js:16
 msgid "Copied!"
@@ -319,27 +729,72 @@ msgstr "복사"
 
 #: templates/addoredit.html:103 templates/restoredirect.html:42
 msgid "Copy Destination URL to Clipboard"
-msgstr "대상 URL을 클립보드에 복사"
+msgstr "백업 저장소 URL을 클립보드에 복사"
+
+#: scripts/controllers/EditBackupController.js:111
+#: scripts/controllers/RestoreDirectController.js:33
+msgid "Copy URL"
+msgstr "URL 복사"
+
+#: scripts/controllers/DialogController.js:20
+msgid "Copy failed. Please manually copy the URL"
+msgstr "복사에 실패했습니다. URL을 수동으로 복사합니다"
+
+#: templates/backup-result/box.html:41
+msgid "Copy log"
+msgstr "로그 복사"
 
 #: scripts/services/AppUtils.js:741
 msgid "Core options"
 msgstr "핵심 옵션"
 
+#: scripts/controllers/StateController.js:34
+msgid "Counting ({{files}} files found, {{size}})"
+msgstr "계산 중({{files}}개 파일 찾음, {{size}})"
+
 #: templates/settings.html:170
 msgid "Crashes only"
 msgstr "충돌만"
+
+#: templates/home.html:11
+msgid "Create Order"
+msgstr "생성 순서"
+
+#: templates/home.html:21
+msgid "Create Order (descending)"
+msgstr "생성 순서(내림차순)"
 
 #: templates/home.html:75
 msgid "Create bug report …"
 msgstr "버그 리포트 생성 …"
 
-#: scripts/directives/backupEditUri.js:130
+#: scripts/directives/backupEditUri.js:132
 msgid "Create folder?"
 msgstr "폴더를 생성하시겠습니까?"
 
-#: scripts/services/ServerStatus.js:63
+#: scripts/services/EditUriBuiltins.js:140
+msgid "Created new limited user"
+msgstr "제한된 새 사용자를 만들었습니다"
+
+#: scripts/services/ServerStatus.js:64
 msgid "Creating bug report …"
 msgstr "버그 리포트 생성 중 …"
+
+#: scripts/services/EditUriBuiltins.js:126
+msgid "Creating new user with limited access …"
+msgstr "제한된 접근 권한을 가진 새 사용자 생성 중 …"
+
+#: scripts/services/ServerStatus.js:53
+msgid "Creating target folders …"
+msgstr "폴더 생성 중 …"
+
+#: scripts/controllers/RestoreController.js:368
+msgid "Creating temporary backup …"
+msgstr "임시 백업 생성 중 …"
+
+#: scripts/services/EditUriBuiltins.js:126
+msgid "Creating user …"
+msgstr "사용자 생성 중 …"
 
 #: templates/home.html:105
 msgid "Current action:"
@@ -349,9 +804,57 @@ msgstr "현재 작업:"
 msgid "Current file:"
 msgstr "현재 파일:"
 
+#: templates/updatechangelog.html:4
+msgid "Current version is {{versionname}} ({{versionnumber}})"
+msgstr "현재 버전은 {{versionname}}({{versionnumber}})입니다"
+
+#: templates/backends/s3.html:17
+msgid "Custom S3 endpoint"
+msgstr "사용자 지정 S3 endpoint"
+
+#: scripts/services/EditUriBuiltins.js:1320 templates/backends/storj.html:18
+msgid "Custom Satellite"
+msgstr "사용자 지정 Satellite"
+
+#: templates/backends/storj.html:13
+msgid "Custom Satellite ({{satellite}})"
+msgstr "사용자 지정 Satellite({{satellite}})"
+
+#: templates/backends/openstack.html:13
+msgid "Custom authentication url"
+msgstr "사용자 지정 인증 URL"
+
 #: templates/addoredit.html:327
 msgid "Custom backup retention"
 msgstr "사용자 지정 백업 보존"
+
+#: templates/backends/s3.html:55
+msgid "Custom bucket storage class"
+msgstr "사용자 지정 버킷 저장소 클래스"
+
+#: templates/backends/gcs.html:18
+msgid "Custom location"
+msgstr "사용자 지정 위치"
+
+#: templates/backends/s3.html:39
+msgid "Custom region for creating buckets"
+msgstr "버킷 생성을 위한 사용자 지정 리전"
+
+#: templates/backends/s3.html:34
+msgid "Custom region value"
+msgstr "사용자 지정 리전 값"
+
+#: templates/backends/openstack.html:10 templates/backends/s3.html:12
+msgid "Custom server url"
+msgstr "사용자 지정 서버 URL"
+
+#: templates/backends/gcs.html:29 templates/backends/s3.html:50
+msgid "Custom storage class"
+msgstr "사용자 지정 저장소 클래스"
+
+#: templates/advancedoptionseditor.html:43
+msgid "DEPRECATED: {{getDeprecationMessage(item)}}"
+msgstr "사용 중단됨: {{getDeprecationMessage(item)}}"
 
 #: templates/home.html:66
 msgid "Database …"
@@ -367,15 +870,27 @@ msgstr "기본값"
 
 #: templates/settings.html:129
 msgid "Default ({{channelname}})"
-msgstr "기본값 ({{channelname}})"
+msgstr "기본값({{channelname}})"
+
+#: scripts/services/AppUtils.js:193
+msgid "Default excludes"
+msgstr "기본 제외 항목"
 
 #: templates/settings.html:190
 msgid "Default options"
 msgstr "기본 옵션"
 
+#: templates/advancedoptionseditor.html:44
+msgid "Default value: \"{{getDefaultValue(item)}}\""
+msgstr "기본값: \"{{getDefaultValue(item)}}\""
+
 #: scripts/controllers/DeleteController.js:67 templates/localdatabase.html:16
 msgid "Delete"
 msgstr "삭제"
+
+#: templates/backup-result/phases/delete.html:3
+msgid "Delete Phase (Old Backup Versions)"
+msgstr "삭제 단계(오래된 백업 버전)"
 
 #: templates/delete.html:5 templates/delete.html:53
 msgid "Delete backup"
@@ -383,11 +898,15 @@ msgstr "백업 삭제"
 
 #: templates/addoredit.html:324
 msgid "Delete backups that are older than"
-msgstr "이전 백업 삭제"
+msgstr "다음보다 오래된 백업 삭제"
 
 #: templates/delete.html:13
 msgid "Delete local database"
 msgstr "로컬 데이터베이스 삭제"
+
+#: templates/settings.html:68
+msgid "Delete remote control setup"
+msgstr "원격 제어 설정 삭제"
 
 #: templates/delete.html:38 templates/delete.html:47
 msgid "Delete remote files"
@@ -396,6 +915,10 @@ msgstr "원격 파일 삭제"
 #: templates/delete.html:26
 msgid "Delete the local database"
 msgstr "로컬 데이터베이스 삭제"
+
+#: templates/delete.html:41
+msgid "Delete {{filecount}} files ({{filesize}}) from the remote storage?"
+msgstr "원격 저장소에서 {{filecount}}개 파일({{filesize}})을 삭제하시겠습니까?"
 
 #: templates/home.html:60
 msgid "Delete …"
@@ -407,11 +930,15 @@ msgstr "삭제됨"
 
 #: templates/backup-result/phases/delete.html:24
 msgid "Deleted Versions"
-msgstr "삭제된 버전들"
+msgstr "삭제된 버전"
 
 #: templates/backup-result/phases/compact.html:23
 msgid "Deleted files"
-msgstr "삭제된 파일들"
+msgstr "삭제된 파일"
+
+#: scripts/services/ServerStatus.js:67
+msgid "Deleting remote files …"
+msgstr "원격 파일 삭제 중 …"
 
 #: scripts/services/ServerStatus.js:43
 msgid "Deleting unwanted files …"
@@ -419,7 +946,11 @@ msgstr "원치 않는 파일 삭제 중 …"
 
 #: templates/addoredit.html:43
 msgid "Description (optional)"
-msgstr "설명 (선택 사항)"
+msgstr "설명(선택 사항)"
+
+#: templates/home.html:46
+msgid "Description:"
+msgstr "설명:"
 
 #: scripts/services/AppUtils.js:60
 msgid "Desktop"
@@ -427,7 +958,15 @@ msgstr "바탕 화면"
 
 #: templates/addoredit.html:25
 msgid "Destination"
-msgstr "대상"
+msgstr "백업 저장소"
+
+#: templates/home.html:12
+msgid "Destination Type"
+msgstr "백업 저장소 유형"
+
+#: templates/home.html:22
+msgid "Destination Type (descending)"
+msgstr "백업 저장소 유형(내림차순)"
 
 #: templates/backends/file.html:7 templates/backends/filejump.html:3
 #: templates/backends/filen.html:3 templates/backends/generic.html:14
@@ -435,7 +974,31 @@ msgstr "대상"
 #: templates/backends/oauth.html:3 templates/backends/pcloud.html:16
 #: templates/backends/sharepoint.html:2 templates/backends/smb.html:29
 msgid "Destination path"
-msgstr "대상 경로"
+msgstr "저장소 경로"
+
+#: templates/home.html:18
+msgid "Destination size"
+msgstr "백업 저장소 크기"
+
+#: templates/home.html:28
+msgid "Destination size (descending)"
+msgstr "백업 저장소 크기(내림차순)"
+
+#: templates/backends/smb.html:8
+msgid "Direct TCP"
+msgstr "Direct TCP"
+
+#: templates/restorewizard.html:9
+msgid "Direct restore from backup files …"
+msgstr "백업 파일에서 직접 복원 …"
+
+#: templates/backends/idrive.html:3
+msgid "Directory path"
+msgstr "디렉터리 경로"
+
+#: templates/settings.html:60
+msgid "Disable remote control"
+msgstr "원격 제어 비활성화"
 
 #: templates/log.html:32
 msgid "Disabled"
@@ -452,9 +1015,25 @@ msgstr "모두 닫기"
 
 #: templates/settings.html:108
 msgid "Display and color theme"
-msgstr "인터페이스 테마"
+msgstr "표시 및 색상 테마"
 
-#: templates/export.html:53
+#: scripts/controllers/DeleteController.js:99
+msgid "Do you really want to delete the backup: \"{{name}}\" ?"
+msgstr "백업 \"{{name}}\"을(를) 정말 삭제하시겠습니까?"
+
+#: scripts/controllers/LocalDatabaseController.js:28
+msgid "Do you really want to delete the local database for: {{name}}"
+msgstr "{{name}}의 로컬 데이터베이스를 정말 삭제하시겠습니까?"
+
+#: templates/backends/smb.html:33
+msgid "Domain"
+msgstr "도메인"
+
+#: templates/backends/openstack.html:26
+msgid "Domain name"
+msgstr "도메인 이름"
+
+#: templates/edituri.html:21 templates/export.html:53
 msgid "Done"
 msgstr "완료"
 
@@ -463,17 +1042,39 @@ msgstr "완료"
 msgid "Download"
 msgstr "다운로드"
 
-#: scripts/services/ServerStatus.js:56
+#: templates/backup-result/phases/compact.html:28
+msgid "Downloaded files"
+msgstr "다운로드된 파일"
+
+#: scripts/services/ServerStatus.js:57
 msgid "Downloading files …"
 msgstr "파일 다운로드 중 …"
 
+#: templates/notificationarea.html:26
+msgid "Downloading update…"
+msgstr "업데이트 다운로드 중…"
+
+#: scripts/services/AppUtils.js:343
+msgid "Duplicate option {{opt}}"
+msgstr "중복 옵션 {{opt}}"
+
 #: index.html:254
 msgid "Duplicati Website"
-msgstr "Duplicati Website"
+msgstr "Duplicati 웹사이트"
 
 #: index.html:248
 msgid "Duplicati forum"
 msgstr "Duplicati 포럼"
+
+#: scripts/controllers/AppController.js:192
+msgid ""
+"Duplicati needs to be secured with a passphrase and a random passphrase has been generated for you.\n"
+"If you open Duplicati from the tray icon, you do not need a passphrase, but if you plan to open it from another location you need to set a passphrase you know.\n"
+"Do you want to set a passphrase now?"
+msgstr ""
+"Duplicati는 암호 문구로 보호되어야 하며 임의의 암호 문구가 생성되었습니다.\n"
+"트레이 아이콘에서 Duplicati를 열면 암호 문구가 필요하지 않지만, 다른 위치에서 열 계획이라면 알고 있는 암호 문구를 설정해야 합니다.\n"
+"지금 암호 문구를 설정하시겠습니까?"
 
 #: templates/settings.html:93
 msgid ""
@@ -484,19 +1085,61 @@ msgstr ""
 "Duplicati는 시작할 때 실행되지만 지정된 시간 동안 일시 중지된 상태로 유지됩니다. Duplicati는 최소한의 시스템 리소스를 "
 "차지하며 백업이 실행되지 않습니다."
 
+#: templates/backup-result/phases/compact.html:16
+#: templates/backup-result/phases/delete.html:16
+#: templates/backup-result/phases/purge.html:16
+#: templates/backup-result/phases/recreate-database.html:16
+#: templates/backup-result/phases/repair.html:16
+#: templates/backup-result/phases/test.html:16
+#: templates/backup-result/top-left-box.html:11 templates/home.html:19
+msgid "Duration"
+msgstr "기간"
+
+#: templates/home.html:29
+msgid "Duration (descending)"
+msgstr "기간(내림차순)"
+
+#: templates/delete.html:15
+msgid ""
+"Each backup has a local database associated with it, which stores information about the remote backup on the local machine.\n"
+"            When deleting a backup, you can also delete the local database without affecting the ability to restore the remote files.\n"
+"            If you are using the local database for backups from the commandline, you should keep the database."
+msgstr ""
+"각 백업은 로컬 컴퓨터에 원격 백업 정보를 저장하는 로컬 데이터베이스와 연결됩니다.\n"
+"            백업을 삭제할 때 원격 파일 복원 가능성에 영향을 주지 않고 로컬 데이터베이스도 삭제할 수 있습니다.\n"
+"            명령줄에서 백업에 로컬 데이터베이스를 사용하는 경우 데이터베이스를 유지해야 합니다."
+
+#: templates/localdatabase.html:5
+msgid ""
+"Each backup has a local database associated with it, which stores "
+"information about the remote backup on the local machine. This makes it "
+"faster to perform many operations, and reduces the amount of data that needs"
+" to be downloaded for each operation."
+msgstr ""
+"각 백업은 로컬 컴퓨터에 원격 백업 정보를 저장하는 로컬 데이터베이스와 연결됩니다. 이 데이터베이스로 많은 작업을 더 빠르게 수행하고 각"
+" 작업마다 다운로드해야 하는 데이터 양을 줄일 수 있습니다."
+
 #: templates/addoredit.html:174 templates/addoredit.html:389
-#: templates/edituri.html:39 templates/settings.html:194
+#: templates/edituri.html:40 templates/settings.html:194
 msgid "Edit as list"
 msgstr "목록으로 편집"
 
 #: templates/addoredit.html:177 templates/addoredit.html:392
-#: templates/edituri.html:42 templates/settings.html:200
+#: templates/edituri.html:43 templates/settings.html:200
 msgid "Edit as text"
 msgstr "텍스트로 편집"
 
 #: templates/home.html:58
 msgid "Edit …"
 msgstr "편집 …"
+
+#: templates/backends/msgroup.html:3
+msgid "Email address of the Office 365 group"
+msgstr "Office 365 그룹의 이메일 주소"
+
+#: templates/settings.html:64
+msgid "Enable remote control"
+msgstr "원격 제어 활성화"
 
 #: templates/export.html:22
 msgid "Encrypt file"
@@ -507,6 +1150,47 @@ msgstr "파일 암호화"
 msgid "Encryption"
 msgstr "암호화"
 
+#: scripts/controllers/EditBackupController.js:410
+msgid "Encryption changed"
+msgstr "암호화가 변경됨"
+
+#: templates/about.html:68
+msgid ""
+"Encryption modules: <p style=\"display: inline\" ng-repeat=\"item in "
+"sysinfo.EncryptionModules\">{{item.Key}} </p>"
+msgstr ""
+"암호화 모듈: <p style=\"display: inline\" ng-repeat=\"item in "
+"sysinfo.EncryptionModules\">{{item.Key}} </p>"
+
+#: scripts/services/EditUriBuiltins.js:1315 templates/backends/storj.html:25
+#: templates/backends/storj.html:26
+msgid "Encryption passphrase"
+msgstr "암호화 암호 문구"
+
+#: templates/backends/storj.html:30
+msgid "Encryption passphrase (for verification)"
+msgstr "암호화 암호 문구(검증용)"
+
+#: templates/backup-result/phases/compact.html:12
+#: templates/backup-result/phases/delete.html:12
+#: templates/backup-result/phases/purge.html:12
+#: templates/backup-result/phases/recreate-database.html:12
+#: templates/backup-result/phases/repair.html:12
+#: templates/backup-result/phases/test.html:12
+#: templates/backup-result/top-left-box.html:7
+msgid "End"
+msgstr "종료"
+
+#: scripts/controllers/EditBackupController.js:103
+#: scripts/controllers/RestoreDirectController.js:24
+msgid "Enter URL"
+msgstr "URL 입력"
+
+#: scripts/controllers/EditBackupController.js:103
+#: scripts/controllers/RestoreDirectController.js:24
+msgid "Enter a backup destination URL:"
+msgstr "백업 저장소 URL 입력:"
+
 #: templates/addoredit.html:341
 msgid ""
 "Enter a retention strategy manually. Placeholders are D/W/Y for "
@@ -515,21 +1199,46 @@ msgid ""
 "the next 4 weeks, and one for each of the next 36 months. This can also be "
 "written as 1W:1D,1M:1W,3Y:1M."
 msgstr ""
-"보존 전략을 직접 입력합니다. 자리 표시자는 일/주/년이 각각 D/W/Y이고 U는 무제한입니다. 예) 7D:1D,4W:1W,36M:1M."
-" 이 예제는 다음 7일 각각에 대해 하나의 백업을 유지하며, 다음 4주마다 하나씩, 다음 36개월마다 하나씩 백업합니다. 이것은 또한 "
-"1W:1D, 1M:1W,3Y:1M으로 표현할 수 있습니다."
+"보존 전략을 직접 입력합니다. 자리 표시자는 일/주/년을 나타내는 D/W/Y와 무제한을 나타내는 U입니다. 구문은 "
+"7D:1D,4W:1W,36M:1M입니다. 이 예는 다음 7일 동안 하루에 하나, 다음 4주 동안 주마다 하나, 다음 36개월 동안 월마다"
+" 하나의 백업을 보존합니다. 1W:1D,1M:1W,3Y:1M으로도 쓸 수 있습니다."
+
+#: templates/commandline.html:14
+msgid "Enter a url, or click the &quot;Target URL &gt;&quot; link"
+msgstr "URL을 입력하거나 &quot;Target URL &gt;&quot; 링크를 클릭합니다"
 
 #: templates/restoredirect.html:61
 msgid "Enter backup passphrase, if any"
-msgstr "백업 암호가 있는 경우 입력합니다."
+msgstr "백업 암호 문구 입력(있는 경우)"
 
 #: templates/addwizard.html:10
 msgid "Enter configuration details"
 msgstr "구성 세부 정보 입력"
 
+#: templates/export.html:26
+msgid "Enter encryption passphrase"
+msgstr "암호화 암호 문구 입력"
+
+#: templates/addoredit.html:196
+msgid "Enter expression here"
+msgstr "여기에 식 입력"
+
+#: templates/commandline.html:19
+msgid "Enter one argument per line without quotes, e.g. *.txt"
+msgstr "한 줄에 인수 하나씩 따옴표 없이 입력합니다. 예: *.txt"
+
+#: templates/commandline.html:26
+msgid ""
+"Enter one option per line in command-line format, e.g. --dblock-size=100MB"
+msgstr "한 줄에 옵션 하나씩 명령줄 형식으로 입력합니다. 예: --dblock-size=100MB"
+
+#: scripts/services/AppUtils.js:128
+msgid "Enter one option per line in command-line format, e.g. {0}"
+msgstr "한 줄에 옵션 하나씩 명령줄 형식으로 입력합니다. 예: {0}"
+
 #: templates/restore.html:90
 msgid "Enter the destination path"
-msgstr "대상 경로 입력"
+msgstr "저장소 경로 입력"
 
 #: scripts/controllers/CommandlineController.js:174
 #: scripts/controllers/CommandlineController.js:80
@@ -550,9 +1259,9 @@ msgstr "대상 경로 입력"
 #: scripts/controllers/RestoreController.js:90
 #: scripts/controllers/RestoreDirectController.js:112
 #: scripts/controllers/RestoreDirectController.js:78
-#: scripts/directives/backupEditUri.js:142
-#: scripts/directives/backupEditUri.js:163
-#: scripts/directives/backupEditUri.js:197
+#: scripts/directives/backupEditUri.js:144
+#: scripts/directives/backupEditUri.js:165
+#: scripts/directives/backupEditUri.js:199
 #: scripts/directives/notificationArea.js:41
 #: scripts/directives/notificationArea.js:43
 #: scripts/directives/notificationArea.js:68 scripts/services/AppUtils.js:343
@@ -561,7 +1270,7 @@ msgstr "대상 경로 입력"
 msgid "Error"
 msgstr "오류"
 
-#: scripts/services/ServerStatus.js:70
+#: scripts/services/ServerStatus.js:72
 msgid "Error!"
 msgstr "오류!"
 
@@ -569,9 +1278,49 @@ msgstr "오류!"
 msgid "Errors and crashes"
 msgstr "오류 및 충돌"
 
+#: templates/backup-result/top-right-box.html:10
+msgid "Examined"
+msgstr "검사됨"
+
 #: templates/addoredit.html:214
 msgid "Exclude"
 msgstr "제외"
+
+#: scripts/services/AppUtils.js:131
+msgid "Exclude directories whose names contain"
+msgstr "이름에 다음이 포함된 디렉터리 제외"
+
+#: scripts/services/AppUtils.js:187
+msgid "Exclude expression"
+msgstr "제외 식"
+
+#: scripts/services/AppUtils.js:150
+msgid "Exclude file"
+msgstr "파일 제외"
+
+#: scripts/services/AppUtils.js:157
+msgid "Exclude file extension"
+msgstr "파일 확장자 제외"
+
+#: scripts/services/AppUtils.js:137
+msgid "Exclude files whose names contain"
+msgstr "이름에 다음이 포함된 파일 제외"
+
+#: scripts/services/AppUtils.js:172
+msgid "Exclude filter group"
+msgstr "필터 그룹 제외"
+
+#: scripts/services/AppUtils.js:143
+msgid "Exclude folder"
+msgstr "폴더 제외"
+
+#: scripts/services/AppUtils.js:162
+msgid "Exclude regular expression"
+msgstr "정규식 제외"
+
+#: scripts/controllers/LocalDatabaseController.js:72
+msgid "Existing file found"
+msgstr "기존 파일을 찾음"
 
 #: templates/settings.html:145
 msgid "Experimental"
@@ -591,7 +1340,7 @@ msgstr "구성 내보내기"
 
 #: templates/export.html:18
 msgid "Export passwords"
-msgstr "암호 내보내기"
+msgstr "비밀번호 내보내기"
 
 #: templates/home.html:59
 msgid "Export …"
@@ -601,18 +1350,116 @@ msgstr "내보내기 …"
 msgid "Exporting …"
 msgstr "내보내는 중 …"
 
+#: templates/externallink.html:1
+msgid "External link"
+msgstr "외부 링크"
+
+#: scripts/services/SystemInfo.js:52
+msgid "FTP (Alternative)"
+msgstr "FTP(대체)"
+
+#: scripts/controllers/RestoreController.js:390
+msgid "Failed to build temporary database: {{message}}"
+msgstr "임시 데이터베이스 작성 실패: {{message}}"
+
+#: scripts/directives/backupEditUri.js:144
+#: scripts/directives/backupEditUri.js:165
+#: scripts/directives/backupEditUri.js:199
+msgid "Failed to connect:"
+msgstr "연결 실패:"
+
+#: scripts/controllers/CommandlineController.js:174
+#: scripts/controllers/CommandlineController.js:80
+#: scripts/controllers/ExportController.js:40
+#: scripts/controllers/ExportController.js:57
+#: scripts/controllers/RestoreController.js:294
+#: scripts/controllers/RestoreController.js:332
+#: scripts/controllers/RestoreController.js:431
+#: scripts/controllers/RestoreController.js:90
+#: scripts/controllers/RestoreDirectController.js:112
+#: scripts/controllers/RestoreDirectController.js:78
+#: scripts/services/LogService.js:29
+msgid "Failed to connect: {{message}}"
+msgstr "연결 실패: {{message}}"
+
+#: scripts/controllers/LocalDatabaseController.js:38
+msgid "Failed to delete:"
+msgstr "삭제 실패:"
+
+#: scripts/controllers/RestoreController.js:114
+#: scripts/controllers/RestoreController.js:144
+msgid "Failed to fetch path information: {{message}}"
+msgstr "경로 정보 가져오기 실패: {{message}}"
+
+#: scripts/directives/notificationArea.js:45
+msgid "Failed to find backup:"
+msgstr "백업을 찾지 못했습니다:"
+
+#: scripts/directives/notificationArea.js:68
+msgid "Failed to get bug report URL: {{message}}"
+msgstr "버그 보고서 URL 가져오기 실패: {{message}}"
+
+#: scripts/controllers/ImportController.js:39
+#: scripts/controllers/ImportController.js:43
+msgid "Failed to import: {{message}}"
+msgstr "가져오기 실패: {{message}}"
+
+#: scripts/controllers/EditBackupController.js:714
+msgid "Failed to read backup defaults:"
+msgstr "백업 기본값 읽기 실패:"
+
+#: scripts/controllers/ImportController.js:49
+msgid "Failed to read file: {{message}}"
+msgstr "파일 읽기 실패: {{message}}"
+
+#: scripts/controllers/RestoreController.js:423
+msgid "Failed to restore files: {{message}}"
+msgstr "파일 복원 실패: {{message}}"
+
+#: scripts/controllers/SystemSettingsController.js:263
+msgid "Failed to save:"
+msgstr "저장 실패:"
+
+#: templates/backup-result/top-right-box.html:6
+msgid "Fatal error, no statistics collected"
+msgstr "치명적 오류, 통계가 수집되지 않음"
+
 #: scripts/controllers/RestoreController.js:120
 #: scripts/controllers/RestoreController.js:159
 msgid "Fetching path information …"
 msgstr "경로 정보를 가져오는 중 …"
 
+#: scripts/services/AppUtils.js:80
+msgid "File"
+msgstr "파일"
+
+#: templates/backends/filejump.html:8
+msgid "Filejump API token"
+msgstr "Filejump API 토큰"
+
 #: templates/addoredit.html:237
 msgid "Files larger than:"
-msgstr "큰 파일"
+msgstr "다음보다 큰 파일:"
 
 #: templates/addoredit.html:163
 msgid "Filters"
 msgstr "필터"
+
+#: templates/commandline.html:57
+msgid "Finished!"
+msgstr "완료됨!"
+
+#: scripts/controllers/AppController.js:191
+msgid "First run setup"
+msgstr "최초 실행 설정"
+
+#: scripts/services/AppUtils.js:51
+msgid "Folder"
+msgstr "폴더"
+
+#: templates/backends/storj.html:42
+msgid "Folder in the bucket"
+msgstr "버킷의 폴더"
 
 #: templates/backends/aliyunoss.html:30 templates/backends/b2.html:7
 #: templates/backends/cos.html:30 templates/backends/e2.html:16
@@ -623,9 +1470,17 @@ msgstr "필터"
 msgid "Folder path"
 msgstr "폴더 경로"
 
+#: templates/backends/mega.html:3
+msgid "Folder path name"
+msgstr "폴더 경로 이름"
+
 #: scripts/services/AppUtils.js:114
 msgid "Fri"
 msgstr "금요일"
+
+#: templates/backends/sharepoint.html:3
+msgid "Full destination path, including the server name, but without https"
+msgstr "서버 이름을 포함하되 https는 제외한 전체 백업 저장소 경로"
 
 #: scripts/services/AppUtils.js:90
 msgid "GByte"
@@ -634,6 +1489,10 @@ msgstr "GByte"
 #: scripts/services/AppUtils.js:123
 msgid "GByte/s"
 msgstr "GByte/s"
+
+#: templates/backends/gcs.html:38
+msgid "GCS Project ID"
+msgstr "GCS Project ID"
 
 #: templates/about.html:4 templates/addoredit.html:24
 #: templates/backuplog.html:6
@@ -652,9 +1511,29 @@ msgstr "일반 옵션"
 msgid "Generate"
 msgstr "생성"
 
+#: templates/backends/s3.html:88
+msgid "Generate IAM access policy"
+msgstr "IAM 접근 정책 생성"
+
 #: scripts/controllers/RestoreController.js:70
 msgid "Getting file versions …"
-msgstr "파일 버전을 구하는 중 ..."
+msgstr "파일 버전 가져오는 중 …"
+
+#: scripts/services/EditUriBuiltins.js:1143 templates/backends/msgroup.html:2
+msgid "Group email"
+msgstr "그룹 이메일"
+
+#: templates/home.html:16
+msgid "Has Scheduled"
+msgstr "예약 있음"
+
+#: templates/home.html:26
+msgid "Has Scheduled (descending)"
+msgstr "예약 있음(내림차순)"
+
+#: index.html:311
+msgid "Help"
+msgstr "도움말"
 
 #: scripts/controllers/EditBackupController.js:20
 msgid "Hidden files"
@@ -664,18 +1543,55 @@ msgstr "숨김 파일"
 msgid "Hide"
 msgstr "숨기기"
 
+#: templates/backends/file.html:15 templates/restore.html:98
+msgid "Hide hidden items"
+msgstr "숨김 항목 숨기기"
+
 #: index.html:208 scripts/services/AppUtils.js:62
 msgid "Home"
 msgstr "홈"
 
+#: templates/settings.html:24
+msgid "Hostnames"
+msgstr "호스트 이름"
+
 #: scripts/services/AppUtils.js:106 scripts/services/AppUtils.js:96
 #: templates/settings.html:91
 msgid "Hours"
-msgstr "시"
+msgstr "시간"
 
 #: templates/restore.html:111
 msgid "How do you want to handle existing files?"
 msgstr "기존 파일을 어떻게 처리하시겠습니까?"
+
+#: scripts/services/AppUtils.js:70
+msgid "Hyper-V Machine"
+msgstr "Hyper-V Machine"
+
+#: scripts/directives/sourceFolderPicker.js:279
+msgid "Hyper-V Machine: {{name}}"
+msgstr "Hyper-V Machine: {{name}}"
+
+#: scripts/services/AppUtils.js:72
+msgid "Hyper-V Machines"
+msgstr "Hyper-V Machines"
+
+#: scripts/directives/sourceFolderPicker.js:65
+#: scripts/directives/sourceFolderPicker.js:71
+msgid "ID:"
+msgstr "ID:"
+
+#: templates/backends/idrive.html:2
+msgid "IDrive Sync directory path"
+msgstr "IDrive Sync 디렉터리 경로"
+
+#: scripts/services/EditUriBuiltins.js:1370 templates/backends/e2.html:3
+msgid "IDrive e2 Access Key ID"
+msgstr "IDrive e2 Access Key ID"
+
+#: scripts/services/EditUriBuiltins.js:1371 templates/backends/e2.html:7
+msgid "IDrive e2 Access Key Secret"
+msgstr "IDrive e2 Access Key Secret"
 
 #: templates/addoredit.html:261
 msgid "If a date was missed, the job will run as soon as possible."
@@ -687,9 +1603,68 @@ msgid ""
 "deleted."
 msgstr "새 백업이 발견되면 이 날짜보다 오래된 모든 백업이 삭제됩니다."
 
+#: templates/localdatabase.html:10
+msgid ""
+"If the backup and the remote storage is out of sync, Duplicati will require "
+"that you perform a repair operation to synchronize the database. If the "
+"repair is unsuccessful, you can delete the local database and re-generate."
+msgstr ""
+"백업과 원격 저장소가 동기화되지 않은 경우 Duplicati는 데이터베이스 동기화를 위해 복구 작업을 요구합니다. 복구에 실패하면 로컬 "
+"데이터베이스를 삭제하고 다시 생성할 수 있습니다."
+
+#: templates/export.html:49
+msgid ""
+"If the backup file was not downloaded automatically, <a "
+"href=\"{{DownloadURL}}\" target=\"_blank\">right click and choose &quot;Save"
+" as …&quot;</a>."
+msgstr ""
+"백업 파일이 자동으로 다운로드되지 않았다면 <a href=\"{{DownloadURL}}\" target=\"_blank\">마우스 "
+"오른쪽 버튼을 클릭하고 &quot;다른 이름으로 저장 …&quot;을 선택합니다</a>."
+
+#: templates/notificationarea.html:7
+msgid ""
+"If the backup file was not downloaded automatically, <a "
+"href=\"{{item.DownloadLink}}\" target=\"_blank\">right click and choose "
+"&quot;Save as …&quot;</a>."
+msgstr ""
+"백업 파일이 자동으로 다운로드되지 않았다면 <a href=\"{{item.DownloadLink}}\" "
+"target=\"_blank\">마우스 오른쪽 버튼을 클릭하고 &quot;다른 이름으로 저장 …&quot;을 선택합니다</a>."
+
+#: scripts/services/EditUriBackendConfig.js:114
+msgid ""
+"If you do not enter a path, all files will be stored in the login folder.\n"
+"Are you sure this is what you want?"
+msgstr ""
+"경로를 입력하지 않으면 모든 파일이 로그인 폴더에 저장됩니다.\n"
+"이렇게 하시겠습니까?"
+
+#: templates/backends/openstack.html:40
+msgid "If you do not enter an API Key, the tenant name is required"
+msgstr "API Key를 입력하지 않으면 tenant 이름이 필요합니다"
+
+#: templates/pause.html:53
+msgid ""
+"If you pause transfers they could time out and cause retries or failures."
+msgstr "전송을 일시 중지하면 시간 초과가 발생하여 재시도 또는 실패가 발생할 수 있습니다."
+
+#: templates/delete.html:32
+msgid ""
+"If you want to use the backup later, you can export the configuration before"
+" deleting it."
+msgstr "나중에 백업을 사용하려면 삭제하기 전에 설정을 내보낼 수 있습니다."
+
+#: templates/import.html:29
+msgid "Import"
+msgstr "가져오기"
+
 #: templates/addoredit.html:100 templates/restoredirect.html:39
 msgid "Import Destination URL"
-msgstr "대상 URL 가져오기"
+msgstr "백업 저장소 URL 가져오기"
+
+#: scripts/controllers/EditBackupController.js:103
+#: scripts/controllers/RestoreDirectController.js:24
+msgid "Import URL"
+msgstr "URL 가져오기"
 
 #: templates/import.html:3
 msgid "Import backup configuration"
@@ -703,10 +1678,48 @@ msgstr "파일에서 가져오기"
 msgid "Import metadata"
 msgstr "메타데이터 가져오기"
 
+#: templates/import.html:33
+msgid "Importing …"
+msgstr "가져오는 중 …"
+
+#: scripts/controllers/EditBackupController.js:171
+msgid "Include a file?"
+msgstr "파일을 포함하시겠습니까?"
+
+#: scripts/services/AppUtils.js:183
+msgid "Include expression"
+msgstr "포함 식"
+
+#: scripts/services/AppUtils.js:167
+msgid "Include regular expression"
+msgstr "정규식 포함"
+
 #: templates/settings.html:151
 msgid ""
 "Individual builds for developers only. Not for use with important data."
-msgstr "개발자 전용 개별 빌드입니다. 중요한 데이터와 함께 사용하지 마십시오."
+msgstr "개발자 전용 개별 빌드입니다. 중요한 데이터와 함께 사용하지 않습니다."
+
+#: scripts/services/DialogService.js:27
+msgid "Information"
+msgstr "정보"
+
+#: templates/backup-result/top-right-box.html:3
+msgid "Interrupted, no statistics collected"
+msgstr "중단됨, 통계가 수집되지 않음"
+
+#: scripts/controllers/EditBackupController.js:296
+#: scripts/controllers/EditBackupController.js:303
+#: scripts/controllers/EditBackupController.js:313
+msgid "Invalid retention time"
+msgstr "잘못된 보존 기간"
+
+#: scripts/services/EditUriBuiltins.js:1079
+msgid ""
+"It is possible to connect to some FTP without a password.\n"
+"Are you sure your FTP server supports password-less logins?"
+msgstr ""
+"일부 FTP에는 비밀번호 없이 연결할 수 있습니다.\n"
+"FTP 서버가 비밀번호 없는 로그인을 지원하는 것이 확실합니까?"
 
 #: scripts/services/AppUtils.js:88
 msgid "KByte"
@@ -718,19 +1731,31 @@ msgstr "KByte/s"
 
 #: templates/addoredit.html:325
 msgid "Keep a specific number of backups"
-msgstr "특정 수의 백업 유지"
+msgstr "지정한 개수의 백업만 보존"
 
 #: templates/addoredit.html:323
 msgid "Keep all backups"
-msgstr "모든 백업 유지"
+msgstr "모든 백업 보존"
+
+#: templates/backends/openstack.html:18
+msgid "Keystone API version"
+msgstr "Keystone API 버전"
 
 #: templates/settings.html:98
 msgid "Language in user interface"
 msgstr "인터페이스 언어"
 
+#: templates/home.html:13
+msgid "Last Run"
+msgstr "마지막 실행"
+
+#: templates/home.html:23
+msgid "Last Run (descending)"
+msgstr "마지막 실행(내림차순)"
+
 #: scripts/controllers/RestoreController.js:38
 msgid "Last month"
-msgstr "지난 달"
+msgstr "지난달"
 
 #: templates/home.html:80
 msgid "Last successful backup:"
@@ -738,28 +1763,48 @@ msgstr "마지막으로 성공한 백업:"
 
 #: templates/restorewizard.html:27
 msgid "Last successful restore: {{time}} (took {{duration || '0 seconds'}})"
-msgstr "마지막으로 성공한 복원: {{time}} ({{duration || '0초'}} 소요)"
+msgstr "마지막으로 성공한 복원: {{time}} ({{duration || '0 seconds'}} 소요)"
 
 #: scripts/controllers/RestoreController.js:60
 msgid "Latest"
-msgstr "최근"
+msgstr "최신"
 
 #: templates/about.html:6
 msgid "Libraries"
 msgstr "라이브러리"
 
+#: scripts/controllers/RestoreDirectController.js:70
+msgid "Listing backup dates …"
+msgstr "백업 날짜 나열 중 …"
+
+#: scripts/services/ServerStatus.js:68
+msgid "Listing remote files for purge …"
+msgstr "완전 삭제할 원격 파일 나열 중 …"
+
+#: scripts/services/ServerStatus.js:66
+msgid "Listing remote files …"
+msgstr "원격 파일 나열 중 …"
+
+#: templates/log.html:7
+msgid "Live"
+msgstr "실시간"
+
 #: templates/addwizard.html:16
 msgid "Load a configuration from an exported job or a storage provider"
-msgstr "내보낸 작업 또는 저장소 공급자에서 구성 로드"
+msgstr "내보낸 작업 또는 저장소 제공업체에서 설정 로드"
 
 #: templates/restorewizard.html:16
 msgid "Load destination from an exported job or a storage provider"
-msgstr "내보낸 작업 또는 저장소 공급자에서 대상 로드"
+msgstr "내보낸 작업 또는 저장소 제공업체에서 백업 저장소 로드"
 
 #: templates/backuplog.html:23 templates/backuplog.html:41
 #: templates/log.html:24
 msgid "Load older data"
 msgstr "이전 데이터 로드"
+
+#: templates/delete.html:40
+msgid "Loading remote storage usage …"
+msgstr "원격 저장소 사용량 불러오는 중 …"
 
 #: templates/about.html:43 templates/about.html:49 templates/about.html:55
 #: templates/backuplog.html:12 templates/backuplog.html:22
@@ -767,7 +1812,16 @@ msgstr "이전 데이터 로드"
 #: templates/log.html:12 templates/log.html:23
 #: templates/updatechangelog.html:7
 msgid "Loading …"
-msgstr "로딩 …"
+msgstr "불러오는 중 …"
+
+#: templates/localdatabase.html:2
+msgid ""
+"Local database for <b ng-"
+"show=\"Backup.Backup.Name\">{{Backup.Backup.Name}}</b><b ng-"
+"hide=\"Backup.Backup.Name\">…loading…</b>"
+msgstr ""
+"<b ng-show=\"Backup.Backup.Name\">{{Backup.Backup.Name}}</b><b ng-"
+"hide=\"Backup.Backup.Name\">…loading…</b>의 로컬 데이터베이스"
 
 #: templates/localdatabase.html:23
 msgid "Local database path:"
@@ -785,9 +1839,25 @@ msgstr "로컬 저장소"
 msgid "Location"
 msgstr "위치"
 
+#: templates/backends/gcs.html:21
+msgid "Location where buckets are created"
+msgstr "버킷이 생성되는 위치"
+
+#: templates/backuplog.html:3
+msgid "Log data for <b>{{Backup.Backup.Name}}</b>"
+msgstr "<b>{{Backup.Backup.Name}}</b>의 로그 데이터"
+
 #: templates/log.html:3
 msgid "Log data from the server"
 msgstr "서버에서 가져온 로그 데이터"
+
+#: index.html:310
+msgid "Log in"
+msgstr "로그인"
+
+#: index.html:226
+msgid "Log out"
+msgstr "로그아웃"
 
 #: scripts/services/AppUtils.js:89
 msgid "MByte"
@@ -797,9 +1867,27 @@ msgstr "MByte"
 msgid "MByte/s"
 msgstr "MByte/s"
 
+#: templates/settings.html:51
+msgid "Machine is now registered, open this link to add it to your account:"
+msgstr "컴퓨터가 등록되었습니다. 계정에 추가하려면 이 링크를 엽니다:"
+
 #: templates/localdatabase.html:8
 msgid "Maintenance"
 msgstr "유지 관리"
+
+#: templates/backends/rclone.html:13
+msgid ""
+"Make sure that rclone is in your path, or add the location to rclone via the"
+" advanced options."
+msgstr "rclone이 PATH에 있는지 확인하거나 고급 옵션에서 rclone 위치를 추가합니다."
+
+#: index.html:259
+msgid "Manual"
+msgstr "수동"
+
+#: templates/notificationarea.html:37
+msgid "Manual update found:"
+msgstr "수동 업데이트 발견:"
 
 #: templates/backends/file.html:19 templates/restore.html:102
 msgid "Manually type path"
@@ -813,14 +1901,40 @@ msgstr "최대 다운로드 속도"
 msgid "Max upload speed"
 msgstr "최대 업로드 속도"
 
-#: scripts/directives/sourceFolderPicker.js:629
-msgid "Microsoft SQL Database:"
-msgstr "Microsoft SQL Database:"
+#: index.html:144 templates/addoredit.html:127 templates/addoredit.html:169
+#: templates/addoredit.html:384 templates/addoredit.html:95
+#: templates/edituri.html:35 templates/restoredirect.html:34
+msgid "Menu"
+msgstr "메뉴"
+
+#: scripts/directives/sourceFolderPicker.js:323
+msgid "Microsoft SQL Database: {{name}}"
+msgstr "Microsoft SQL Database: {{name}}"
+
+#: scripts/directives/sourceFolderPicker.js:323
+msgid "Microsoft SQL Server: {{name}}"
+msgstr "Microsoft SQL Server: {{name}}"
 
 #: scripts/services/AppUtils.js:105 scripts/services/AppUtils.js:95
 #: templates/settings.html:90
 msgid "Minutes"
 msgstr "분"
+
+#: scripts/controllers/EditBackupController.js:247
+msgid "Missing name"
+msgstr "이름 누락"
+
+#: scripts/controllers/EditBackupController.js:254
+msgid "Missing passphrase"
+msgstr "암호 문구 누락"
+
+#: scripts/controllers/EditBackupController.js:267
+msgid "Missing sources"
+msgstr "백업할 데이터 누락"
+
+#: templates/backup-result/top-right-box.html:22
+msgid "Modified"
+msgstr "수정됨"
 
 #: scripts/services/AppUtils.js:110
 msgid "Mon"
@@ -828,19 +1942,43 @@ msgstr "월요일"
 
 #: scripts/services/AppUtils.js:99 templates/addoredit.html:355
 msgid "Months"
-msgstr "분"
+msgstr "개월"
+
+#: scripts/services/EditUriBackendConfig.js:137
+msgid ""
+"Most servers require a username, so you will likely need to enter one.\n"
+"Are you sure want to continue without a username?"
+msgstr ""
+"대부분의 서버에는 사용자 이름이 필요하므로 입력해야 할 가능성이 높습니다.\n"
+"사용자 이름 없이 계속하시겠습니까?"
 
 #: templates/localdatabase.html:31
 msgid "Move existing database"
 msgstr "기존 데이터베이스 이동"
 
+#: scripts/controllers/LocalDatabaseController.js:66
+msgid "Move failed:"
+msgstr "이동 실패:"
+
 #: scripts/services/AppUtils.js:54
 msgid "My Documents"
 msgstr "문서"
 
+#: scripts/services/AppUtils.js:66
+msgid "My Downloads"
+msgstr "내 다운로드"
+
+#: scripts/services/AppUtils.js:64
+msgid "My Movies"
+msgstr "내 영화"
+
 #: scripts/services/AppUtils.js:56
 msgid "My Music"
 msgstr "음악"
+
+#: templates/addoredit.html:40
+msgid "My Photos"
+msgstr "내 사진"
 
 #: scripts/services/AppUtils.js:58
 msgid "My Pictures"
@@ -850,9 +1988,33 @@ msgstr "사진"
 msgid "Name"
 msgstr "이름"
 
+#: templates/home.html:25
+msgid "Name (descending)"
+msgstr "이름(내림차순)"
+
+#: templates/backends/smb.html:11
+msgid "Netbios over TCP"
+msgstr "Netbios over TCP"
+
 #: templates/home.html:87
 msgid "Never"
 msgstr "없음"
+
+#: templates/changepassword.html:5 templates/settings.html:11
+msgid "New Password"
+msgstr "새 비밀번호"
+
+#: templates/notificationarea.html:24
+msgid "New update found: <a href=\"{{state.updateDownloadLink}}\">{{message}}</a>"
+msgstr "새 업데이트 발견: <a href=\"{{state.updateDownloadLink}}\">{{message}}</a>"
+
+#: scripts/services/EditUriBuiltins.js:140
+msgid ""
+"New user name is {{user}}.\n"
+"Updated credentials to use the new limited user"
+msgstr ""
+"새 사용자 이름은 {{user}}입니다.\n"
+"새 제한 사용자 사용을 위해 인증 정보를 업데이트했습니다"
 
 #: templates/addoredit.html:113 templates/addoredit.html:246
 #: templates/addoredit.html:296 templates/addoredit.html:82
@@ -860,6 +2022,14 @@ msgstr "없음"
 #: templates/restorewizard.html:36
 msgid "Next"
 msgstr "다음"
+
+#: templates/home.html:14
+msgid "Next Scheduled Run"
+msgstr "다음 예약 실행"
+
+#: templates/home.html:24
+msgid "Next Scheduled Run (descending)"
+msgstr "다음 예약 실행(내림차순)"
 
 #: templates/home.html:91
 msgid "Next scheduled run:"
@@ -869,22 +2039,26 @@ msgstr "다음 백업 일정:"
 msgid "Next scheduled task:"
 msgstr "다음 예약 작업:"
 
+#: index.html:180
+msgid "Next task:"
+msgstr "다음 작업:"
+
 #: templates/addoredit.html:264
 msgid "Next time"
-msgstr "시작"
+msgstr "다음 시간"
 
-#: scripts/controllers/AppController.js:189
+#: scripts/controllers/AppController.js:193
 #: scripts/controllers/DeleteController.js:99
-#: scripts/controllers/EditBackupController.js:157
-#: scripts/controllers/EditBackupController.js:167
-#: scripts/controllers/EditBackupController.js:454
+#: scripts/controllers/EditBackupController.js:161
+#: scripts/controllers/EditBackupController.js:171
+#: scripts/controllers/EditBackupController.js:458
 #: scripts/controllers/HomeController.js:22
 #: scripts/controllers/LocalDatabaseController.js:28
 #: scripts/controllers/LocalDatabaseController.js:72
 #: scripts/controllers/LocalDatabaseController.js:88
-#: scripts/directives/backupEditUri.js:130
-#: scripts/directives/backupEditUri.js:172
-#: scripts/directives/backupEditUri.js:86
+#: scripts/directives/backupEditUri.js:132
+#: scripts/directives/backupEditUri.js:174
+#: scripts/directives/backupEditUri.js:88
 #: scripts/services/EditUriBackendConfig.js:74
 #: scripts/services/EditUriBuiltins.js:1215
 #: scripts/services/EditUriBuiltins.js:1231
@@ -892,7 +2066,21 @@ msgstr "시작"
 msgid "No"
 msgstr "아니오"
 
-#: scripts/controllers/EditBackupController.js:433 templates/addoredit.html:49
+#: scripts/directives/backupEditUri.js:170
+msgid ""
+"No certificate was specified previously, please verify with the server administrator that the key is correct: {{key}} \n"
+"\n"
+"Do you want to approve the reported host key?"
+msgstr ""
+"이전에 지정된 인증서가 없습니다. 서버 관리자에게 키가 올바른지 확인합니다: {{key}} \n"
+"\n"
+"보고된 호스트 키를 승인하시겠습니까?"
+
+#: templates/edituri.html:12
+msgid "No editor found for the &quot;{{backend}}&quot; storage type"
+msgstr "&quot;{{backend}}&quot; 저장소 유형에 대한 편집기를 찾을 수 없습니다"
+
+#: scripts/controllers/EditBackupController.js:437 templates/addoredit.html:49
 msgid "No encryption"
 msgstr "암호화 없음"
 
@@ -902,25 +2090,46 @@ msgstr "선택된 항목 없음"
 
 #: scripts/controllers/RestoreController.js:192
 msgid "No items to restore, please select one or more items"
-msgstr "복원할 항목이 없습니다. 하나 이상의 항목을 선택하십시오."
+msgstr "복원할 항목이 없습니다. 하나 이상의 항목을 선택해야 합니다."
+
+#: scripts/controllers/ExportController.js:67
+msgid "No passphrase entered"
+msgstr "암호 문구가 입력되지 않음"
 
 #: index.html:185
 msgid "No scheduled tasks"
-msgstr "스케줄링된 작업 없음"
+msgstr "예약된 작업 없음"
+
+#: scripts/controllers/EditBackupController.js:260
+msgid "Non-matching passphrase"
+msgstr "일치하지 않는 암호 문구"
 
 #: templates/settings.html:171
 msgid "None / disabled"
-msgstr "비활성화"
+msgstr "없음/비활성화"
+
+#: scripts/controllers/ExportController.js:13
+msgid "Not using encryption"
+msgstr "암호화 사용 안 함"
+
+#: templates/throttle.html:22
+msgid ""
+"Note that speeds are entered in bytes, and line speeds are typically "
+"reported in bits. Use a factor of 8 to convert, such that an 8 mbit/s line "
+"is equivalent to 1 MByte/s."
+msgstr ""
+"속도는 바이트 단위로 입력하며 회선 속도는 일반적으로 비트 단위로 표시됩니다. 변환에는 8의 계수를 사용합니다. 예를 들어 8 "
+"mbit/s 회선은 1 MByte/s와 같습니다."
 
 #: templates/addoredit.html:330
 msgid "Nothing will be deleted. The backup size will grow with each change."
 msgstr "아무 것도 삭제되지 않습니다. 백업 크기는 변경될 때마다 커집니다."
 
-#: scripts/controllers/AppController.js:200
-#: scripts/controllers/AppController.js:54
-#: scripts/controllers/AppController.js:70
-#: scripts/controllers/EditBackupController.js:107
-#: scripts/controllers/EditBackupController.js:99
+#: scripts/controllers/AppController.js:204
+#: scripts/controllers/AppController.js:58
+#: scripts/controllers/AppController.js:74
+#: scripts/controllers/EditBackupController.js:103
+#: scripts/controllers/EditBackupController.js:111
 #: scripts/controllers/RestoreDirectController.js:24
 #: scripts/controllers/RestoreDirectController.js:33
 #: scripts/services/DialogService.js:28 scripts/services/DialogService.js:50
@@ -930,20 +2139,106 @@ msgstr "아무 것도 삭제되지 않습니다. 백업 크기는 변경될 때�
 msgid "OK"
 msgstr "확인"
 
+#: templates/backends/aliyunoss.html:10 templates/backends/aliyunoss.html:8
+msgid "OSS Access Key ID"
+msgstr "OSS Access Key ID"
+
+#: templates/backends/aliyunoss.html:14 templates/backends/aliyunoss.html:16
+msgid "OSS Access Key Secret"
+msgstr "OSS Access Key Secret"
+
+#: templates/backends/aliyunoss.html:21
+msgid "OSS Bucket Region"
+msgstr "OSS Bucket Region"
+
+#: templates/backends/aliyunoss.html:25 templates/backends/aliyunoss.html:26
+msgid "OSS Bucket name"
+msgstr "OSS Bucket name"
+
+#: templates/backends/aliyunoss.html:2
+msgid "OSS Endpoint"
+msgstr "OSS Endpoint"
+
+#: templates/backends/aliyunoss.html:32
+msgid "OSS Path or subfolder in the bucket"
+msgstr "버킷의 OSS 경로 또는 하위 폴더"
+
+#: templates/backends/aliyunoss.html:20
+msgid "OSS Region"
+msgstr "OSS Region"
+
+#: templates/settings.html:136
+msgid "Official releases"
+msgstr "공식 릴리스"
+
 #: templates/addoredit.html:348
 msgid ""
 "Once there are more backups than the specified number, the oldest backups "
 "are deleted."
 msgstr "지정된 수보다 많은 백업이 있으면 가장 오래된 백업이 삭제됩니다."
 
+#: templates/backends/openstack.html:7
+msgid "OpenStack AuthURI"
+msgstr "OpenStack AuthURI"
+
+#: scripts/services/SystemInfo.js:50
+msgid "OpenStack Object Storage / Swift"
+msgstr "OpenStack Object Storage / Swift"
+
+#: templates/backup-result/top-right-box.html:14
+msgid "Opened"
+msgstr "열림"
+
+#: scripts/services/EditUriBuiltins.js:1179
+msgid "Openstack API key are not supported in v3 keystone API"
+msgstr "OpenStack API key는 v3 Keystone API에서 지원되지 않습니다"
+
+#: scripts/services/AppUtils.js:203
+msgid "Operating System"
+msgstr "운영 체제"
+
+#: templates/backup-result/entryline.html:2
+msgid "Operation"
+msgstr "작업"
+
 #: templates/home.html:50
 msgid "Operations:"
 msgstr "작업:"
 
-#: templates/addoredit.html:28 templates/edituri.html:51
+#: templates/backends/openstack.html:45
+msgid "Optional API key"
+msgstr "선택적 API 키"
+
+#: templates/backends/file.html:34
+msgid "Optional authentication password"
+msgstr "선택적 인증 비밀번호"
+
+#: templates/backends/file.html:30
+msgid "Optional authentication username"
+msgstr "선택적 인증 사용자 이름"
+
+#: templates/backends/openstack.html:50
+msgid "Optional region"
+msgstr "선택적 리전"
+
+#: templates/backends/openstack.html:40
+msgid "Optional tenant name"
+msgstr "선택적 tenant 이름"
+
+#: templates/addoredit.html:28 templates/edituri.html:52
 #: templates/settings.html:193 templates/settings.html:199
 msgid "Options"
 msgstr "옵션"
+
+#: templates/settings.html:191
+msgid ""
+"Options added here are applied to all backups, but can be overridden in each"
+" individual backup."
+msgstr "여기에 추가한 옵션은 모든 백업에 적용되지만 각 개별 백업에서 재정의할 수 있습니다."
+
+#: templates/home.html:7
+msgid "Order by"
+msgstr "정렬 기준"
 
 #: templates/restore.html:81
 msgid "Original location"
@@ -969,11 +2264,23 @@ msgstr "덮어쓰기"
 #: templates/addoredit.html:58 templates/export.html:25
 #: templates/restore.html:130 templates/restoredirect.html:60
 msgid "Passphrase"
-msgstr "암호"
+msgstr "암호 문구"
 
 #: templates/import.html:14
 msgid "Passphrase (if encrypted)"
-msgstr "암호 (암호화된 경우)"
+msgstr "암호 문구(암호화된 경우)"
+
+#: scripts/controllers/EditBackupController.js:401
+msgid "Passphrase changed"
+msgstr "암호 문구가 변경됨"
+
+#: scripts/controllers/EditBackupController.js:260
+msgid "Passphrases are not matching"
+msgstr "암호 문구가 일치하지 않습니다"
+
+#: scripts/controllers/EditBackupController.js:30
+msgid "Passphrases do not match"
+msgstr "암호 문구가 일치하지 않습니다"
 
 #: scripts/services/EditUriBuiltins.js:1295 templates/backends/file.html:33
 #: templates/backends/filejump.html:25 templates/backends/filen.html:11
@@ -982,7 +2289,20 @@ msgstr "암호 (암호화된 경우)"
 #: templates/backends/mega.html:12 templates/backends/openstack.html:34
 #: templates/backends/smb.html:42
 msgid "Password"
-msgstr "암호"
+msgstr "비밀번호"
+
+#: scripts/services/ServerStatus.js:56
+msgid "Patching files with local blocks …"
+msgstr "로컬 블록으로 파일 패치 중 …"
+
+#: scripts/services/EditUriBuiltins.js:1279
+#: scripts/services/EditUriBuiltins.js:1400
+msgid "Path"
+msgstr "경로"
+
+#: scripts/controllers/EditBackupController.js:161
+msgid "Path not found"
+msgstr "경로를 찾을 수 없음"
 
 #: templates/backends/filejump.html:2 templates/backends/filen.html:2
 #: templates/backends/generic.html:13 templates/backends/msgroup.html:7
@@ -990,6 +2310,11 @@ msgstr "암호"
 #: templates/backends/smb.html:28
 msgid "Path on server"
 msgstr "서버의 경로"
+
+#: templates/backends/b2.html:8 templates/backends/e2.html:17
+#: templates/backends/s3.html:62
+msgid "Path or subfolder in the bucket"
+msgstr "버킷의 경로 또는 하위 폴더"
 
 #: templates/settings.html:75
 msgid "Pause"
@@ -999,7 +2324,7 @@ msgstr "일시 중지"
 msgid "Pause after startup or hibernation"
 msgstr "부팅 또는 최대 절전 모드 후 일시 중지"
 
-#: scripts/controllers/AppController.js:52
+#: scripts/controllers/AppController.js:56
 msgid "Pause options"
 msgstr "일시 중지 옵션"
 
@@ -1011,9 +2336,17 @@ msgstr "권한"
 msgid "Pick location"
 msgstr "위치 선택"
 
+#: scripts/controllers/ImportController.js:17
+msgid "Please select a file to import"
+msgstr "가져올 파일을 선택해야 합니다"
+
 #: templates/restorewizard.html:10
 msgid "Point to your backup files and restore from there"
-msgstr "백업 파일을 선택하고 복원"
+msgstr "백업 파일을 지정하고 해당 위치에서 복원"
+
+#: templates/backends/generic.html:9
+msgid "Port"
+msgstr "포트"
 
 #: templates/settings.html:30
 msgid "Prevent tray icon automatic log-in"
@@ -1025,25 +2358,121 @@ msgstr "트레이 아이콘 자동 로그인 방지"
 msgid "Previous"
 msgstr "이전"
 
+#: scripts/services/ServerStatus.js:40
+msgid "Processing files to backup …"
+msgstr "백업할 파일 처리 중 …"
+
 #: templates/home.html:107
 msgid "Progress:"
 msgstr "진행률:"
+
+#: templates/backends/gcs.html:39
+msgid "ProjectID is optional if the bucket exist"
+msgstr "버킷이 있으면 ProjectID는 선택 사항입니다"
 
 #: scripts/services/SystemInfo.js:88
 msgid "Proprietary"
 msgstr "독점"
 
+#: scripts/services/AppUtils.js:68
+msgid "Public"
+msgstr "공개"
+
+#: templates/backup-result/phases/purge.html:3
+msgid "Purge Phase"
+msgstr "완전 삭제 단계"
+
+#: scripts/services/ServerStatus.js:71
+msgid "Purging files complete!"
+msgstr "파일 완전 삭제 완료!"
+
+#: scripts/services/ServerStatus.js:69
+msgid "Purging files …"
+msgstr "파일 완전 삭제 중 …"
+
+#: scripts/services/ServerStatus.js:50
+msgid "Rebuilding local database …"
+msgstr "로컬 데이터베이스 다시 작성 중 …"
+
 #: templates/localdatabase.html:17
 msgid "Recreate (delete and repair)"
-msgstr "재생성 (삭제 및 수리)"
+msgstr "재생성(삭제 후 복구)"
 
-#: scripts/services/ServerStatus.js:59
+#: templates/backup-result/phases/recreate-database.html:3
+msgid "Recreate Database Phase"
+msgstr "데이터베이스 재생성 단계"
+
+#: scripts/services/ServerStatus.js:60
 msgid "Recreating database …"
-msgstr "데이터베이스를 다시 만드는 중 …"
+msgstr "데이터베이스 재생성 중 …"
+
+#: templates/backends/cos.html:20
+msgid "Region"
+msgstr "리전"
+
+#: templates/settings.html:47
+msgid "Register for remote control"
+msgstr "원격 제어 등록"
+
+#: scripts/controllers/SystemSettingsController.js:213
+msgid "Registered, waiting for accept"
+msgstr "등록됨, 승인 대기 중"
+
+#: scripts/controllers/SystemSettingsController.js:209
+msgid "Registering machine..."
+msgstr "컴퓨터 등록 중..."
+
+#: scripts/controllers/RestoreDirectController.js:40
+msgid "Registering temporary backup …"
+msgstr "임시 백업 등록 중 …"
+
+#: templates/settings.html:42
+msgid "Registration URL"
+msgstr "등록 URL"
+
+#: scripts/controllers/SystemSettingsController.js:211
+msgid "Registration failed"
+msgstr "등록 실패"
+
+#: scripts/controllers/EditBackupController.js:146
+msgid "Relative paths not allowed"
+msgstr "상대 경로는 허용되지 않음"
+
+#: index.html:309
+msgid "Reload"
+msgstr "다시 로드"
 
 #: templates/backuplog.html:7
 msgid "Remote"
 msgstr "원격"
+
+#: scripts/services/EditUriBuiltins.js:1338
+msgid "Remote Path"
+msgstr "원격 경로"
+
+#: scripts/services/EditUriBuiltins.js:1337
+msgid "Remote Repository"
+msgstr "원격 저장소"
+
+#: templates/settings.html:34
+msgid "Remote access control"
+msgstr "원격 접근 제어"
+
+#: scripts/controllers/SystemSettingsController.js:215
+msgid "Remote control is configured but not enabled"
+msgstr "원격 제어가 구성되었지만 활성화되지 않았습니다"
+
+#: scripts/controllers/SystemSettingsController.js:207
+msgid "Remote control is connected"
+msgstr "원격 제어가 연결되었습니다"
+
+#: scripts/controllers/SystemSettingsController.js:205
+msgid "Remote control is enabled but not connected"
+msgstr "원격 제어가 활성화되었지만 연결되지 않았습니다"
+
+#: scripts/controllers/SystemSettingsController.js:219
+msgid "Remote control is not set up"
+msgstr "원격 제어가 설정되지 않았습니다"
 
 #: templates/backends/rclone.html:10
 msgid "Remote path"
@@ -1063,19 +2492,27 @@ msgstr "제거"
 
 #: templates/advancedoptionseditor.html:41
 msgid "Remove option"
-msgstr "설정 제거"
+msgstr "옵션 제거"
 
 #: templates/backup-result/phases/purge.html:23
 msgid "Removed files"
-msgstr "파일들 제거"
+msgstr "제거된 파일"
 
 #: templates/localdatabase.html:15 templates/notificationarea.html:14
 msgid "Repair"
-msgstr "수리"
+msgstr "복구"
+
+#: templates/backup-result/phases/repair.html:3
+msgid "Repair Phase"
+msgstr "복구 단계"
+
+#: scripts/services/ServerStatus.js:62
+msgid "Repairing database …"
+msgstr "데이터베이스 복구 중 …"
 
 #: templates/addoredit.html:62
 msgid "Repeat Passphrase"
-msgstr "암호 재입력"
+msgstr "암호 문구 다시 입력"
 
 #: templates/home.html:72
 msgid "Reporting:"
@@ -1089,13 +2526,17 @@ msgstr "초기화"
 msgid "Restore"
 msgstr "복원"
 
-#: scripts/services/ServerStatus.js:58
+#: scripts/services/ServerStatus.js:59
 msgid "Restore complete!"
-msgstr "저장이 완료되었습니다!"
+msgstr "복원 완료!"
 
 #: templates/restore.html:45
 msgid "Restore files"
 msgstr "파일 복원"
+
+#: templates/restore.html:46
+msgid "Restore files from:"
+msgstr "복원할 파일 위치:"
 
 #: templates/home.html:53
 msgid "Restore files …"
@@ -1103,11 +2544,15 @@ msgstr "파일 복원 …"
 
 #: templates/restore.html:48
 msgid "Restore from"
-msgstr "버전 선택"
+msgstr "복원 기준"
 
 #: templates/import.html:4
 msgid "Restore from backup configuration"
 msgstr "백업 구성에서 복원"
+
+#: templates/restorewizard.html:15
+msgid "Restore from configuration …"
+msgstr "설정에서 복원 …"
 
 #: templates/restore.html:24 templates/restore.html:39
 #: templates/restore.html:76 templates/restoredirect.html:24
@@ -1118,10 +2563,30 @@ msgstr "복원 옵션"
 msgid "Restore read/write permissions"
 msgstr "읽기/쓰기 권한 복원"
 
+#: templates/backup-result/restore-items.html:2
+msgid "Restored Files"
+msgstr "복원된 파일"
+
+#: templates/backup-result/restore-items.html:6
+msgid "Restored Folders"
+msgstr "복원된 폴더"
+
+#: templates/backup-result/restore-items.html:10
+msgid "Restored Symlinks"
+msgstr "복원된 심볼릭 링크"
+
 #: scripts/controllers/RestoreController.js:383
 #: scripts/controllers/RestoreController.js:405
 msgid "Restoring files …"
 msgstr "파일 복원 중 …"
+
+#: index.html:217
+msgid "Resume"
+msgstr "다시 시작"
+
+#: templates/backup-result/phases/purge.html:28
+msgid "Rewritten File Lists"
+msgstr "다시 작성된 파일 목록"
 
 #: templates/addoredit.html:269
 msgid "Run again every"
@@ -1129,7 +2594,31 @@ msgstr "실행 주기"
 
 #: templates/home.html:52 templates/home.html:87
 msgid "Run now"
-msgstr "백업 실행"
+msgstr "지금 실행"
+
+#: templates/commandline.html:44
+msgid "Running commandline entry"
+msgstr "명령줄 항목 실행 중"
+
+#: index.html:172
+msgid "Running task:"
+msgstr "실행 중인 작업:"
+
+#: scripts/controllers/StateController.js:25
+msgid "Running …"
+msgstr "실행 중 …"
+
+#: templates/commandline.html:54
+msgid "Running … <a href ng-click=\"Abort()\" ng-hide=\"RawFinished\">stop now</a>"
+msgstr "실행 중 … <a href ng-click=\"Abort()\" ng-hide=\"RawFinished\">지금 중지</a>"
+
+#: scripts/services/SystemInfo.js:51
+msgid "S3 Compatible"
+msgstr "S3 Compatible"
+
+#: scripts/services/SystemInfo.js:53
+msgid "SMB / CIFS"
+msgstr "SMB / CIFS"
 
 #: templates/settings.html:130
 msgid "Same as the base install version: {{channelname}}"
@@ -1139,13 +2628,17 @@ msgstr "기본 설치 버전과 동일: {{channelname}}"
 msgid "Sat"
 msgstr "토요일"
 
+#: templates/backends/storj.html:10
+msgid "Satellite"
+msgstr "Satellite"
+
 #: templates/addoredit.html:410 templates/localdatabase.html:29
 msgid "Save"
 msgstr "저장"
 
 #: templates/localdatabase.html:30
 msgid "Save and repair"
-msgstr "저장 및 수리"
+msgstr "저장 후 복구"
 
 #: templates/restore.html:118
 msgid "Save different versions with timestamp in file name"
@@ -1155,9 +2648,17 @@ msgstr "파일명에 타임스탬프 추가"
 msgid "Save immediately"
 msgstr "즉시 저장"
 
+#: scripts/services/ServerStatus.js:54
+msgid "Scanning existing files …"
+msgstr "기존 파일 검사 중 …"
+
+#: scripts/services/ServerStatus.js:55
+msgid "Scanning for local blocks …"
+msgstr "로컬 블록 검사 중 …"
+
 #: templates/addoredit.html:255 templates/addoredit.html:27
 msgid "Schedule"
-msgstr "일정"
+msgstr "예약"
 
 #: templates/restore.html:60
 msgid "Search"
@@ -1173,20 +2674,65 @@ msgstr "초"
 
 #: templates/log.html:30
 msgid "Select a log level and see messages as they happen:"
-msgstr "로그 레벨을 선택하고 발생하는 메시지를 확인하십시오:"
+msgstr "로그 레벨을 선택하고 발생하는 메시지를 확인합니다:"
 
 #: templates/restore.html:23 templates/restore.html:38
 #: templates/restoredirect.html:23
 msgid "Select files"
 msgstr "파일 선택"
 
+#: templates/backends/pcloud.html:2 templates/backends/s3.html:8
+#: templates/backends/smb.html:17
+msgid "Server"
+msgstr "서버"
+
+#: templates/backends/generic.html:7
+msgid "Server and port"
+msgstr "서버 및 포트"
+
+#: templates/backends/generic.html:8 templates/backends/smb.html:18
+msgid "Server hostname or IP"
+msgstr "서버 호스트 이름 또는 IP"
+
+#: templates/restoredirect.html:95 templates/waitarea.html:15
+msgid "Server is currently paused,"
+msgstr "서버가 현재 일시 중지되었습니다,"
+
+#: templates/commandline.html:45
+msgid ""
+"Server is currently paused, <a style=\"cursor: pointer\" ng-"
+"click=\"ServerStatus.resume()\">resume now</a>"
+msgstr ""
+"서버가 현재 일시 중지되었습니다. <a style=\"cursor: pointer\" ng-"
+"click=\"ServerStatus.resume()\">지금 다시 시작</a>"
+
+#: scripts/controllers/HomeController.js:22
+msgid "Server is currently paused, do you want to resume now?"
+msgstr "서버가 현재 일시 중지되었습니다. 지금 다시 시작하시겠습니까?"
+
+#: scripts/controllers/HomeController.js:22
+msgid "Server paused"
+msgstr "서버 일시 중지됨"
+
 #: templates/about.html:71
 msgid "Server state properties"
 msgstr "서버 상태 속성"
 
+#: templates/settings.html:121
+msgid "Set timezone to default"
+msgstr "시간대를 기본값으로 설정"
+
 #: index.html:220 templates/settings.html:2
 msgid "Settings"
 msgstr "설정"
+
+#: templates/backends/smb.html:23
+msgid "Share Name"
+msgstr "공유 이름"
+
+#: scripts/services/EditUriBuiltins.js:1042 templates/backends/smb.html:24
+msgid "Share name"
+msgstr "공유 이름"
 
 #: templates/addoredit.html:69 templates/notificationarea.html:12
 #: templates/notificationarea.html:31 templates/notificationarea.html:41
@@ -1197,6 +2743,15 @@ msgstr "표시"
 msgid "Show advanced editor"
 msgstr "고급 편집기 표시"
 
+#: templates/notificationarea.html:18 templates/notificationarea.html:19
+msgid "Show help"
+msgstr "도움말 표시"
+
+#: templates/addoredit.html:143 templates/backends/file.html:16
+#: templates/restore.html:99
+msgid "Show hidden items"
+msgstr "숨김 항목 표시"
+
 #: templates/about.html:8
 msgid "Show log"
 msgstr "로그 표시"
@@ -1205,67 +2760,163 @@ msgstr "로그 표시"
 msgid "Show log …"
 msgstr "로그 표시 …"
 
+#: templates/addoredit.html:135
+msgid "Show treeview"
+msgstr "트리 보기 표시"
+
 #: templates/addoredit.html:326
 msgid "Smart backup retention"
 msgstr "스마트 백업 보존"
 
+#: templates/backends/openstack.html:45
+msgid ""
+"Some OpenStack providers allow an API key instead of a password and tenant "
+"name"
+msgstr "일부 OpenStack 제공업체는 비밀번호와 tenant 이름 대신 API 키를 허용합니다"
+
+#: templates/backends/s3.html:82
+msgid ""
+"Some S3 providers might only be compatible with a certain client library"
+msgstr "일부 S3 제공업체는 특정 클라이언트 라이브러리와만 호환될 수 있습니다"
+
 #: templates/addoredit.html:26
 msgid "Source Data"
-msgstr "원본 데이터"
+msgstr "백업할 데이터"
 
-#: scripts/directives/sourceFolderPicker.js:545 templates/addoredit.html:124
+#: templates/backup-result/top-right-box.html:1
+msgid "Source Files"
+msgstr "백업할 파일"
+
+#: scripts/directives/sourceFolderPicker.js:588 templates/addoredit.html:124
 msgid "Source data"
-msgstr "원본 데이터"
+msgstr "백업할 데이터"
 
 #: templates/addoredit.html:149
 msgid "Source folders"
-msgstr "원본 폴더"
+msgstr "백업할 폴더"
+
+#: templates/home.html:17
+msgid "Source size"
+msgstr "백업할 데이터 크기"
+
+#: templates/home.html:27
+msgid "Source size (descending)"
+msgstr "백업할 데이터 크기(내림차순)"
 
 #: templates/home.html:96
 msgid "Source:"
-msgstr "대상:"
+msgstr "백업할 데이터:"
 
 #: templates/settings.html:146
 msgid "Specific builds for developers only. Not for use with important data."
-msgstr "개발자 전용 특정 빌드입니다. 중요한 데이터와 함께 사용하지 마십시오."
+msgstr "개발자 전용 특정 빌드입니다. 중요한 데이터와 함께 사용하지 않습니다."
+
+#: templates/settings.html:135
+msgid "Stable"
+msgstr "안정"
 
 #: scripts/services/SystemInfo.js:87
 msgid "Standard protocols"
 msgstr "표준 프로토콜"
 
+#: templates/backup-result/phases/compact.html:8
+#: templates/backup-result/phases/delete.html:8
+#: templates/backup-result/phases/purge.html:8
+#: templates/backup-result/phases/recreate-database.html:8
+#: templates/backup-result/phases/repair.html:8
+#: templates/backup-result/phases/test.html:8
+#: templates/backup-result/top-left-box.html:3
+msgid "Start"
+msgstr "시작"
+
 #: scripts/services/ServerStatus.js:36
 msgid "Starting backup …"
 msgstr "백업 시작 중 …"
 
-#: scripts/controllers/StateController.js:108
-#: scripts/controllers/StateController.js:117
+#: scripts/services/ServerStatus.js:49
+msgid "Starting restore …"
+msgstr "복원 시작 중 …"
+
+#: scripts/controllers/RestoreController.js:379
+#: scripts/controllers/RestoreController.js:403
+msgid "Starting the restore process …"
+msgstr "복원 프로세스 시작 중 …"
+
+#: templates/settings.html:36
+msgid "Status: {{getRemoteControlStatusText()}}"
+msgstr "상태: {{getRemoteControlStatusText()}}"
+
+#: scripts/controllers/StateController.js:119
+#: scripts/controllers/StateController.js:128
 msgid "Stop after the current file"
 msgstr "현재 파일까지 진행 후 중지"
 
-#: scripts/controllers/StateController.js:106
+#: scripts/controllers/StateController.js:117
 msgid "Stop running backup"
 msgstr "백업 실행 중지"
+
+#: scripts/controllers/StateController.js:126
+msgid "Stop running task"
+msgstr "실행 중인 작업 중지"
 
 #: index.html:168
 msgid "Stopping after the current file:"
 msgstr "현재 파일까지 진행 후 중지 중:"
 
+#: index.html:173
+msgid "Stopping task:"
+msgstr "작업 중지 중:"
+
 #: templates/edituri.html:3
 msgid "Storage Type"
 msgstr "저장소 유형"
+
+#: templates/backends/s3.html:45
+msgid "Storage class"
+msgstr "저장소 클래스"
+
+#: templates/backends/gcs.html:32
+msgid "Storage class for creating a bucket"
+msgstr "버킷 생성을 위한 저장소 클래스"
+
+#: templates/log.html:6
+msgid "Stored"
+msgstr "저장됨"
 
 #: scripts/controllers/EditBackupController.js:34
 msgid "Strong"
 msgstr "강한"
 
-#: scripts/directives/backupEditUri.js:50
-#: scripts/directives/backupEditUri.js:53
+#: scripts/directives/backupEditUri.js:52
+#: scripts/directives/backupEditUri.js:55
 msgid "Success"
 msgstr "성공"
 
 #: scripts/services/AppUtils.js:116
 msgid "Sun"
 msgstr "일요일"
+
+#: scripts/services/AppUtils.js:78
+msgid "Symbolic link"
+msgstr "심볼릭 링크"
+
+#: scripts/controllers/StateController.js:80
+msgid ""
+"Synchronizing remote destination: {{files}} files ({{size}}) to "
+"go{{speed_txt}}"
+msgstr "원격 백업 저장소 동기화 중: {{files}}개 파일({{size}}) 남음{{speed_txt}}"
+
+#: scripts/services/ServerStatus.js:48
+msgid "Synchronizing secondary destination …"
+msgstr "보조 백업 저장소 동기화 중 …"
+
+#: scripts/services/AppUtils.js:200
+msgid "System Files"
+msgstr "시스템 파일"
+
+#: templates/settings.html:166
+msgid "System default ({{levelname}})"
+msgstr "시스템 기본값({{levelname}})"
 
 #: scripts/controllers/EditBackupController.js:21
 msgid "System files"
@@ -1287,6 +2938,14 @@ msgstr "TByte"
 msgid "TByte/s"
 msgstr "TByte/s"
 
+#: templates/commandline.html:13
+msgid "Target URL &gt;"
+msgstr "Target URL &gt;"
+
+#: templates/waitarea.html:5
+msgid "Task is running"
+msgstr "작업이 실행 중입니다"
+
 #: scripts/services/AppUtils.js:209
 msgid "Temporary Files"
 msgstr "임시 파일"
@@ -1295,9 +2954,81 @@ msgstr "임시 파일"
 msgid "Temporary files"
 msgstr "임시 파일"
 
-#: templates/edituri.html:21
+#: templates/backends/openstack.html:39
+msgid "Tenant name"
+msgstr "tenant 이름"
+
+#: templates/backends/cos.html:4
+msgid "Tencent Cloud Account APPID"
+msgstr "Tencent Cloud Account APPID"
+
+#: templates/backends/cos.html:35
+msgid "Tencent Cloud COS documents and resources"
+msgstr "Tencent Cloud COS 문서 및 리소스"
+
+#: scripts/controllers/StateController.js:119
+#: scripts/controllers/StateController.js:128
+msgid "Terminate"
+msgstr "종료"
+
+#: templates/backup-result/phases/test.html:3
+msgid "Test Phase"
+msgstr "검사 단계"
+
+#: templates/edituri.html:22
 msgid "Test connection"
 msgstr "연결 테스트"
+
+#: scripts/directives/backupEditUri.js:45
+msgid "Testing connection …"
+msgstr "연결 검사 중 …"
+
+#: scripts/services/EditUriBuiltins.js:52
+msgid "Testing permissions …"
+msgstr "권한 검사 중 …"
+
+#: scripts/directives/backupEditUri.js:45 templates/edituri.html:23
+msgid "Testing …"
+msgstr "검사 중 …"
+
+#: scripts/services/EditUriBuiltins.js:1259
+#: scripts/services/EditUriBuiltins.js:1275
+#: scripts/services/EditUriBuiltins.js:1380
+#: scripts/services/EditUriBuiltins.js:1396
+msgid ""
+"The '{{fieldname}}' field contains an invalid character: {{character}} "
+"(value: {{value}}, index: {{pos}})"
+msgstr ""
+"'{{fieldname}}' 필드에 잘못된 문자가 있습니다: {{character}}(값: {{value}}, 인덱스: {{pos}})"
+
+#: scripts/directives/notificationArea.js:43
+msgid "The backup is missing, has it been deleted?"
+msgstr "백업이 없습니다. 삭제되었습니까?"
+
+#: scripts/directives/notificationArea.js:41
+msgid ""
+"The backup was temporary and does not exist anymore, so the log data is lost"
+msgstr "백업이 임시 백업이었고 더 이상 존재하지 않아 로그 데이터가 손실되었습니다"
+
+#: scripts/services/EditUriBuiltins.js:1231
+msgid "The bucket name should be all lower-case, convert automatically?"
+msgstr "버킷 이름은 모두 소문자여야 합니다. 자동으로 변환하시겠습니까?"
+
+#: templates/addoredit.html:313
+msgid ""
+"The chosen size is outside the recommended range. This may cause performance"
+" issues, excessively large temporary files or other problems."
+msgstr "선택한 크기가 권장 범위를 벗어났습니다. 성능 문제, 지나치게 큰 임시 파일 또는 기타 문제가 발생할 수 있습니다."
+
+#: scripts/controllers/ExportController.js:13
+msgid ""
+"The configuration should be kept safe. Are you sure you want to save an "
+"unencrypted file containing your passwords?"
+msgstr "설정 파일은 안전하게 보관해야 합니다. 비밀번호가 포함된 암호화되지 않은 파일을 저장하시겠습니까?"
+
+#: index.html:302
+msgid "The connection to the server is lost, attempting again in {{time}} …"
+msgstr "서버 연결이 끊어졌습니다. {{time}} 후 다시 시도합니다 …"
 
 #: templates/settings.html:112
 msgid "The dark theme (by Michal)"
@@ -1307,10 +3038,99 @@ msgstr "어두운 테마 (by Michal)"
 msgid "The default blue on white theme (by Alex)"
 msgstr "파란색의 밝은 테마 (by Alex)"
 
+#: scripts/services/EditUriBuiltins.js:1324
+msgid "The encryption passphrases do not match"
+msgstr "암호화 암호 문구가 일치하지 않습니다"
+
+#: scripts/directives/sourceFolderPicker.js:461
+msgid ""
+"The file size is {{size}}, larger than the maximum specified size. If the "
+"file size decreases, it will be included in future backups."
+msgstr "파일 크기가 {{size}}로 지정된 최대 크기보다 큽니다. 파일 크기가 줄어들면 이후 백업에 포함됩니다."
+
+#: scripts/directives/backupEditUri.js:132
+msgid ""
+"The folder {{folder}} does not exist.\n"
+"Create it now?"
+msgstr ""
+"{{folder}} 폴더가 없습니다.\n"
+"지금 만드시겠습니까?"
+
+#: scripts/directives/backupEditUri.js:172
+msgid ""
+"The host key has changed, please check with the server administrator if this is correct, otherwise you could be the victim of a MAN-IN-THE-MIDDLE attack.\n"
+"\n"
+"Do you want to REPLACE your CURRENT host key \"{{prev}}\" with the REPORTED host key: {{key}}?"
+msgstr ""
+"호스트 키가 변경되었습니다. 서버 관리자에게 이것이 올바른지 확인합니다. 그렇지 않으면 MAN-IN-THE-MIDDLE 공격의 피해자가 될 수 있습니다.\n"
+"\n"
+"현재 호스트 키 \"{{prev}}\"을(를) 보고된 호스트 키 {{key}}(으)로 바꾸시겠습니까?"
+
 #: scripts/controllers/ExportController.js:70
 #: scripts/controllers/SystemSettingsController.js:242
 msgid "The passwords do not match"
-msgstr "암호가 일치하지 않음"
+msgstr "비밀번호가 일치하지 않습니다"
+
+#: scripts/controllers/EditBackupController.js:161
+msgid "The path does not appear to exist, do you want to add it anyway?"
+msgstr "경로가 존재하지 않는 것 같습니다. 그래도 추가하시겠습니까?"
+
+#: scripts/controllers/EditBackupController.js:171
+msgid ""
+"The path does not end with a '{{dirsep}}' character, which means that you include a file, not a folder.\n"
+"\n"
+"Do you want to include the specified file?"
+msgstr ""
+"경로가 '{{dirsep}}' 문자로 끝나지 않습니다. 이는 폴더가 아니라 파일을 포함한다는 의미입니다.\n"
+"\n"
+"지정한 파일을 포함하시겠습니까?"
+
+#: scripts/controllers/EditBackupController.js:146
+msgid ""
+"The path must be an absolute path, i.e. it must start with a forward slash "
+"'/'"
+msgstr "경로는 절대 경로여야 합니다. 즉, 슬래시 '/'로 시작해야 합니다"
+
+#: templates/backends/s3.html:33
+msgid "The region parameter is only applied when creating a new bucket"
+msgstr "리전 매개변수는 새 버킷을 만들 때만 적용됩니다"
+
+#: templates/backends/openstack.html:50
+msgid "The region parameter is only used when creating a bucket"
+msgstr "리전 매개변수는 버킷을 만들 때만 사용됩니다"
+
+#: scripts/directives/backupEditUri.js:88
+msgid ""
+"The server certificate could not be validated.\n"
+"Do you want to approve the SSL certificate with the hash: {{hash}}?"
+msgstr ""
+"서버 인증서를 검증할 수 없습니다.\n"
+"해시가 {{hash}}인 SSL 인증서를 승인하시겠습니까?"
+
+#: templates/backends/s3.html:49
+msgid "The storage class affects the availability and price for a stored file"
+msgstr "저장소 클래스는 저장된 파일의 가용성과 가격에 영향을 줍니다"
+
+#: scripts/controllers/RestoreDirectController.js:108
+msgid ""
+"The target folder contains encrypted files, please supply the passphrase"
+msgstr "폴더에 암호화된 파일이 있습니다. 암호 문구를 입력해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:61
+msgid ""
+"The user has too many permissions. Do you want to create a new limited user,"
+" with only permissions to the selected path?"
+msgstr "사용자에게 권한이 너무 많습니다. 선택한 경로에 대한 권한만 가진 제한된 새 사용자를 만드시겠습니까?"
+
+#: scripts/controllers/RestoreController.js:308
+msgid ""
+"This backup was created on another operating system. Restoring files without"
+" specifying a destination folder can cause files to be restored in "
+"unexpected places. Are you sure you want to continue without choosing a "
+"destination folder?"
+msgstr ""
+"이 백업은 다른 운영 체제에서 생성되었습니다. 복원 폴더를 지정하지 않고 파일을 복원하면 예상치 못한 위치에 파일이 복원될 수 있습니다."
+" 복원 폴더를 선택하지 않고 계속하시겠습니까?"
 
 #: scripts/controllers/RestoreController.js:37
 msgid "This month"
@@ -1320,7 +3140,7 @@ msgstr "이번 달"
 msgid "This week"
 msgstr "이번 주"
 
-#: scripts/controllers/AppController.js:68
+#: scripts/controllers/AppController.js:72
 msgid "Throttle settings"
 msgstr "속도 제한 설정"
 
@@ -1328,21 +3148,134 @@ msgstr "속도 제한 설정"
 msgid "Thu"
 msgstr "목요일"
 
+#: templates/backup-result/phases/delete.html:33
+#: templates/backup-result/top-left-box.html:1
+msgid "Time"
+msgstr "시간"
+
+#: templates/settings.html:117
+msgid "Time zone"
+msgstr "시간대"
+
+#: templates/export.html:14
+msgid "To File"
+msgstr "파일로"
+
+#: templates/confirmdelete.html:3
+msgid ""
+"To confirm you want to delete all remote files for\n"
+"      <span class=\"backupname\">\"{{selection.backupname}}\"</span>, please enter\n"
+"      this phrase:"
+msgstr ""
+"다음 백업의 모든 원격 파일 삭제를 확인하려면\n"
+"      <span class=\"backupname\">\"{{selection.backupname}}\"</span>,\n"
+"      다음 문구를 입력합니다:"
+
+#: scripts/controllers/ExportController.js:67
+msgid "To export without a passphrase, uncheck the \"Encrypt file\" box"
+msgstr "암호 문구 없이 내보내려면 \"Encrypt file\" 상자를 선택 해제합니다"
+
+#: scripts/services/EditUriBuiltins.js:1215
+msgid ""
+"To prevent bucket naming conflicts, it is recommended to prepend your "
+"account ID to the bucket name. Prepend automatically?"
+msgstr "버킷 이름 충돌을 방지하기 위해 버킷 이름 앞에 계정 ID를 붙이는 것이 좋습니다. 자동으로 붙이시겠습니까?"
+
+#: templates/settings.html:26
+msgid ""
+"To prevent various DNS based attacks, Duplicati limits the allowed hostnames"
+" to the ones listed here. Direct IP access and localhost is always allowed. "
+"Multiple hostnames can be supplied with a semicolon separator. If any of the"
+" allowed hostnames is an asterisk (*), all hostnames are allowed and this "
+"feature is disabled. If the field is empty, only IP address and localhost "
+"access is allowed."
+msgstr ""
+"다양한 DNS 기반 공격을 방지하기 위해 Duplicati는 여기에 나열된 호스트 이름으로 허용 범위를 제한합니다. 직접 IP 접근 및 "
+"localhost는 항상 허용됩니다. 여러 호스트 이름은 세미콜론 구분자로 제공할 수 있습니다. 허용된 호스트 이름 중 하나가 "
+"별표(*)이면 모든 호스트 이름이 허용되고 이 기능은 비활성화됩니다. 필드가 비어 있으면 IP 주소 및 localhost 접근만 "
+"허용됩니다."
+
+#: scripts/controllers/RestoreController.js:34
+msgid "Today"
+msgstr "오늘"
+
+#: templates/backends/smb.html:3
+msgid "Transport"
+msgstr "전송"
+
+#: scripts/directives/backupEditUri.js:174
+msgid "Trust host certificate?"
+msgstr "호스트 인증서를 신뢰하시겠습니까?"
+
+#: scripts/directives/backupEditUri.js:88
+msgid "Trust server certificate?"
+msgstr "서버 인증서를 신뢰하시겠습니까?"
+
+#: templates/settings.html:141
+msgid ""
+"Try out the new features that we are working on. Test Backup &amp; Restore "
+"before using this in production environments."
+msgstr "작업 중인 새 기능을 사용해 봅니다. 프로덕션 환경에서 사용하기 전에 Backup &amp; Restore를 검사합니다."
+
 #: scripts/services/AppUtils.js:111
 msgid "Tue"
 msgstr "화요일"
+
+#: templates/restore.html:133
+msgid "Type passphrase here."
+msgstr "여기에 암호 문구 입력"
 
 #: templates/restore.html:57
 msgid "Type to highlight files"
 msgstr "파일을 강조 표시하려면 입력"
 
+#: templates/restorewizard.html:25
+msgid "Unknown backup size and versions"
+msgstr "알 수 없는 백업 크기 및 버전"
+
 #: templates/pause.html:46
 msgid "Until resumed"
 msgstr "다시 시작할 때까지"
 
+#: templates/about.html:30
+msgid ""
+"Update <a href ng-"
+"click=\"doShowUpdateChangelog()\">{{state.updatedVersion}}</a> is available."
+" <a href=\"{{state.updateDownloadLink}}\">Download now</a>"
+msgstr ""
+"업데이트 <a href ng-"
+"click=\"doShowUpdateChangelog()\">{{state.updatedVersion}}</a>을(를) 사용할 수 "
+"있습니다. <a href=\"{{state.updateDownloadLink}}\">지금 다운로드</a>"
+
 #: templates/settings.html:126
 msgid "Update channel"
 msgstr "업데이트 채널"
+
+#: scripts/controllers/LocalDatabaseController.js:66
+msgid "Update failed:"
+msgstr "업데이트 실패:"
+
+#: scripts/controllers/LocalDatabaseController.js:88
+msgid "Updating with existing database"
+msgstr "기존 데이터베이스로 업데이트 중"
+
+#: templates/backup-result/phases/compact.html:33
+msgid "Uploaded files"
+msgstr "업로드된 파일"
+
+#: scripts/services/ServerStatus.js:45
+msgid "Uploading verification file …"
+msgstr "검증 파일 업로드 중 …"
+
+#: templates/settings.html:173
+msgid ""
+"Usage reports help us improve the user experience and evaluate impact of new"
+" features. We use them to generate <external-link link=\"'https://usage-"
+"reporter.duplicati.com/'\">public usage statistics</external-link>."
+msgstr ""
+"사용 보고서는 사용자 경험을 개선하고 새 기능의 영향을 평가하는 데 도움이 됩니다. 이를 사용하여 <external-link "
+"link=\"'https://usage-reporter.duplicati.com/'\">공개 사용 통계</external-link>를 "
+"생성합니다."
 
 #: templates/settings.html:161
 msgid "Usage statistics"
@@ -1352,13 +3285,45 @@ msgstr "사용 통계"
 msgid "Usage statistics, warnings, errors, and crashes"
 msgstr "사용 통계, 경고, 오류 및 충돌"
 
+#: templates/backends/filejump.html:32
+msgid "Use API token authentication (recommended)"
+msgstr "API 토큰 인증 사용(권장)"
+
+#: templates/backends/generic.html:2 templates/backends/s3.html:2
+msgid "Use SSL"
+msgstr "SSL 사용"
+
+#: scripts/controllers/EditBackupController.js:458
+msgid "Use existing database?"
+msgstr "기존 데이터베이스를 사용하시겠습니까?"
+
+#: index.html:263
+msgid "Use new UI"
+msgstr "새 UI 사용"
+
+#: templates/backends/filejump.html:31
+msgid "Use username and password authentication"
+msgstr "사용자 이름 및 비밀번호 인증 사용"
+
+#: scripts/controllers/EditBackupController.js:352
+msgid "Use weak passphrase"
+msgstr "약한 암호 문구 사용"
+
 #: scripts/controllers/EditBackupController.js:31
 msgid "Useless"
 msgstr "쓸모없는"
 
-#: scripts/directives/sourceFolderPicker.js:532
+#: scripts/directives/sourceFolderPicker.js:575
 msgid "User data"
 msgstr "사용자 데이터"
+
+#: templates/backends/openstack.html:27
+msgid "User domain name"
+msgstr "사용자 도메인 이름"
+
+#: scripts/services/EditUriBuiltins.js:61
+msgid "User has too many permissions"
+msgstr "사용자에게 권한이 너무 많습니다"
 
 #: templates/settings.html:96
 msgid "User interface settings"
@@ -1375,21 +3340,54 @@ msgstr "인터페이스 설정"
 msgid "Username"
 msgstr "사용자 이름"
 
+#: templates/backends/filejump.html:14
+msgid ""
+"Username and password authentication is not recommended and does not work with MFA/2FA enabled accounts.\n"
+"        Use the API token if possible."
+msgstr ""
+"사용자 이름 및 비밀번호 인증은 권장되지 않으며 MFA/2FA가 활성화된 계정에서는 작동하지 않습니다.\n"
+"        가능하면 API 토큰을 사용합니다."
+
+#: scripts/services/ServerStatus.js:61
+msgid "Vacuuming database …"
+msgstr "데이터베이스 vacuum 중 …"
+
+#: templates/addoredit.html:155
+msgid "Validating …"
+msgstr "검증 중 …"
+
+#: templates/backup-result/phases/test.html:20
+#: templates/backup-result/test-items.html:2
+msgid "Verifications"
+msgstr "검증"
+
+#: templates/backends/storj.html:29
+msgid "Verify encryption passphrase"
+msgstr "암호화 암호 문구 검증"
+
 #: templates/home.html:67
 msgid "Verify files"
-msgstr "무결성 확인"
+msgstr "파일 검증"
 
 #: scripts/services/ServerStatus.js:37 scripts/services/ServerStatus.js:46
 msgid "Verifying backend data …"
-msgstr "백엔드 데이터 확인 중 …"
+msgstr "백엔드 데이터 검증 중 …"
 
-#: scripts/services/ServerStatus.js:62
+#: scripts/services/ServerStatus.js:63
 msgid "Verifying files …"
 msgstr "파일 검증 중 …"
 
-#: scripts/services/ServerStatus.js:38 scripts/services/ServerStatus.js:50
+#: scripts/services/ServerStatus.js:38 scripts/services/ServerStatus.js:51
 msgid "Verifying remote data …"
-msgstr "원격 데이터 확인 중 …"
+msgstr "원격 데이터 검증 중 …"
+
+#: scripts/services/ServerStatus.js:58
+msgid "Verifying restored files …"
+msgstr "복원된 파일 검증 중 …"
+
+#: templates/backup-result/phases/delete.html:33
+msgid "Version ID"
+msgstr "버전 ID"
 
 #: scripts/controllers/EditBackupController.js:35
 msgid "Very strong"
@@ -1401,7 +3399,25 @@ msgstr "매우 약한"
 
 #: index.html:245
 msgid "Visit us on"
-msgstr "Visit us on"
+msgstr "방문:"
+
+#: templates/delete.html:21
+msgid ""
+"WARNING: The remote database is found to be in use by the commandline "
+"library."
+msgstr "경고: 원격 데이터베이스가 명령줄 라이브러리에서 사용 중인 것으로 확인되었습니다."
+
+#: templates/delete.html:44
+msgid "WARNING: This will prevent you from restoring the data in the future."
+msgstr "경고: 이후 데이터를 복원할 수 없게 됩니다."
+
+#: templates/waitarea.html:2
+msgid "Waiting for task to begin"
+msgstr "작업 시작 대기 중"
+
+#: templates/commandline.html:51
+msgid "Waiting for task to start …"
+msgstr "작업 시작 대기 중 …"
 
 #: scripts/services/ServerStatus.js:42
 msgid "Waiting for upload to finish …"
@@ -1411,9 +3427,17 @@ msgstr "업로드가 완료되기를 기다리는 중 …"
 msgid "Warnings, errors and crashes"
 msgstr "경고, 오류 및 충돌"
 
+#: templates/addoredit.html:54
+msgid "We recommend that you encrypt all backups stored outside your system"
+msgstr "시스템 외부에 저장되는 모든 백업은 암호화를 권장합니다"
+
 #: scripts/controllers/EditBackupController.js:33
 msgid "Weak"
 msgstr "약한"
+
+#: scripts/controllers/EditBackupController.js:352
+msgid "Weak passphrase"
+msgstr "약한 암호 문구"
 
 #: scripts/services/AppUtils.js:112
 msgid "Wed"
@@ -1435,18 +3459,18 @@ msgstr "파일을 어디에 복원하시겠습니까?"
 msgid "Years"
 msgstr "년"
 
-#: scripts/controllers/AppController.js:189
+#: scripts/controllers/AppController.js:193
 #: scripts/controllers/DeleteController.js:99
-#: scripts/controllers/EditBackupController.js:157
-#: scripts/controllers/EditBackupController.js:167
-#: scripts/controllers/EditBackupController.js:454
+#: scripts/controllers/EditBackupController.js:161
+#: scripts/controllers/EditBackupController.js:171
+#: scripts/controllers/EditBackupController.js:458
 #: scripts/controllers/HomeController.js:22
 #: scripts/controllers/LocalDatabaseController.js:28
 #: scripts/controllers/LocalDatabaseController.js:72
 #: scripts/controllers/LocalDatabaseController.js:88
-#: scripts/directives/backupEditUri.js:130
-#: scripts/directives/backupEditUri.js:172
-#: scripts/directives/backupEditUri.js:86
+#: scripts/directives/backupEditUri.js:132
+#: scripts/directives/backupEditUri.js:174
+#: scripts/directives/backupEditUri.js:88
 #: scripts/services/EditUriBackendConfig.js:74
 #: scripts/services/EditUriBuiltins.js:1215
 #: scripts/services/EditUriBuiltins.js:1231
@@ -1454,50 +3478,176 @@ msgstr "년"
 msgid "Yes"
 msgstr "예"
 
-#: scripts/controllers/EditBackupController.js:363
+#: scripts/controllers/EditBackupController.js:367
 msgid "Yes, I have stored the passphrase safely"
-msgstr "예, 암호를 안전하게 저장했습니다"
+msgstr "예, 암호 문구를 안전하게 보관했습니다"
 
 #: scripts/controllers/ExportController.js:13
 msgid "Yes, I understand the risk"
-msgstr "네, 위험을 이해했습니다."
+msgstr "예, 위험을 이해했습니다"
 
-#: scripts/controllers/EditBackupController.js:406
+#: scripts/controllers/EditBackupController.js:410
 msgid "Yes, I'm brave!"
-msgstr "네,저는 용감합니다!"
+msgstr "예, 진행합니다"
+
+#: scripts/controllers/EditBackupController.js:401
+msgid "Yes, please break my backup!"
+msgstr "예, 백업이 손상될 수 있음을 이해합니다"
 
 #: scripts/controllers/RestoreController.js:35
 msgid "Yesterday"
 msgstr "어제"
 
+#: scripts/controllers/LocalDatabaseController.js:88
+msgid ""
+"You are changing the database path away from an existing database.\n"
+"Are you sure this is what you want?"
+msgstr ""
+"데이터베이스 경로를 기존 데이터베이스에서 다른 위치로 변경하고 있습니다.\n"
+"이렇게 하시겠습니까?"
+
 #: templates/about.html:28
 msgid "You are currently running {{appname}} {{version}}"
 msgstr "현재 사용 중: {{appname}} {{version}}"
 
-#: scripts/controllers/EditBackupController.js:243
+#: scripts/controllers/StateController.js:118
+msgid ""
+"You can stop the backup after any file uploads currently in progress have "
+"finished. If you terminate the backup, the next run will need to recover "
+"from a failed backup."
+msgstr ""
+"현재 진행 중인 파일 업로드가 완료된 후 백업을 중지할 수 있습니다. 백업을 종료하면 다음 실행 시 실패한 백업에서 복구해야 합니다."
+
+#: scripts/controllers/StateController.js:127
+msgid ""
+"You can stop the task immediately, or allow the process to continue its "
+"current file and then stop. If you terminate the task, the backup could be "
+"left in an inconsistent state."
+msgstr ""
+"작업을 즉시 중지하거나, 프로세스가 현재 파일을 계속 처리한 뒤 중지하도록 할 수 있습니다. 작업을 종료하면 백업이 일관되지 않은 상태로"
+" 남을 수 있습니다."
+
+#: scripts/controllers/EditBackupController.js:410
+msgid ""
+"You have changed the encryption mode. This may break stuff. You are "
+"encouraged to create a new backup instead"
+msgstr "암호화 모드를 변경했습니다. 이로 인해 문제가 발생할 수 있습니다. 대신 새 백업을 만드는 것이 좋습니다"
+
+#: scripts/controllers/EditBackupController.js:401
+msgid ""
+"You have changed the passphrase, which is not supported. You are encouraged "
+"to create a new backup instead."
+msgstr "지원되지 않는 암호 문구 변경을 수행했습니다. 대신 새 백업을 만드는 것이 좋습니다."
+
+#: scripts/controllers/EditBackupController.js:437
+msgid ""
+"You have chosen not to encrypt the backup. Encryption is recommended for all"
+" data stored on a remote server."
+msgstr "백업을 암호화하지 않도록 선택했습니다. 원격 서버에 저장되는 모든 데이터에는 암호화를 권장합니다."
+
+#: scripts/controllers/RestoreController.js:302
+msgid "You have chosen to restore to a new location, but not entered one"
+msgstr "새 위치로 복원하도록 선택했지만 위치를 입력하지 않았습니다"
+
+#: scripts/controllers/EditBackupController.js:367
+msgid ""
+"You have generated a strong passphrase. Make sure you have made a safe copy "
+"of the passphrase, as the data cannot be recovered if you lose the "
+"passphrase."
+msgstr "강력한 암호 문구를 생성했습니다. 암호 문구를 잃어버리면 데이터를 복구할 수 없으므로 안전한 사본을 보관해야 합니다."
+
+#: scripts/controllers/EditBackupController.js:267
+msgid "You must choose at least one source folder"
+msgstr "하나 이상의 백업할 폴더를 선택해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1173
+msgid "You must enter a domain name to use v3 API"
+msgstr "v3 API를 사용하려면 도메인 이름을 입력해야 합니다"
+
+#: scripts/controllers/EditBackupController.js:247
 msgid "You must enter a name for the backup"
 msgstr "백업 이름을 입력해야 합니다"
 
+#: scripts/controllers/EditBackupController.js:254
+msgid "You must enter a passphrase or disable encryption"
+msgstr "암호 문구를 입력하거나 암호화를 비활성화해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1170
+msgid "You must enter a password to use v3 API"
+msgstr "v3 API를 사용하려면 비밀번호를 입력해야 합니다"
+
+#: scripts/controllers/EditBackupController.js:303
+msgid "You must enter a positive number of backups to keep"
+msgstr "보존할 백업 수는 양수로 입력해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1176
+msgid "You must enter a tenant (aka project) name to use v3 API"
+msgstr "v3 API를 사용하려면 tenant(프로젝트라고도 함) 이름을 입력해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1190
+msgid "You must enter a tenant name if you do not provide an API key"
+msgstr "API 키를 제공하지 않는 경우 tenant 이름을 입력해야 합니다"
+
+#: scripts/controllers/EditBackupController.js:296
+msgid "You must enter a valid duration for the time to keep backups"
+msgstr "백업 보존 기간에 유효한 기간을 입력해야 합니다"
+
+#: scripts/controllers/EditBackupController.js:313
+msgid "You must enter a valid retention policy string"
+msgstr "유효한 보존 정책 문자열을 입력해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1187
+msgid "You must enter either a password or an API key"
+msgstr "비밀번호 또는 API 키 중 하나를 입력해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1194
+msgid "You must enter either a password or an API key, not both"
+msgstr "비밀번호 또는 API 키 중 하나만 입력해야 하며 둘 다 입력할 수 없습니다"
+
 #: scripts/services/EditUriBackendConfig.js:123
 msgid "You must fill in the password"
-msgstr "암호를 입력해야 합니다"
+msgstr "비밀번호를 입력해야 합니다"
 
 #: scripts/services/EditUriBackendConfig.js:100
 msgid "You must fill in the server name or address"
-msgstr "서버 이름 또는 주소를 채워야합니다."
+msgstr "서버 이름 또는 주소를 입력해야 합니다."
 
 #: scripts/services/EditUriBackendConfig.js:121
 #: scripts/services/EditUriBackendConfig.js:130
 msgid "You must fill in the username"
-msgstr "사용자 이름을 채워야합니다."
+msgstr "사용자 이름을 입력해야 합니다."
+
+#: scripts/services/EditUriBackendConfig.js:86
+msgid "You must fill in {{field}}"
+msgstr "{{field}}을(를) 입력해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1166
+msgid "You must select or fill in the AuthURI"
+msgstr "AuthURI를 선택하거나 입력해야 합니다"
+
+#: scripts/services/EditUriBuiltins.js:1208
+msgid "You must select or fill in the server"
+msgstr "서버를 선택하거나 입력해야 합니다"
 
 #: scripts/services/EditUriBackendConfig.js:107
 msgid "You must specify a path"
 msgstr "경로를 지정해야 합니다."
 
+#: scripts/services/EditUriBackendConfig.js:93
+msgid "You should fill in {{field}} {{reason}}"
+msgstr "{{field}} {{reason}} 입력을 권장합니다"
+
 #: templates/restore.html:144
 msgid "Your files and folders have been restored successfully."
 msgstr "파일 및 폴더가 성공적으로 복원되었습니다."
+
+#: scripts/controllers/EditBackupController.js:352
+msgid "Your passphrase is easy to guess. Consider changing passphrase."
+msgstr "암호 문구가 추측하기 쉽습니다. 암호 문구 변경을 고려합니다."
+
+#: templates/backends/gcs.html:3 templates/backends/openstack.html:3
+msgid "bucket/folder/subfolder"
+msgstr "bucket/folder/subfolder"
 
 #: scripts/services/AppUtils.js:87
 msgid "byte"
@@ -1507,19 +3657,108 @@ msgstr "byte"
 msgid "byte/s"
 msgstr "byte/s"
 
+#: scripts/services/EditUriBuiltins.js:1346
+msgid "cos_app_id"
+msgstr "cos_app_id"
+
+#: scripts/services/EditUriBuiltins.js:1350
+msgid "cos_bucket"
+msgstr "cos_bucket"
+
+#: scripts/services/EditUriBuiltins.js:1349
+msgid "cos_region"
+msgstr "cos_region"
+
+#: scripts/services/EditUriBuiltins.js:1347
+msgid "cos_secret_id"
+msgstr "cos_secret_id"
+
+#: scripts/services/EditUriBuiltins.js:1348
+msgid "cos_secret_key"
+msgstr "cos_secret_key"
+
 #: templates/addoredit.html:272 templates/addoredit.html:357
 #: templates/advancedoptionseditor.html:29
 #: templates/advancedoptionseditor.html:36
 msgid "custom"
 msgstr "사용자 지정"
 
+#: templates/backup-result/entryline.html:4
+msgid "failed"
+msgstr "실패함"
+
+#: templates/backends/rclone.html:3
+msgid "local repository, leave empty for local"
+msgstr "로컬 저장소, 로컬이면 비워 둡니다"
+
+#: scripts/services/EditUriBuiltins.js:1359
+msgid "oss_access_key_id"
+msgstr "oss_access_key_id"
+
+#: scripts/services/EditUriBuiltins.js:1360
+msgid "oss_access_key_secret"
+msgstr "oss_access_key_secret"
+
+#: scripts/services/EditUriBuiltins.js:1362
+msgid "oss_bucket_name"
+msgstr "oss_bucket_name"
+
+#: scripts/services/EditUriBuiltins.js:1358
+msgid "oss_endpoint"
+msgstr "oss_endpoint"
+
+#: scripts/services/EditUriBuiltins.js:1361
+msgid "oss_region"
+msgstr "oss_region"
+
+#: templates/backends/pcloud.html:10
+msgid "pCloud EU (eapi.pcloud.com)"
+msgstr "pCloud EU (eapi.pcloud.com)"
+
+#: templates/backends/pcloud.html:7
+msgid "pCloud Global (api.pcloud.com)"
+msgstr "pCloud Global (api.pcloud.com)"
+
+#: templates/backends/rclone.html:11
+msgid "remote path, e.g. backup"
+msgstr "원격 경로, 예: backup"
+
+#: templates/backends/rclone.html:7
+msgid "remote repository, e.g. remote"
+msgstr "원격 저장소, 예: remote"
+
 #: templates/restoredirect.html:95 templates/waitarea.html:15
 msgid "resume now"
 msgstr "지금 다시 시작"
 
+#: scripts/services/EditUriBuiltins.js:1309
+msgid "storj_shared_access"
+msgstr "storj_shared_access"
+
+#: scripts/services/EditUriBuiltins.js:1143
+msgid "unless you are explicitly specifying --group-id"
+msgstr "--group-id를 명시적으로 지정하지 않은 경우"
+
+#: templates/about.html:12
+msgid ""
+"{{appname}} was primarily developed by <a href=\"{{mail1}}\">{{dev1}}</a> "
+"and <a href=\"{{mail2}}\">{{dev2}}</a>. {{appname}} can be downloaded from "
+"<a href=\"{{websitelink}}\">{{websitename}}</a>. {{appname}} is licensed "
+"under the <a href=\"{{licenselink}}\">{{licensename}}</a>."
+msgstr ""
+"{{appname}}은(는) 주로 <a href=\"{{mail1}}\">{{dev1}}</a> 및 <a "
+"href=\"{{mail2}}\">{{dev2}}</a>가 개발했습니다. {{appname}}은(는) <a "
+"href=\"{{websitelink}}\">{{websitename}}</a>에서 다운로드할 수 있습니다. {{appname}}은(는)"
+" <a href=\"{{licenselink}}\">{{licensename}}</a> 라이선스를 따릅니다."
+
+#: templates/about.html:53
+msgid ""
+"{{brandingService.appName}} is using the following third party libraries:"
+msgstr "{{brandingService.appName}}에서 사용하는 타사 라이브러리는 다음과 같습니다:"
+
 #: scripts/controllers/StateController.js:53
 msgid "{{files}} files ({{size}}) to go {{speed_txt}}"
-msgstr "{{files}} 파일 ({{size}}), 속도: {{speed_txt}}"
+msgstr "{{files}}개 파일({{size}}) 남음 {{speed_txt}}"
 
 #: templates/home.html:101 templates/restorewizard.html:23
 msgid "{{item.Backup.Metadata.TargetSizeString}} / {{$count}} Version"

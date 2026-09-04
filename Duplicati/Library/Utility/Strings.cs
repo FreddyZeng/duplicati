@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -49,6 +49,7 @@ namespace Duplicati.Library.Utility.Strings
     {
         public static string UriParseError(string uri) { return LC.L(@"The Uri is invalid: {0}", uri); }
         public static string NoHostname(string uri) { return LC.L(@"The Uri is missing a hostname: {0}", uri); }
+        public static string FragmentNotAllowed(string uri) { return LC.L(@"The Uri has a fragment, so everything after the ""#"" is not part of the path. Write the ""#"" as %23 if it belongs to the path: {0}", uri); }
     }
     internal static class Utility
     {
@@ -86,6 +87,8 @@ namespace Duplicati.Library.Utility.Strings
         public static string DescriptionAcceptHashShort { get { return LC.L(@"Optionally accept a known SSL certificate"); } }
         public static string DescriptionUseSSLLong { get { return LC.L(@"Use this option to communicate using Secure Socket Layer (SSL) over http (https)."); } }
         public static string DescriptionUseSSLShort { get { return LC.L(@"Instruct Duplicati to use an SSL (https) connection"); } }
+        public static string DescriptionIgnoreRevocationFailureLong { get { return LC.L(@"Use this option to ignore certificate revocation check failures, such as when the revocation server is offline or the revocation status is unknown."); } }
+        public static string DescriptionIgnoreRevocationFailureShort { get { return LC.L(@"Ignore certificate revocation check failures"); } }
     }
 
     internal static class AuthSettingsHelper

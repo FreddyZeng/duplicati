@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Description>The Duplicati Tray implementation</Description>
     <AssemblyName>Duplicati.GUI.TrayIcon.Implementation</AssemblyName>
     <RootNamespace>Duplicati.GUI.TrayIcon</RootNamespace>
@@ -10,7 +10,7 @@
     <TrimMode>copyused</TrimMode>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Copyright>Copyright © 2025 Team Duplicati, MIT license</Copyright>
+    <Copyright>Copyright © 2026 Team Duplicati, MIT license</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,11 +21,23 @@
     <TrimmableAssembly Include="Avalonia.Themes.Default" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="11.3.3" />
-    <PackageReference Include="Avalonia.Desktop" Version="11.3.3" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.3" />
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
+    <!-- Avalonia.Desktop Depends on this, but references an old vulnerable version -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.94.1" />
+
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
     <!--Condition below is needed to remove Avalonia.Diagnostics package from build output in Release configuration.-->
-    <PackageReference Condition="'$(Configuration)' == 'Debug'" Include="Avalonia.Diagnostics" Version="11.3.3" />
+    <PackageReference Condition="'$(Configuration)' == 'Debug'" Include="Avalonia.Diagnostics" Version="11.3.13" />
+
+    <PackageReference Include="RumpSharp" Version="1.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\..\ReleaseBuilder\Resources\MacOS\AppBundle\app-resources\Duplicati.icns">
+      <Link>Duplicati.icns</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -96,8 +96,9 @@ namespace Duplicati.Library.Interface
         /// If the encountered problem is a missing target &quot;folder&quot;,
         /// this method should throw a <see cref="FolderMissingException"/>.
         /// </summary>
+        /// <param name="alsoWrite">If true, the test should also attempt to write a file to the backend.</param>
         /// <param name="cancellationToken">Token to cancel the operation.</param>
-        Task TestAsync(CancellationToken cancellationToken);
+        Task TestAsync(bool alsoWrite, CancellationToken cancellationToken);
 
         /// <summary>
         /// The purpose of this method is to create the underlying &quot;folder&quot;.

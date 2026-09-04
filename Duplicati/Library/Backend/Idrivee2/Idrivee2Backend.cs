@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,9 +26,14 @@ using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
 
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
+
 namespace Duplicati.Library.Backend
 {
-    public class Idrivee2Backend : IStreamingBackend, IFolderEnabledBackend
+    public class Idrivee2Backend : IStreamingBackend, IFolderEnabledBackend, ILockingBackend
+    //, IRenameEnabledBackend 
+    // Renaming "works" but gives errors when trying to download the renamed file:
+    // Expected hash not equal to calculated hash
     {
         // Non-standard naming managed with AuthOptionsHelper.ParseWithAlias
         private const string AUTH_USERNAME_OPTION = "access_key_id";
@@ -74,6 +79,8 @@ namespace Duplicati.Library.Backend
         /// </summary>
         private readonly Dictionary<string, string?> _options;
 
+        private const string S3_LOCK_MODE_OPTION = "s3-lock-mode";
+
         /// <inheritdoc />
         public Idrivee2Backend()
         {
@@ -85,7 +92,7 @@ namespace Duplicati.Library.Backend
         /// <inheritdoc />
         public Idrivee2Backend(string url, Dictionary<string, string?> options)
         {
-            var uri = new Utility.Uri(url);
+            var uri = new Utility.RelaxedUri(url);
             _bucket = uri.Host ?? "";
             _prefix = uri.Path;
             _prefix = _prefix.Trim();
@@ -93,13 +100,31 @@ namespace Duplicati.Library.Backend
                 _prefix = Util.AppendDirSeparator(_prefix, "/");
 
             _timeouts = TimeoutOptionsHelper.Parse(options);
-            _auth = AuthOptionsHelper.ParseWithAlias(options, uri, AUTH_USERNAME_OPTION, AUTH_PASSWORD_OPTION);
+            _auth = AuthOptionsHelper.ParseWithAlias(options, uri.Username, uri.Password, AUTH_USERNAME_OPTION, AUTH_PASSWORD_OPTION);
             if (!_auth.HasUsername)
                 throw new UserInformationException(Strings.Idrivee2Backend.NoKeyIdError, "Idrivee2NoKeyId");
             if (!_auth.HasPassword)
                 throw new UserInformationException(Strings.Idrivee2Backend.NoKeySecretError, "Idrivee2NoKeySecret");
 
             _options = options;
+        }
+
+        /// <summary>
+        /// Constructor for testing, using a supplied client instead of connecting.
+        /// </summary>
+        /// <param name="url">The backend url.</param>
+        /// <param name="options">The backend options.</param>
+        /// <param name="client">The client to use.</param>
+        /// <remarks>
+        /// The argument count differs from the public constructor on purpose: the backend
+        /// loader instantiates backends with Activator.CreateInstance(type, url, options)
+        /// and does not bind optional parameters, so an extra optional argument on the
+        /// public constructor would stop it from being found.
+        /// </remarks>
+        internal Idrivee2Backend(string url, Dictionary<string, string?> options, IS3Client client)
+            : this(url, options)
+        {
+            _s3Client = client;
         }
 
         /// <inheritdoc />
@@ -176,10 +201,24 @@ namespace Duplicati.Library.Backend
         }
 
         /// <inheritdoc />
+        public async Task<DateTime?> GetObjectLockUntilAsync(string remotename, CancellationToken cancellationToken)
+        {
+            var con = await GetConnection(cancellationToken).ConfigureAwait(false);
+            return await con.GetObjectLockUntilAsync(_bucket, GetFullKey(remotename), cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
         public async Task DeleteAsync(string remotename, CancellationToken cancellationToken)
         {
             var con = await GetConnection(cancellationToken).ConfigureAwait(false);
             await con.DeleteObjectAsync(_bucket, GetFullKey(remotename), cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task SetObjectLockUntilAsync(string remotename, DateTime lockUntilUtc, CancellationToken cancellationToken)
+        {
+            var con = await GetConnection(cancellationToken).ConfigureAwait(false);
+            await con.SetObjectLockUntilAsync(_bucket, GetFullKey(remotename), lockUntilUtc, cancellationToken).ConfigureAwait(false);
         }
 
         /// <inheritdoc />
@@ -188,6 +227,7 @@ namespace Duplicati.Library.Backend
             .. S3AwsClient.GetAwsExtendedOptions(),
             new CommandLineArgument(AUTH_USERNAME_OPTION, CommandLineArgument.ArgumentType.String, Strings.Idrivee2Backend.KeyIDDescriptionShort, Strings.Idrivee2Backend.KeyIDDescriptionLong,null, [AuthOptionsHelper.AuthUsernameOption], null),
             new CommandLineArgument(AUTH_PASSWORD_OPTION, CommandLineArgument.ArgumentType.Password, Strings.Idrivee2Backend.KeySecretDescriptionShort, Strings.Idrivee2Backend.KeySecretDescriptionLong, null, [AuthOptionsHelper.AuthPasswordOption ], null),
+            new CommandLineArgument(S3_LOCK_MODE_OPTION, CommandLineArgument.ArgumentType.Enumeration, Strings.Idrivee2Backend.DescriptionLockModeShort, Strings.Idrivee2Backend.DescriptionLockModeLong, "governance", null, new string[] { "governance", "compliance" }),
             .. TimeoutOptionsHelper.GetOptions(),
         ];
 
@@ -195,8 +235,8 @@ namespace Duplicati.Library.Backend
         public string Description => Strings.Idrivee2Backend.Description;
 
         /// <inheritdoc />
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         /// <inheritdoc/>
         public bool SupportsStreaming => true;
@@ -224,7 +264,8 @@ namespace Duplicati.Library.Backend
             var (accessKeyId, accessKeySecret) = _auth.GetCredentials();
 
             var host = await GetRegionEndpointAsync("https://api.idrivee2.com/api/service/get_region_end_point/" + accessKeyId, cancellationToken).ConfigureAwait(false);
-            _s3Client = new S3AwsClient(accessKeyId, accessKeySecret, null, host, null, true, false, false, _timeouts, _options);
+            var lockMode = _options.GetValueOrDefault(S3_LOCK_MODE_OPTION, "governance") ?? "governance";
+            _s3Client = new S3AwsClient(accessKeyId, accessKeySecret, null, host, null, true, false, false, _timeouts, _options, lockMode, null);
 
             return _s3Client;
         }
@@ -256,7 +297,20 @@ namespace Duplicati.Library.Backend
         }
 
         /// <inheritdoc/>
-        public Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult<IFileEntry?>(null);
+        public async Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken)
+        {
+            // An empty path is the root of the bucket, which needs no lookup
+            if (string.IsNullOrWhiteSpace(path))
+                return new FileEntry(string.Empty) { IsFolder = true };
+
+            var con = await GetConnection(cancellationToken).ConfigureAwait(false);
+            return await con.GetFileEntryAsync(_bucket, GetFullKey(path), cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            var con = await GetConnection(cancellationToken).ConfigureAwait(false);
+            await con.RenameFileAsync(_bucket, GetFullKey(oldname), GetFullKey(newname), cancellationToken).ConfigureAwait(false);
+        }
     }
 }

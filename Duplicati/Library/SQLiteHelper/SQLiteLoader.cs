@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2025, The Duplicati Team
+﻿// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -24,7 +24,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Common.IO;
 using Duplicati.Library.Interface;
@@ -41,6 +40,14 @@ namespace Duplicati.Library.SQLiteHelper
         /// The tag used for logging.
         /// </summary>
         private static readonly string LOGTAG = Logging.Log.LogTagFromType(typeof(SQLiteLoader));
+
+        /// <summary>
+        /// The default busy timeout (in milliseconds) applied to every connection opened by
+        /// <see cref="OpenSQLiteFileAsync"/> by issuing a <c>PRAGMA busy_timeout</c> statement
+        /// after opening. This is a defense-in-depth measure that ensures an active reader
+        /// does not cause failed commits.
+        /// </summary>
+        private const int DefaultBusyTimeoutMs = 10000;
 
         /// <summary>
         /// Helper method with logic to handle opening a database in possibly encrypted format.
@@ -278,13 +285,31 @@ namespace Duplicati.Library.SQLiteHelper
         /// <returns>A task that completes when the file is opened.</returns>
         private static async Task OpenSQLiteFileAsync(Microsoft.Data.Sqlite.SqliteConnection con, string path)
         {
+            // Capture whether the file already existed BEFORE opening (which creates it),
+            // so we can distinguish a database we create from a pre-existing one.
+            var fileExistedBefore = System.IO.File.Exists(path);
+
             con.ConnectionString = $"Data Source={path};Pooling=false";
             await con.OpenAsync().ConfigureAwait(false);
 
-            // Make the file only accessible by the current user, unless opting out
-            if (!SystemIO.IO_OS.FileExists(SystemIO.IO_OS.PathCombine(SystemIO.IO_OS.PathGetDirectoryName(path), Util.InsecurePermissionsMarkerFile)))
-                try { SystemIO.IO_OS.FileSetPermissionUserRWOnly(path); }
-                catch (Exception ex) { Logging.Log.WriteWarningMessage(LOGTAG, "SQLiteFilePermissionError", ex, "Failed to set permissions on SQLite file '{0}'", path); }
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = $"PRAGMA busy_timeout={DefaultBusyTimeoutMs}";
+                await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            // A database file we create is always locked down. For a pre-existing file we skip
+            // the lockdown when the operator has opted in to an insecure data folder, mirroring
+            // the data-folder behavior (a deliberately shared folder must not have its contents
+            // forced closed). On filesystems that do not support restrictive permissions
+            // (e.g. FAT32) this throws and is logged as a warning rather than failing. The
+            // containing data folder is separately verified and locked down (see
+            // DataFolderManager), so this is defense-in-depth on the file itself.
+            if (fileExistedBefore && Util.AllowInsecureDataFolder())
+                return;
+
+            try { SystemIO.IO_OS.FileSetPermissionUserRWOnly(path); }
+            catch (Exception ex) { Logging.Log.WriteWarningMessage(LOGTAG, "SQLiteFilePermissionError", ex, "Failed to set permissions on SQLite file '{0}'", path); }            
         }
 
         /// <summary>

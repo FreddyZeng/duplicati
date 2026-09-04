@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -27,7 +27,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Logging;
-using Duplicati.Library.Main.Database;
+using Duplicati.Library.Main.Database.Local;
 using Duplicati.Library.Main.Operation.Common;
 using Newtonsoft.Json;
 
@@ -37,6 +37,12 @@ namespace Duplicati.Library.Main
     {
         bool ReportedQuotaError { get; set; }
         bool ReportedQuotaWarning { get; set; }
+
+        /// <summary>
+        /// The operation the backend is working for, which decides whether running out of room
+        /// at the destination is something it can suffer from.
+        /// </summary>
+        OperationMode MainOperation { get; }
 
         /// <summary>
         /// The backend sends this event when performing an action
@@ -266,10 +272,10 @@ namespace Duplicati.Library.Main
         /// <param name="db">The database to flush the log messages to.</param>
         /// <param name="token">The cancellation token to use.</param>
         /// <returns>A task that completes when the log messages have been flushed.</returns>
-        public async Task FlushLog(LocalDatabase db, CancellationToken token)
+        public async Task FlushLogAsync(LocalDatabase db, CancellationToken token)
         {
             if (m_parent != null)
-                await m_parent.FlushLog(db, token).ConfigureAwait(false);
+                await m_parent.FlushLogAsync(db, token).ConfigureAwait(false);
             else
             {
                 await m_lock.WaitAsync(token).ConfigureAwait(false);
@@ -279,7 +285,7 @@ namespace Duplicati.Library.Main
                     {
                         var el = m_dbqueue.Dequeue();
                         await db
-                            .LogMessage(el.Type, el.Message, el.Exception, token)
+                            .LogMessageAsync(el.Type, el.Message, el.Exception, token)
                             .ConfigureAwait(false);
                     }
                 }
@@ -475,12 +481,15 @@ namespace Duplicati.Library.Main
         public IDeleteResults DeleteResults { get; internal set; }
         public IRepairResults RepairResults { get; internal set; }
         public ITestResults TestResults { get; internal set; }
+        public ISetLockResults LockResults { get; internal set; }
+        public IRemoteSynchronizationResults[] RemoteSynchronizationResults { get; internal set; } = [];
 
         public override ParsedResultType ParsedResult
         {
             get
             {
                 if ((CompactResults != null && CompactResults.ParsedResult == ParsedResultType.Fatal) ||
+                    (LockResults != null && LockResults.ParsedResult == ParsedResultType.Fatal) ||
                     (VacuumResults != null && VacuumResults.ParsedResult == ParsedResultType.Fatal) ||
                     (DeleteResults != null && DeleteResults.ParsedResult == ParsedResultType.Fatal) ||
                     (RepairResults != null && RepairResults.ParsedResult == ParsedResultType.Fatal) ||
@@ -490,6 +499,7 @@ namespace Duplicati.Library.Main
                     return ParsedResultType.Fatal;
                 }
                 else if ((CompactResults != null && CompactResults.ParsedResult == ParsedResultType.Error) ||
+                    (LockResults != null && LockResults.ParsedResult == ParsedResultType.Error) ||
                     (VacuumResults != null && VacuumResults.ParsedResult == ParsedResultType.Error) ||
                     (DeleteResults != null && DeleteResults.ParsedResult == ParsedResultType.Error) ||
                     (RepairResults != null && RepairResults.ParsedResult == ParsedResultType.Error) ||
@@ -499,6 +509,7 @@ namespace Duplicati.Library.Main
                     return ParsedResultType.Error;
                 }
                 else if ((CompactResults != null && CompactResults.ParsedResult == ParsedResultType.Warning) ||
+                         (LockResults != null && LockResults.ParsedResult == ParsedResultType.Warning) ||
                          (VacuumResults != null && VacuumResults.ParsedResult == ParsedResultType.Warning) ||
                          (DeleteResults != null && DeleteResults.ParsedResult == ParsedResultType.Warning) ||
                          (RepairResults != null && RepairResults.ParsedResult == ParsedResultType.Warning) ||
@@ -527,12 +538,35 @@ namespace Duplicati.Library.Main
         public Library.Utility.FileBackedStringList BrokenRemoteFiles { get; internal set; } = [];
         public long RestoredFiles { get; internal set; }
         public long SizeOfRestoredFiles { get; internal set; }
+        public long SizeOfRestoredData { get; internal set; }
         public long RestoredFolders { get; internal set; }
         public long RestoredSymlinks { get; internal set; }
         public long PatchedFiles { get; internal set; }
         public long DeletedFiles { get; internal set; }
         public long DeletedFolders { get; internal set; }
         public long DeletedSymlinks { get; internal set; }
+        public long UnmodifiedFiles { get; internal set; }
+        public long SizeOfUnmodifiedFiles { get; internal set; }
+        public string RestorePath { get; internal set; }
+
+        /// <summary>
+        /// Number of LRU evictions triggered by low disk space in the temp directory
+        /// (disk-pressure path, unlimited cache mode only).
+        /// </summary>
+        public long CachePressureEvictions { get; internal set; }
+        public bool ShouldSerializeCachePressureEvictions() => CachePressureEvictions > 0;
+
+        /// <summary>
+        /// Number of volumes re-downloaded after being evicted due to disk pressure.
+        /// </summary>
+        public long CachePressureRedownloads { get; internal set; }
+        public bool ShouldSerializeCachePressureRedownloads() => CachePressureRedownloads > 0;
+
+        /// <summary>
+        /// Total number of distinct dblock volumes accessed during the restore.
+        /// </summary>
+        public long TotalVolumesAccessed { get; internal set; }
+        public bool ShouldSerializeTotalVolumesAccessed() => TotalVolumesAccessed > 0;
 
         public override OperationMode MainOperation { get { return OperationMode.Restore; } }
 
@@ -583,17 +617,27 @@ namespace Duplicati.Library.Main
         public DateTime Time { get; private set; }
         public long FileCount { get; private set; }
         public long FileSizes { get; private set; }
-        public ListResultFileset(long version, int isFullBackup, DateTime time, long fileCount, long fileSizes)
+        public string Label { get; private set; }
+        public ListResultFileset(long version, int isFullBackup, DateTime time, long fileCount, long fileSizes, string label = null)
         {
             this.Version = version;
             this.IsFullBackup = isFullBackup;
             this.Time = time;
             this.FileCount = fileCount;
             this.FileSizes = fileSizes;
+            this.Label = label;
         }
     }
 
-    internal sealed record ListFilesetResultFileset(long Version, DateTime Time, bool? IsFullBackup, long? FileCount, long? FileSizes) : IListFilesetResultFileset;
+    internal sealed record ListFilesetResultFileset(long Version, DateTime Time, bool? IsFullBackup, long? FileCount, long? FileSizes, string Label = null) : IListFilesetResultFileset;
+
+    internal class SetVersionLabelResults : BasicResults, ISetVersionLabelResults
+    {
+        public override OperationMode MainOperation => OperationMode.SetVersionLabel;
+        public long BackupVersion { get; set; }
+        public DateTime Time { get; set; }
+        public string Label { get; set; }
+    }
 
 
     internal class ListFilesetResults : BasicResults, IListFilesetResults
@@ -619,7 +663,7 @@ namespace Duplicati.Library.Main
         public IPaginatedResults<IListFileVersion> FileVersions { get; set; }
     }
 
-    internal sealed record SearchFileVersion(long Version, DateTime Time, string Path, long Size, bool IsDirectory, bool IsSymlink, DateTime LastModified, Range MatchedPathRange) : ISearchFileVersion;
+    internal sealed record SearchFileVersion(long FileId, long Version, DateTime Time, string Path, long Size, bool IsDirectory, bool IsSymlink, DateTime LastModified, Range MatchedPathRange, Dictionary<string, string> Metadata) : ISearchFileVersion;
 
     internal class SearchFilesResults : BasicResults, ISearchFilesResults
     {
@@ -748,6 +792,28 @@ namespace Duplicati.Library.Main
         public void SetResult(IEnumerable<IFileEntry> files) { this.Files = files; }
     }
 
+    internal class SetLockResults : BasicResults, ISetLockResults
+    {
+        public override OperationMode MainOperation => OperationMode.SetLock;
+
+        public long VolumesRead { get; internal set; }
+        public long VolumesUpdated { get; internal set; }
+
+        public SetLockResults() : base() { }
+        public SetLockResults(BasicResults p) : base(p) { }
+    }
+
+    internal class ReadLockInfoResults : BasicResults, IReadLockInfoResults
+    {
+        public override OperationMode MainOperation => OperationMode.ReadLockInfo;
+
+        public long VolumesRead { get; internal set; }
+        public long VolumesUpdated { get; internal set; }
+
+        public ReadLockInfoResults() : base() { }
+        public ReadLockInfoResults(BasicResults p) : base(p) { }
+    }
+
     internal class RepairResults : BasicResults, IRepairResults
     {
         public override OperationMode MainOperation { get { return OperationMode.Repair; } }
@@ -799,6 +865,52 @@ namespace Duplicati.Library.Main
 
         public CompactResults() : base() { }
         public CompactResults(BasicResults p) : base(p) { }
+    }
+
+    /// <summary>
+    /// Results from a remote synchronization operation to a single destination.
+    /// </summary>
+    internal class RemoteSynchronizationResults : BasicResults, IRemoteSynchronizationResults
+    {
+        /// <summary>
+        /// The destination URL or identifier.
+        /// </summary>
+        public string Destination { get; internal set; } = "";
+
+        /// <summary>
+        /// Number of files deleted from the destination.
+        /// </summary>
+        public long DeletedFileCount { get; internal set; }
+
+        /// <summary>
+        /// Number of files renamed at the destination (retention mode).
+        /// </summary>
+        public long RenamedFileCount { get; internal set; }
+
+        /// <summary>
+        /// Number of files copied to the destination.
+        /// </summary>
+        public long CopiedFileCount { get; internal set; }
+
+        /// <summary>
+        /// Number of files verified at the destination.
+        /// </summary>
+        public long VerifiedFileCount { get; internal set; }
+
+        /// <summary>
+        /// Number of files that failed verification.
+        /// </summary>
+        public long FailedVerificationCount { get; internal set; }
+
+        /// <summary>
+        /// Total size of files copied in bytes.
+        /// </summary>
+        public long CopiedFileSize { get; internal set; }
+
+        public override OperationMode MainOperation { get { return OperationMode.RemoteSynchronization; } }
+
+        public RemoteSynchronizationResults() : base() { }
+        public RemoteSynchronizationResults(BasicResults p) : base(p) { }
     }
 
     internal class ListChangesResults : BasicResults, IListChangesResults
@@ -955,5 +1067,31 @@ namespace Duplicati.Library.Main
 
         public override OperationMode MainOperation { get { return OperationMode.Vacuum; } }
     }
-}
 
+    internal class SyncResults : BasicResults, ISyncResults
+    {
+        public SyncResults() : base() { }
+        public SyncResults(BasicResults p) : base(p) { }
+
+        public override OperationMode MainOperation { get { return OperationMode.Sync; } }
+
+        /// <inheritdoc/>
+        public long FoldersCreated { get; internal set; }
+        /// <inheritdoc/>
+        public long FoldersDeleted { get; internal set; }
+        /// <inheritdoc/>
+        public long FilesUploaded { get; internal set; }
+        /// <inheritdoc/>
+        public long UnchangedFiles { get; internal set; }
+        /// <inheritdoc/>
+        public long FilesDeleted { get; internal set; }
+        /// <inheritdoc/>
+        public long SourceFiles { get; internal set; }
+        /// <inheritdoc/>
+        public long SizeOfSourceFiles { get; internal set; }
+        /// <inheritdoc/>
+        public long SizeOfUploadedFiles { get; internal set; }
+        /// <inheritdoc/>
+        public long SizeOfDeletedFiles { get; internal set; }
+    }
+}

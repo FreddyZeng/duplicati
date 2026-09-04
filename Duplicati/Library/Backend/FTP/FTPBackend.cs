@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2025, The Duplicati Team
+﻿// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,7 +20,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.Net;
-using System.Net.Security;
 using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using Duplicati.Library.Common.IO;
@@ -32,7 +31,8 @@ using FluentFTP;
 using FluentFTP.Client.BaseClient;
 using FluentFTP.Exceptions;
 using CoreUtility = Duplicati.Library.Utility.Utility;
-using Uri = System.Uri;
+
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
 
 namespace Duplicati.Library.Backend
 {
@@ -47,7 +47,7 @@ namespace Duplicati.Library.Backend
     /// but overides the default configuration values to match the old names(prefixed with a) and the backedn
     /// name being "aftp" rather than ftp.
     /// </summary>
-    public class FTP : IStreamingBackend
+    public class FTP : IStreamingBackend, IRenameEnabledBackend
     {
         private static readonly string LogTag = Log.LogTagFromType(typeof(FTP));
         /// <summary>
@@ -195,6 +195,11 @@ namespace Duplicati.Library.Backend
         /// </summary>
         private readonly SslOptionsHelper.SslCertificateOptions _sslOptions;
         /// <summary>
+        /// The cached SSL certificate validator built from <see cref="_sslOptions"/>.
+        /// Reused across certificate validation events to avoid per-handshake allocation.
+        /// </summary>
+        private readonly SslCertificateValidator _sslValidator;
+        /// <summary>
         /// The timeout options to use
         /// </summary>
         private readonly TimeoutOptionsHelper.Timeouts _timeouts;
@@ -247,6 +252,7 @@ namespace Duplicati.Library.Backend
         {
             // TODO: Remove this constructor once static properties are introduced on IBackend
             _sslOptions = null!;
+            _sslValidator = null!;
             _timeouts = null!;
             _ftpConfig = null!;
             _url = null!;
@@ -258,14 +264,60 @@ namespace Duplicati.Library.Backend
         /// </summary>
         /// <param name="url">Configured url.</param>
         /// <param name="options">Configured options. cannot be null.</param>
+        /// <summary>
+        /// The parts of an ftp url that the backend connects with.
+        /// </summary>
+        /// <param name="Url">The sanitized url: the ftp scheme, no credentials, no query, and a path that ends with a separator.</param>
+        /// <param name="Username">The user from the url, or null when it has none.</param>
+        /// <param name="Password">The password from the url, or null when it has none.</param>
+        internal readonly record struct FtpUrl(Uri Url, string? Username, string? Password);
+
+        /// <summary>
+        /// Splits an ftp url into the parts the backend needs. The scheme of the sanitized
+        /// url is always ftp, so the ftps and aftp spellings end up the same way.
+        /// </summary>
+        /// <param name="url">The url to split.</param>
+        /// <returns>The parts the backend needs.</returns>
+        internal static FtpUrl ParseFtpUrl(string url)
+        {
+            // The previous parser started the query at the first '?' and the backend dropped
+            // it. System.Uri has no query for the ftp scheme and keeps the '?' in the path
+            // instead, which would point the backup at a folder named after the options, so
+            // the query comes off the string before it is parsed. For aftp and ftps, which
+            // System.Uri does not know, this only removes what would have been the query.
+            var queryStart = url.IndexOf('?');
+            var u = new Uri(queryStart < 0 ? url : url.Substring(0, queryStart));
+            u.RequireHost(url);
+            u.RequireNoFragment(url);
+
+            // The user info is not decoded, so it is decoded here.
+            var userinfo = u.UserInfo.Split(new[] { ':' }, 2);
+            var username = userinfo.Length > 0 && userinfo[0].Length > 0 ? Uri.UnescapeDataString(userinfo[0]) : null;
+            var password = userinfo.Length > 1 ? Uri.UnescapeDataString(userinfo[1]) : null;
+
+            // The port is carried over as it is. It is -1 for aftp and ftps, which have no
+            // registered default, and becomes 21 on the way out because the sanitized url is
+            // always ftp. The separator goes on the path rather than on the assembled url,
+            // which is where it ended up before.
+            var builder = new UriBuilder
+            {
+                Scheme = "ftp",
+                Host = u.Host,
+                Port = u.Port,
+                Path = Util.AppendDirSeparator(u.AbsolutePath, "/")
+            };
+
+            return new FtpUrl(builder.Uri, username, password);
+        }
+
         public FTP(string url, Dictionary<string, string?> options)
         {
             _sslOptions = SslOptionsHelper.Parse(options);
+            _sslValidator = new SslCertificateValidator(_sslOptions.AcceptAllCertificates, _sslOptions.AcceptSpecificCertificateHashes, _sslOptions.IgnoreRevocationFailure);
 
-            var u = new Utility.Uri(url);
-            u.RequireHost();
+            var u = ParseFtpUrl(url);
 
-            var auth = AuthOptionsHelper.Parse(options, u);
+            var auth = AuthOptionsHelper.Parse(options, u.Username, u.Password);
             if (auth.HasUsername)
             {
                 _userInfo = new NetworkCredential()
@@ -278,9 +330,7 @@ namespace Duplicati.Library.Backend
                     _userInfo.Password = auth.Password;
             }
 
-            var parsedurl = u.SetScheme("ftp").SetQuery(null).SetCredentials(null, null).ToString();
-            parsedurl = Util.AppendDirSeparator(parsedurl, "/");
-            _url = new Uri(parsedurl);
+            _url = u.Url;
 
             _listVerify = !CoreUtility.ParseBoolOption(options, CONFIG_KEY_DISABLE_UPLOAD_VERIFY);
             _relativePaths = ProtocolKey == "ftp"
@@ -515,7 +565,7 @@ namespace Duplicati.Library.Backend
         public bool SupportsStreaming => true;
 
         /// <inheritdoc />
-        public async Task TestAsync(CancellationToken cancellationToken)
+        public async Task TestAsync(bool alsoWrite, CancellationToken cancellationToken)
         {
             // Start with a simple list and pureFTP detection
             try
@@ -556,7 +606,8 @@ namespace Duplicati.Library.Backend
             }
 
             // Test the read/write permissions in folder
-            await this.TestReadWritePermissionsAsync(cancellationToken).ConfigureAwait(false);
+            if (alsoWrite)
+                await this.TestReadWritePermissionsAsync(cancellationToken).ConfigureAwait(false);
         }
 
         /// <inheritdoc />
@@ -655,25 +706,22 @@ namespace Duplicati.Library.Backend
         /// <param name="e">The event arguments.</param>
         private void HandleValidateCertificate(BaseFtpClient control, FtpSslValidationEventArgs e)
         {
-            if (e.PolicyErrors == SslPolicyErrors.None || _sslOptions.AcceptAllCertificates)
-            {
-                e.Accept = true;
-                return;
-            }
-
-            e.Accept = false;
+            // Delegate to the cached shared validator which handles accept-all, specific hashes
+            // and the ignore-revocation-failure option consistently across backends.
             try
             {
-                var certHash = (_sslOptions.AcceptSpecificCertificateHashes != null && _sslOptions.AcceptSpecificCertificateHashes.Length > 0) ? e.Certificate?.GetCertHashString() : null;
-                if (certHash != null && _sslOptions.AcceptSpecificCertificateHashes != null && _sslOptions.AcceptSpecificCertificateHashes.Any(hash => !string.IsNullOrEmpty(hash) && certHash.Equals(hash, StringComparison.OrdinalIgnoreCase)))
-                    e.Accept = true;
+                e.Accept = _sslValidator.ValidateServerCertificate(control, e.Certificate, e.Chain, e.PolicyErrors);
+            }
+            catch (SslCertificateValidator.InvalidCertificateException)
+            {
+                e.Accept = false;
+                throw;
             }
             catch
             {
+                e.Accept = false;
+                throw;
             }
-
-            if (e.Accept == false && e.Certificate != null)
-                throw new SslCertificateValidator.InvalidCertificateException(e.Certificate?.GetCertHashString() ?? "<unknown>", e.PolicyErrors);
         }
 
         /// <summary>
@@ -731,6 +779,25 @@ namespace Duplicati.Library.Backend
 
             if (ex is SslCertificateValidator.InvalidCertificateException)
                 throw ex;
+        }
+
+        public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var client = await CreateClient(cancellationToken).ConfigureAwait(false);
+                await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken, async ct =>
+                {
+                    var oldPath = PreparePathForClient(oldname, false, client);
+                    var newPath = PreparePathForClient(newname, false, client);
+                    await client.Rename(oldPath, newPath, ct).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                TranslateException(oldname, e);
+                throw;
+            }
         }
 
         private sealed class DiagnosticsLogger : IFtpLogger

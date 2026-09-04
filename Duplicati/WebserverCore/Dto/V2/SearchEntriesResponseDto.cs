@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -54,6 +54,10 @@ public sealed record SearchEntriesItemDto
     /// The last modified time of the entry
     /// </summary>
     public required DateTime LastModified { get; init; }
+    /// <summary>
+    /// The metadata of the entry, if any
+    /// </summary>
+    public required Dictionary<string, string?> Metadata { get; init; }
 }
 
 /// <summary>

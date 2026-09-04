@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -25,16 +25,17 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using Duplicati.Library.Backend.pCloud;
 using Duplicati.Library.Utility;
-using Uri = System.Uri;
 using System.Runtime.CompilerServices;
 using Duplicati.Library.Utility.Options;
+
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
 
 namespace Duplicati.Library.Backend;
 
 /// <summary>
 /// Native pCloud Backend API implementation
 /// </summary>
-public class pCloudBackend : IStreamingBackend
+public class pCloudBackend : IStreamingBackend, IRenameEnabledBackend
 {
     /// <summary>
     /// The URL used to get a new token
@@ -86,7 +87,7 @@ public class pCloudBackend : IStreamingBackend
     /// <summary>
     /// HttpClient to be used for requests
     /// </summary>
-    private readonly HttpClient _HttpClient;
+    private HttpClient _HttpClient;
 
     /// <summary>
     /// Variable being used to cache the folder ID, as it is required to upload files
@@ -127,11 +128,35 @@ public class pCloudBackend : IStreamingBackend
     /// </summary>
     /// <param name="url">URL in Duplicati Uri format</param>
     /// <param name="options">options to be used in the backend</param>
+    /// <summary>
+    /// The parts of a pcloud url that the backend configures itself from.
+    /// </summary>
+    /// <param name="Host">The pCloud api endpoint to talk to.</param>
+    /// <param name="Path">The remote folder, decoded, without leading or trailing separators or whitespace.</param>
+    internal readonly record struct PCloudUrl(string Host, string Path);
+
+    /// <summary>
+    /// Splits a pcloud url into the parts the backend needs.
+    /// </summary>
+    /// <param name="url">The url to split.</param>
+    /// <returns>The parts the backend needs.</returns>
+    internal static PCloudUrl ParsePCloudUrl(string url)
+    {
+        var uri = new Uri(url);
+        uri.RequireHost(url);
+        uri.RequireNoFragment(url);
+
+        // The path arrives escaped, where the previous parser handed it over decoded.
+        var path = Uri.UnescapeDataString(uri.AbsolutePath);
+
+        // Ensure that the path is in the correct format, without starting or tailing slashes
+        return new PCloudUrl(uri.Host, path.TrimStart(PATH_SEPARATORS).TrimEnd(PATH_SEPARATORS).Trim());
+    }
+
     public pCloudBackend(string url, Dictionary<string, string?> options)
     {
-        var uri = new Utility.Uri(url);
-        uri.RequireHost();
-        _DnsName = uri.Host ?? "";
+        var uri = ParsePCloudUrl(url);
+        _DnsName = uri.Host;
 
         _Token = AuthIdOptionsHelper.Parse(options)
             .RequireCredentials(TOKEN_URL)
@@ -144,8 +169,7 @@ public class pCloudBackend : IStreamingBackend
         if (string.IsNullOrWhiteSpace(_DnsName))
             throw new UserInformationException(Strings.pCloudBackend.NoServerSpecified, "NopCloudServerSpecified");
 
-        // Ensure that the path is in the correct format, without starting or tailing slashes
-        _Path = uri.Path.TrimStart(PATH_SEPARATORS).TrimEnd(PATH_SEPARATORS).Trim();
+        _Path = uri.Path;
         _ServerUrl = _DnsName;
         _Timeouts = TimeoutOptionsHelper.Parse(options);
 
@@ -159,6 +183,21 @@ public class pCloudBackend : IStreamingBackend
         // Set the timeout to infinite, all methods are called with cancelationTokens.
         _HttpClient.Timeout = Timeout.InfiniteTimeSpan;
 
+    }
+
+    /// <summary>
+    /// Builds the backend on a caller supplied handler, so the request handling
+    /// can be exercised without a pCloud account
+    /// </summary>
+    /// <param name="url">URL in Duplicati Uri format</param>
+    /// <param name="options">options to be used in the backend</param>
+    /// <param name="handler">The message handler to send requests through</param>
+    internal pCloudBackend(string url, Dictionary<string, string?> options, HttpMessageHandler handler)
+        : this(url, options)
+    {
+        _HttpClient.Dispose();
+        _HttpClient = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        _HttpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _Token);
     }
 
     /// <summary>
@@ -279,6 +318,8 @@ public class pCloudBackend : IStreamingBackend
 
         using var response = await _HttpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
 
+        response.EnsureSuccessStatusCode();
+
         var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         var uploadResponse = JsonSerializer.Deserialize<pCloudUploadResponse>(content)
             ?? throw new Exception("Failed to deserialize upload response");
@@ -294,7 +335,7 @@ public class pCloudBackend : IStreamingBackend
     /// Download files from remote
     /// </summary>
     /// <param name="remotename">Filename at remote location</param>
-    /// <param name="output">Destination stream to write to</param>
+    /// <param name="localname">Destination file path to write to</param>
     /// <param name="cancellationToken">CancellationToken that is combined with internal timeout token</param>
     /// <exception cref="FileMissingException">FileMissingException when file is not found</exception>
     /// <exception cref="Exception">Exceptions arising from either code execution or FileMissingException</exception>
@@ -426,14 +467,15 @@ public class pCloudBackend : IStreamingBackend
     /// <summary>
     /// Tests backend connectivity by verifying the configured path exists
     /// </summary>
+    /// <param name="alsoWrite">If true, also test write permissions</param>
     /// <param name="cancellationToken">The cancellation token (not used)</param>
     /// <exception cref="FolderMissingException">Thrown when configured path does not exist</exception>
-    public async Task TestAsync(CancellationToken cancellationToken)
+    public async Task TestAsync(bool alsoWrite, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_Path) || _Path.Split(PATH_SEPARATORS, StringSplitOptions.RemoveEmptyEntries).Length == 0)
             return;
 
-        await this.TestReadWritePermissionsAsync(cancellationToken).ConfigureAwait(false);
+        await this.TestBackendAsync(alsoWrite, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -555,5 +597,32 @@ public class pCloudBackend : IStreamingBackend
     /// </summary>
     public void Dispose()
     {
+    }
+
+    public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+    {
+        var fileId = await GetFileId(oldname, cancellationToken).ConfigureAwait(false);
+        var encodedNewName = Uri.EscapeDataString(newname);
+
+        using var request = CreateRequest($"/renamefile?fileid={fileId}&toname={encodedNewName}", HttpMethod.Get);
+        using var response = await Utility.Utility.WithTimeout(_Timeouts.ShortTimeout, cancellationToken,
+            ct => _HttpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct)
+        ).ConfigureAwait(false);
+
+        response.EnsureSuccessStatusCode();
+
+        var content = await Utility.Utility.WithTimeout(_Timeouts.ShortTimeout, cancellationToken,
+            ct => response.Content.ReadAsStringAsync(ct)
+        ).ConfigureAwait(false);
+
+        var renameResponse = JsonSerializer.Deserialize<pCloudDeleteResponse>(content)
+             ?? throw new Exception("Failed to deserialize rename file response");
+
+        if (renameResponse.result != 0)
+        {
+            if (pCloudErrorList.ErrorMessages.TryGetValue(renameResponse.result, out var message))
+                throw new Exception(message);
+            throw new Exception(Strings.pCloudBackend.FailedWithUnexpectedErrorCode("rename", renameResponse.result));
+        }
     }
 }

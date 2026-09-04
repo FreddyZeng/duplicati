@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -30,7 +30,7 @@ using Duplicati.Library.Utility.Options;
 
 namespace Duplicati.Library.Backend;
 
-public class Jottacloud : IStreamingBackend
+public class Jottacloud : IStreamingBackend, IRenameEnabledBackend
 {
     private static readonly string TOKEN_URL = AuthIdOptionsHelper.GetOAuthLoginUrl("jottacloud", null);
     private const string JFS_ROOT = "https://jfs.jottacloud.com/jfs";
@@ -135,7 +135,7 @@ public class Jottacloud : IStreamingBackend
             .RequireCredentials(TOKEN_URL);
 
         // Build URL
-        var u = new Utility.Uri(url);
+        var u = new Utility.RelaxedUri(url);
         m_path = u.HostAndPath; // Host and path of "jottacloud://folder/subfolder" is "folder/subfolder", so the actual folder path within the mount point.
         if (string.IsNullOrEmpty(m_path)) // Require a folder. Actually it is possible to store files directly on the root level of the mount point, but that does not seem to be a good option.
             throw new UserInformationException(Strings.Jottacloud.NoPathError, "JottaNoPath");
@@ -362,8 +362,8 @@ public class Jottacloud : IStreamingBackend
     public bool SupportsStreaming => true;
 
     /// <inheritdoc/>
-    public Task TestAsync(CancellationToken cancelToken)
-        => this.TestReadWritePermissionsAsync(cancelToken);
+    public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+        => this.TestBackendAsync(alsoWrite, cancelToken);
 
     /// <inheritdoc/>
     public async Task CreateFolderAsync(CancellationToken cancelToken)
@@ -421,7 +421,7 @@ public class Jottacloud : IStreamingBackend
     private async Task<HttpRequestMessage> CreateRequest(HttpMethod method, string remotename, string queryparams, bool upload, CancellationToken cancelToken)
     {
         (var _, var urls) = await GetClient(cancelToken).ConfigureAwait(false);
-        return await CreateRequest((upload ? urls.UploadUrl : urls.Url) + Utility.Uri.UrlEncode(remotename).Replace("+", "%20"), queryparams, method, cancelToken).ConfigureAwait(false);
+        return await CreateRequest((upload ? urls.UploadUrl : urls.Url) + Utility.UrlEncoding.UrlEncode(remotename).Replace("+", "%20"), queryparams, method, cancelToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -642,6 +642,18 @@ public class Jottacloud : IStreamingBackend
             }
         }
         if (!uploadCompletedSuccessfully) // Report error (and we just let the incomplete/corrupt file revision stay on the server..)
+            throw new HttpRequestException(HttpRequestError.HttpProtocolError, Strings.Jottacloud.FileUploadError, null, response.StatusCode);
+    }
+
+    public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+    {
+        (var client, var _) = await GetClient(cancellationToken).ConfigureAwait(false);
+        var destPath = "/" + m_path + newname;
+        using var req = await CreateRequest(HttpMethod.Post, oldname, "mv=" + Utility.UrlEncoding.UrlEncode(destPath), false, cancellationToken).ConfigureAwait(false);
+        using var response = await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken,
+            innerCancellationToken => client.GetResponseAsync(req, HttpCompletionOption.ResponseContentRead, innerCancellationToken)).ConfigureAwait(false);
+
+        if (response.StatusCode != HttpStatusCode.Created && response.StatusCode != HttpStatusCode.OK)
             throw new HttpRequestException(HttpRequestError.HttpProtocolError, Strings.Jottacloud.FileUploadError, null, response.StatusCode);
     }
 }

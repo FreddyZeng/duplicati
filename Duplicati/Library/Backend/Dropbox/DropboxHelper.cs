@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -21,11 +21,10 @@
 
 using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.Net;
 using System.Net.Http.Json;
-using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace Duplicati.Library.Backend
 {
@@ -36,8 +35,8 @@ namespace Duplicati.Library.Backend
 
         private readonly TimeoutOptionsHelper.Timeouts m_timeouts;
 
-        public DropboxHelper(AuthIdOptionsHelper.AuthIdOptions authId, TimeoutOptionsHelper.Timeouts timeouts)
-            : base(authId.AuthId, "dropbox", authId.OAuthUrl)
+        public DropboxHelper(AuthIdOptionsHelper.AuthIdOptions authId, TimeoutOptionsHelper.Timeouts timeouts, HttpClient? httpClient = null)
+            : base(authId.AuthId, "dropbox", authId.OAuthUrl, httpClient)
         {
             m_timeouts = timeouts;
             base.AutoAuthHeader = true;
@@ -87,6 +86,33 @@ namespace Duplicati.Library.Backend
                 }).ConfigureAwait(false);
         }
 
+        public async Task MoveAsync(string fromPath, string toPath, CancellationToken cancellationToken)
+        {
+            await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken,
+                async ct =>
+                {
+                    using var req = await CreateRequestAsync(WebApi.Dropbox.MoveUrl(), HttpMethod.Post, ct).ConfigureAwait(false);
+                    req.Content = JsonContent.Create(new { from_path = fromPath, to_path = toPath });
+                    using var resp = await GetResponseAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+
+                    // We don't need the result, just ensure success
+                    return await resp.Content.ReadFromJsonAsync<object>(ct).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+        }
+        
+        public async Task<MetaData?> GetMetadataAsync(string path, CancellationToken cancellationToken)
+        {
+            return await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken,
+                async ct =>
+                {
+                    using var req = await CreateRequestAsync(WebApi.Dropbox.GetMetadataUrl(), HttpMethod.Post, ct).ConfigureAwait(false);
+                    req.Content = JsonContent.Create(new PathArg { path = path });
+                    using var resp = await GetResponseAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                    return await resp.Content.ReadFromJsonAsync<MetaData>(ct).ConfigureAwait(false)
+                        ?? throw new InvalidOperationException("Failed to deserialize MetaData");
+                }).ConfigureAwait(false);
+        }
+
         private async Task<HttpRequestMessage> CreateChunkRequestAsync<T>(string url, T arg, CancellationToken cancelToken)
         {
             var req = await CreateRequestAsync(url, HttpMethod.Post, cancelToken).ConfigureAwait(false);
@@ -99,7 +125,9 @@ namespace Duplicati.Library.Backend
         {
             using var req = await reqTask.ConfigureAwait(false);
             using var ls = new ReadLimitLengthStream(stream, offset, Math.Min(chunksize, stream.Length - offset));
-            using var ts = ls.ObserveWriteTimeout(m_timeouts.ReadWriteTimeout);
+            // The chunk stream is used as the request body and is only read by the
+            // HTTP stack, so the read timeout must be observed here.
+            using var ts = ls.ObserveReadTimeout(m_timeouts.ReadWriteTimeout);
 
             req.Content = new StreamContent(ts);
             req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
@@ -232,11 +260,11 @@ namespace Duplicati.Library.Backend
                 }
             }
 
-            JObject? errJson = null;
+            JsonNode? errJson = null;
             try
             {
                 if (!string.IsNullOrWhiteSpace(json))
-                    errJson = JObject.Parse(json);
+                    errJson = JsonNode.Parse(json);
             }
             catch
             {
@@ -258,7 +286,7 @@ namespace Duplicati.Library.Backend
             : base("Dropbox API error", innerException)
         {
         }
-        public JObject? errorJSON { get; set; }
+        public JsonNode? errorJSON { get; set; }
     }
 
     public class PathArg
@@ -343,12 +371,12 @@ namespace Duplicati.Library.Backend
 
     public class MetaData
     {
-        [JsonProperty(".tag")]
+        [JsonPropertyName(".tag")]
         public string? tag { get; set; }
         public string? name { get; set; }
         public string? server_modified { get; set; }
         public ulong size { get; set; }
-        public bool IsFile { get { return tag == "file"; } }
+        public bool IsFile => tag == "file";
 
         // While this is unused, the Dropbox API v2 documentation does not
         // declare this to be optional.

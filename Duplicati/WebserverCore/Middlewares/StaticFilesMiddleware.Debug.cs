@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -39,18 +39,13 @@ internal static class NpmSpaHelper
 
     public static SpaConfig? InstallNpmPackage(string packageUrl, string targetPath)
     {
-        var tempPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-
-        // Handle move not working across drive boundaries on Windows
-        if (OperatingSystem.IsWindows() && Path.GetPathRoot(tempPath) != Path.GetPathRoot(targetPath))
-        {
-            tempPath = Path.GetFullPath(targetPath);
-            if (targetPath.EndsWith(Path.DirectorySeparatorChar))
-                tempPath = tempPath[..-1];
-            tempPath += "-tmp";
-            if (Directory.Exists(tempPath))
-                Directory.Delete(tempPath, true);
-        }
+        // Make a temp folder next to the target path
+        var tempPath = Path.GetFullPath(targetPath);
+        if (tempPath.EndsWith(Path.DirectorySeparatorChar))
+            tempPath = tempPath[..-1];
+        tempPath += "-ins-tmp";
+        if (Directory.Exists(tempPath))
+            Directory.Delete(tempPath, true);
 
         try
         {

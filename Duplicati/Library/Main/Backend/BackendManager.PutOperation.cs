@@ -119,7 +119,6 @@ partial class BackendManager
         /// <summary>
         /// Starts the encryption of the file
         /// </summary>
-        /// <param name="options">The options to use</param>
         public void StartEncryptionAndHashing()
         {
             if (encryptionAndHashingTask != null)
@@ -251,7 +250,7 @@ partial class BackendManager
             // Flag for next attempt, if any
             operationState = OperationState.Uploading;
 
-            await PerformUpload(backend, hash, size, cancelToken).ConfigureAwait(false);
+            await PerformUploadAsync(backend, hash, size, cancelToken).ConfigureAwait(false);
 
             operationState = OperationState.Uploaded;
 
@@ -278,8 +277,14 @@ partial class BackendManager
         /// <param name="size">The size of the file</param>
         /// <param name="cancelToken">The cancellation token</param>
         /// <returns>An awaitable task</returns>
-        private async Task PerformUpload(IBackend backend, string hash, long size, CancellationToken cancelToken)
+        private async Task PerformUploadAsync(IBackend backend, string hash, long size, CancellationToken cancelToken)
         {
+            // The effective remote name is the name passed to the backend. For
+            // folder-enabled backends it equals RemoteFilename (the full relative
+            // path); for non-folder backends the backend is pointed at the file's
+            // sub-folder (via BackendUrlOverride) and this is just the filename.
+            var effectiveName = GetEffectiveRemoteName();
+
             Context.Database.LogRemoteOperation("put", RemoteFilename, JsonConvert.SerializeObject(new { Size = size, Hash = hash }));
             Context.Statwriter.SendEvent(BackendActionType.Put, BackendEventType.Started, RemoteFilename, size);
             if (TrackedInDb)
@@ -294,10 +299,10 @@ partial class BackendManager
                     using var fs = System.IO.File.OpenRead(LocalFilename);
                     using var ts = new ThrottleEnabledStream(fs, Context.UploadThrottleManager, Context.DownloadThrottleManager);
                     using var pgs = new ProgressReportingStream(ts, pg => Context.ProgressHandler.HandleProgress(pg, RemoteFilename));
-                    await streamingBackend.PutAsync(RemoteFilename, pgs, cancelToken).ConfigureAwait(false);
+                    await streamingBackend.PutAsync(effectiveName, pgs, cancelToken).ConfigureAwait(false);
                 }
                 else
-                    await backend.PutAsync(RemoteFilename, LocalFilename, cancelToken).ConfigureAwait(false);
+                    await backend.PutAsync(effectiveName, LocalFilename, cancelToken).ConfigureAwait(false);
             }
             finally
             {
@@ -317,14 +322,94 @@ partial class BackendManager
 
             if (Context.Options.ListVerifyUploads)
             {
-                var f = await backend.ListAsync(cancelToken).FirstOrDefaultAsync(n => n.Name.Equals(RemoteFilename, StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+                // The backend is bound to the file's folder (for non-folder backends) or
+                // the root (for folder-enabled backends using a flat verify), so the
+                // listing returns names comparable to the effective remote name.
+                var f = await backend.ListAsync(cancelToken).FirstOrDefaultAsync(n => n.Name.Equals(effectiveName, StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
                 if (f == null)
                     throw new Exception(string.Format($"List verify failed, file was not found after upload: {RemoteFilename}"));
                 else if (f.Size != size && f.Size >= 0)
                     throw new Exception(string.Format($"List verify failed for file: {f.Name}, size was {f.Size} but expected to be {size}"));
             }
 
+            // Create and upload a parity companion file (best-effort) while the
+            // just-uploaded local file is still on disk.
+            await MaybeCreateAndUploadParityAsync(backend, cancelToken).ConfigureAwait(false);
+
             DeleteLocalFile();
+        }
+
+        /// <summary>
+        /// If parity is enabled and this operation is a data volume (block or fileset),
+        /// creates a parity companion file for the just-uploaded local file and uploads it.
+        /// This is best-effort: any failure is logged and does not fail the backup.
+        /// </summary>
+        /// <param name="backend">The backend to upload to</param>
+        /// <param name="cancelToken">The cancellation token</param>
+        private async Task MaybeCreateAndUploadParityAsync(IBackend backend, CancellationToken cancelToken)
+        {
+            var parityModule = Context.Options.ParityModule;
+            if (string.IsNullOrEmpty(parityModule))
+                return;
+
+            // Only protect data volumes (dblock/dlist). Skip index files, parity
+            // companions themselves, and anything that does not parse as a volume.
+            var parsed = VolumeBase.ParseFilename(RemoteFilename);
+            if (parsed == null || parsed.IsParity)
+                return;
+            if (parsed.FileType != RemoteVolumeType.Blocks && parsed.FileType != RemoteVolumeType.Files)
+                return;
+            if (LocalTempfile == null)
+                return;
+
+            try
+            {
+                // The shared parity instance lives for the whole operation, so the
+                // availability probe and any "not found" warning happen once, not per volume.
+                var parity = Context.Parity.Get();
+                if (parity == null || !parity.IsAvailable)
+                    return;
+
+                var parityName = VolumeBase.GenerateParityFilename(RemoteFilename, parity.FilenameExtension);
+                var parityTemp = new TempFile();
+                try
+                {
+                    await parity.CreateAsync(LocalFilename, parityTemp, cancelToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    parityTemp.Dispose();
+                    throw;
+                }
+
+                // Upload the parity file as an unencrypted, untracked companion,
+                // inline on the currently-held backend (never re-queued).
+                // The parity protects the already-encrypted data volume (parity is created
+                // from the encrypted file on disk), so the parity file itself needs no
+                // encryption: it cannot leak information about the source data.
+                var parityOp = new PutOperation(parityName, Context, false, cancelToken)
+                {
+                    LocalTempfile = parityTemp,
+                    Unencrypted = true,
+                    TrackedInDb = false,
+                    OriginalIndexFile = null,
+                    IndexVolumeFinishedCallback = null,
+                    OnDbUpdate = OnDbUpdateDefault,
+                    // The parity file lives in the same folder as this data volume, and
+                    // reuses the currently-held backend, so its effective name is the
+                    // data volume's effective name with the parity extension appended.
+                    // This is correct for both folder and non-folder backends.
+                    EffectiveRemoteName = GetEffectiveRemoteName() + "." + parity.FilenameExtension
+                };
+                parityOp.StartEncryptionAndHashing();
+                await parityOp.ExecuteAsync(backend, cancelToken).ConfigureAwait(false);
+
+                Logging.Log.WriteVerboseMessage(LOGTAG, "ParityCreated", "Created parity file {0} for {1}", parityName, RemoteFilename);
+            }
+            catch (Exception ex)
+            {
+                Logging.Log.WriteWarningMessage(LOGTAG, "ParityCreationFailed", ex, "Failed to create parity file for {0}: {1}", RemoteFilename, ex.Message);
+            }
         }
 
         /// <summary>

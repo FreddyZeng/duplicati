@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -53,6 +53,11 @@ public sealed record SystemInfoDto
     /// The default URL to present for remote control registration
     /// </summary>
     public required string RemoteControlRegistrationUrl { get; init; }
+
+    /// <summary>
+    /// The default URL to present for remote control dashboard
+    /// </summary>
+    public required string RemoteControlDashboardUrl { get; init; }
 
     /// <summary>
     /// Gets or sets the started by.
@@ -135,6 +140,11 @@ public sealed record SystemInfoDto
     public required IEnumerable<Library.Interface.ICommandLineArgument> Options { get; init; }
 
     /// <summary>
+    /// Gets or sets the server-only options.
+    /// </summary>
+    public required IEnumerable<Library.Interface.ICommandLineArgument> ServerOnlyOptions { get; init; }
+
+    /// <summary>
     /// Gets or sets the compression modules.
     /// </summary>
     public required IEnumerable<IDynamicModule> CompressionModules { get; init; }
@@ -163,6 +173,16 @@ public sealed record SystemInfoDto
     /// Gets or sets the connection modules.
     /// </summary>
     public required IEnumerable<IDynamicModule> ConnectionModules { get; init; }
+
+    /// <summary>
+    /// Gets or sets the source provider modules.
+    /// </summary>
+    public required IEnumerable<IDynamicModule> SourceProviderModules { get; init; }
+
+    /// <summary>
+    /// Gets or sets the restore destination provider modules.
+    /// </summary>
+    public required IEnumerable<IDynamicModule> RestoreDestinationProviderModules { get; init; }
 
     /// <summary>
     /// Gets or sets the server modules.
@@ -231,6 +251,78 @@ public sealed record SystemInfoDto
     /// The supported power mode providers
     /// </summary>
     public required IEnumerable<string> PowerModeProviders { get; init; }
+
+    /// <summary>
+    /// Gets or sets the local license status (from file or environment only, not server-provided).
+    /// </summary>
+    public required LicenseStatusDto? LocalLicenseStatus { get; init; }
+
+    /// <summary>
+    /// Gets or sets the remote license status (from server-provided license).
+    /// </summary>
+    public required LicenseStatusDto? RemoteLicenseStatus { get; init; }
+
+    /// <summary>
+    /// Represents the license status information.
+    /// </summary>
+    public class LicenseStatusDto
+    {
+        /// <summary>
+        /// Whether a local license is configured (from file or environment).
+        /// </summary>
+        public required bool IsConfigured { get; init; }
+
+        /// <summary>
+        /// Whether the local license is currently valid.
+        /// </summary>
+        public required bool IsValid { get; init; }
+
+        /// <summary>
+        /// Whether the license is in its grace period (expired but still functional).
+        /// </summary>
+        public required bool IsInGracePeriod { get; init; }
+
+        /// <summary>
+        /// The license expiration date (null if no license configured).
+        /// </summary>
+        public required DateTimeOffset? ExpiresAt { get; init; }
+
+        /// <summary>
+        /// The license expiration date including grace period (null if no license configured).
+        /// </summary>
+        public required DateTimeOffset? ExpiresWithGraceAt { get; init; }
+
+        /// <summary>
+        /// The enabled features from the license.
+        /// </summary>
+        public required Dictionary<string, string>? Features { get; init; }
+
+        /// <summary>
+        /// Maps the license data to a DTO.
+        /// </summary>
+        /// <param name="data">The license data to map.</param>
+        /// <returns>The mapped DTO.</returns>
+        public static LicenseStatusDto Map(Proprietary.LicenseChecker.LicenseData? data)
+            => data != null
+                ? new LicenseStatusDto
+                {
+                    IsConfigured = true,
+                    IsValid = data.IsValidNow,
+                    IsInGracePeriod = data.IsInGracePeriod,
+                    ExpiresAt = data.ValidTo,
+                    ExpiresWithGraceAt = data.ValidToWithGrace,
+                    Features = data.Features
+                }
+                : new LicenseStatusDto
+                {
+                    IsConfigured = false,
+                    IsValid = false,
+                    IsInGracePeriod = false,
+                    ExpiresAt = null,
+                    ExpiresWithGraceAt = null,
+                    Features = null
+                };
+    }
 
     /// <summary>
     /// Represents a timezone.

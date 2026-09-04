@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,10 +22,9 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using CoCoL;
-using Duplicati.Library.Main.Database;
+using Duplicati.Library.Main.Database.Local;
 using Duplicati.Library.Utility;
 
 #nullable enable
@@ -43,16 +42,6 @@ namespace Duplicati.Library.Main.Operation.Restore
         /// </summary>
         private static readonly string LOGTAG = Logging.Log.LogTagFromType<VolumeDownloader>();
 
-
-        /// <summary>
-        /// Id of the next downloader. Used to give each downloader a unique index.
-        /// </summary>
-        public static int IdCounter = -1;
-        /// <summary>
-        /// Maximum processing times for each active downloader.
-        /// </summary>
-        public static int[] MaxProcessingTimes = [];
-
         /// <summary>
         /// Runs the volume downloader process.
         /// </summary>
@@ -61,7 +50,7 @@ namespace Duplicati.Library.Main.Operation.Restore
         /// <param name="backend">The backend to use for downloading the volumes.</param>
         /// <param name="options">The restore options.</param>
         /// <param name="results">The restore results.</param>
-        public static Task Run(Channels channels, LocalRestoreDatabase db, IBackendManager backend, Options options, RestoreResults results)
+        public static Task RunAsync(Channels channels, LocalRestoreDatabase db, IBackendManager backend, Options options, RestoreResults results)
         {
             return AutomationExtensions.RunTask(
             new
@@ -75,9 +64,6 @@ namespace Duplicati.Library.Main.Operation.Restore
                 Stopwatch? sw_write = options.InternalProfiling ? new() : null;
                 Stopwatch? sw_wait = options.InternalProfiling ? new() : null;
 
-                Stopwatch sw_processing = new();
-                var id = Interlocked.Increment(ref IdCounter);
-
                 try
                 {
                     while (true)
@@ -90,32 +76,42 @@ namespace Duplicati.Library.Main.Operation.Restore
 
                         // Trigger the download.
                         sw_wait?.Start();
-                        sw_processing.Restart();
                         TempFile f;
                         var (volume_name, size, hash) = await db
-                            .GetVolumeInfo(volume_id, results.TaskControl.ProgressToken)
+                            .GetVolumeInfoAsync(volume_id, results.TaskControl.ProgressToken)
                             .FirstAsync()
                             .ConfigureAwait(false);
                         try
                         {
-                            f = await backend.GetDirectAsync(volume_name, hash, size, results.TaskControl.TransferToken).ConfigureAwait(false);
+                            f = await backend.GetDirectAsync(volume_name, hash, size, allowParityRepair: true, results.TaskControl.TransferToken).ConfigureAwait(false);
                         }
-                        catch (Exception)
+                        // An abort cancels the transfer token, so without the guard every
+                        // download the abort itself cancelled would be recorded as a defect in
+                        // the backup. The progress token is consulted as well because the
+                        // `BackendManager` gives up on a download for either of them.
+                        catch (Exception) when (!RestoreCancellation.IsShutdownRequested(results.TaskControl))
                         {
                             lock (results)
                                 results.BrokenRemoteFiles.Add(volume_name);
 
                             throw;
                         }
-                        sw_processing.Stop();
-                        // This is the only writing process to that int, so an update is safe.
-                        MaxProcessingTimes[id] = Math.Max(MaxProcessingTimes[id], (int)sw_processing.ElapsedMilliseconds);
                         sw_wait?.Stop();
                         Logging.Log.WriteExplicitMessage(LOGTAG, "DownloadVolume", null, "Downloaded volume {0} (ID: {1})", volume_name, volume_id);
 
                         // Pass the download handle (which may or may not have downloaded already) to the `VolumeDecryptor` process.
                         sw_write?.Start();
-                        await self.Output.WriteAsync((volume_id, volume_name, f)).ConfigureAwait(false);
+                        try
+                        {
+                            await self.Output.WriteAsync((volume_id, volume_name, f)).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                            // The handoff failed, so the decryptor never took ownership of the
+                            // downloaded file and nothing else will dispose it.
+                            f.Dispose();
+                            throw;
+                        }
                         sw_write?.Stop();
                         Logging.Log.WriteExplicitMessage(LOGTAG, "DownloadVolume", null, "Passed volume {0} (ID: {1}) to next stage", volume_name, volume_id);
                     }
@@ -128,6 +124,16 @@ namespace Duplicati.Library.Main.Operation.Restore
                     {
                         Logging.Log.WriteProfilingMessage(LOGTAG, "InternalTimings", $"Read: {sw_read!.ElapsedMilliseconds}ms, Write: {sw_write!.ElapsedMilliseconds}ms, Wait: {sw_wait!.ElapsedMilliseconds}ms");
                     }
+                }
+                catch (Exception) when (RestoreCancellation.IsShutdownRequested(results.TaskControl))
+                {
+                    // An abort is an orderly shutdown that arrived by a different signal than
+                    // retirement, so it is reported the same way retirement is. The retirement
+                    // of the channels is still needed to tear the network down.
+                    Logging.Log.WriteVerboseMessage(LOGTAG, "CancelledProcess", null, "Volume downloader cancelled");
+                    self.Input.Retire();
+                    self.Output.Retire();
+                    throw;
                 }
                 catch (Exception ex)
                 {

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -47,6 +47,8 @@ public static partial class Command
             {
                 case OSType.Windows:
                     await SignWindowsExecutables(buildDir, rtcfg);
+                    if (target.Interface == InterfaceType.GUI)
+                        await CopyShellExtensionFiles(baseDir, buildDir);
                     break;
 
                 case OSType.MacOS:
@@ -67,7 +69,8 @@ public static partial class Command
         /// Set of files that are unwanted despite the OS
         /// </summary>
         static readonly IReadOnlyList<string> UnwantedCommonFiles = [
-            "System.Reactive.xml" // Extra documentation file
+            "System.Reactive.xml", // Extra documentation file
+            "Duplicati.icns" // Icon for the RumpSharp helper bundle, only used by unpackaged debug builds
         ];
 
         /// <summary>
@@ -86,9 +89,9 @@ public static partial class Command
         static IEnumerable<string> UnwantedFolders(OSType os)
             => UnwantedCommonFolders.Concat(os switch
             {
-                OSType.Windows => ["lvm-scripts"],
+                OSType.Windows => ["lvm-scripts", "apfs-scripts"],
                 OSType.MacOS => ["lvm-scripts"],
-                OSType.Linux => [],
+                OSType.Linux => ["apfs-scripts"],
                 _ => throw new Exception($"Not supported os: {os}")
             });
 
@@ -100,9 +103,9 @@ public static partial class Command
         static IEnumerable<string> UnwantedFiles(OSType os)
             => UnwantedCommonFiles.Concat(os switch
             {
-                OSType.Windows => [],
+                OSType.Windows => ["libDuplicatiPhotos.dylib"],
                 OSType.MacOS => [Path.Combine("utility-scripts", "DuplicatiVerify.ps1")],
-                OSType.Linux => [Path.Combine("utility-scripts", "DuplicatiVerify.ps1")],
+                OSType.Linux => [Path.Combine("utility-scripts", "DuplicatiVerify.ps1"), "libDuplicatiPhotos.dylib"],
                 _ => throw new Exception($"Not supported os: {os}")
             })
             .Distinct();
@@ -300,6 +303,34 @@ public static partial class Command
 
             foreach (var file in filenames)
                 await rtcfg.AuthenticodeSign(file);
+        }
+
+        /// <summary>
+        /// Copies the ShellExtension files (comhost and Register.ps1) to the build directory
+        /// </summary>
+        /// <param name="baseDir">The source directory</param>
+        /// <param name="buildDir">The build directory</param>
+        /// <returns>An awaitable task</returns>
+        static Task CopyShellExtensionFiles(string baseDir, string buildDir)
+        {
+            var shellExtensionDir = Path.Combine(baseDir, "Duplicati", "ShellExtension");
+            var registerPs1Source = Path.Combine(shellExtensionDir, "Register.ps1");
+            var registerPs1Target = Path.Combine(buildDir, "RegisterFolderStatusExtension.ps1");
+
+            // Copy Register.ps1 if it exists
+            if (File.Exists(registerPs1Source))
+                File.Copy(registerPs1Source, registerPs1Target, overwrite: true);
+
+            // Copy the comhost DLL if it exists (published output from ShellExtension project)
+            // The ShellExtension project is built and published to the build folder, so we look for it there
+            var comhostSource = Path.Combine(buildDir, "Duplicati.ShellExtension.comhost.dll");
+
+            // The comhost is already in the build directory from the publish step,
+            // but we verify just to be sure
+            if (!File.Exists(comhostSource))
+                throw new Exception($"Expected file \"{comhostSource}\" not found, has build changed?");
+
+            return Task.CompletedTask;
         }
     }
 }

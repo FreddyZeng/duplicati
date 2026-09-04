@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -114,7 +114,7 @@ public interface ISnapshotService : IDisposable
     /// <returns>The metadata for the given file or folder</returns>
     /// <param name="localPath">The file or folder to examine</param>
     /// <param name="isSymlink">A flag indicating if the target is a symlink</param>
-    Dictionary<string, string> GetMetadata(string localPath, bool isSymlink);
+    Dictionary<string, string?> GetMetadata(string localPath, bool isSymlink);
 
     /// <summary>
     /// Gets a value indicating if the path points to a block device

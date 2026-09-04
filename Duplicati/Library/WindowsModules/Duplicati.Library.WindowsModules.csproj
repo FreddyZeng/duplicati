@@ -1,21 +1,42 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0-windows7.0</TargetFramework>
-    <Copyright>Copyright © 2025 Team Duplicati, MIT license</Copyright>
+    <!-- The toast notification support requires the 10.0.17763 API surface -->
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <!-- Allows compiling this Windows-targeted assembly on Linux/macOS build hosts -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Support older Windows versions -->
+    <SupportedOSPlatformVersion>7.0</SupportedOSPlatformVersion>
+    <Copyright>Copyright © 2026 Team Duplicati, MIT license</Copyright>
     <RootNamespace>Duplicati.Library.WindowsModules</RootNamespace>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Vanara.PInvoke.VssApi" Version="4.1.6" />
-    <PackageReference Include="Vanara.PInvoke.Kernel32" Version="4.1.6" />
-    <PackageReference Include="Vanara.PInvoke.Security" Version="4.1.6" />
-    <PackageReference Include="Vanara.PInvoke.User32" Version="4.1.6" />
-    <PackageReference Include="Vanara.Security" Version="4.1.6" />
+    <PackageReference Include="Microsoft.Management.Infrastructure" Version="3.0.0" />
+    <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
+    <!-- Overrides the vulnerable 4.7.0 pulled in transitively by the notifications toolkit -->
+    <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
+    <PackageReference Include="Vanara.PInvoke.VssApi" Version="5.0.7" />
+    <PackageReference Include="Vanara.PInvoke.Kernel32" Version="5.0.7" />
+    <PackageReference Include="Vanara.PInvoke.Security" Version="5.0.7" />
+    <PackageReference Include="Vanara.PInvoke.User32" Version="5.0.7" />
+    <PackageReference Include="Vanara.Security" Version="5.0.7" />
   </ItemGroup>
-  
+
   <ItemGroup>
     <ProjectReference Include="..\Interface\Duplicati.Library.Interface.csproj" />
   </ItemGroup>
+
+  <Target Name="IncludeIjwhostForVanara" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <_Ijwhost Include="$(NetCoreTargetingPackRoot)\Microsoft.NETCore.App.Host.win-x64\$([System.String]::Copy('$(TargetFrameworkVersion)').TrimStart('v')).*\runtimes\win-x64\native\ijwhost.dll" />
+      <None Include="@(_Ijwhost)">
+        <Link>ijwhost.dll</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <PublishState>Included</PublishState>
+        <Visible>false</Visible>
+      </None>
+    </ItemGroup>
+  </Target>
 </Project>

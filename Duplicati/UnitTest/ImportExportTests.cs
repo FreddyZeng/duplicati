@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -125,7 +125,7 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("ImportExport")]
-        public async Task RoundTrip()
+        public async Task RoundTripAsync()
         {
             var metadata = new Dictionary<string, string> { { "SourceFilesCount", "1" } };
             var advancedOptions = new Dictionary<string, string> { { "server-datafolder", this.serverDatafolder } };

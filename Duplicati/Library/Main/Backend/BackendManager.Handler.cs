@@ -14,7 +14,10 @@ namespace Duplicati.Library.Main.Backend;
 partial class BackendManager
 {
     /// <summary>
-    /// Wrapper class for making a backend disposable and reclaimable
+    /// Wrapper class for making a backend disposable and reclaimable.
+    /// Backends are pooled by the URL they were created for, so that a backend
+    /// bound to a sub-folder URL is only reused for operations targeting that
+    /// same sub-folder (see <see cref="Handler.CreateBackend"/>).
     /// </summary>
     private sealed class ReclaimableBackend : IDisposable
     {
@@ -28,9 +31,14 @@ partial class BackendManager
         /// </summary>
         public IBackend Backend { get; }
         /// <summary>
-        /// The pool where the backend should be returned to
+        /// The URL the backend was created for; used as the pool key so the
+        /// backend is returned to the queue for the same URL.
         /// </summary>
-        private readonly ConcurrentQueue<IBackend> pool;
+        private readonly string backendUrl;
+        /// <summary>
+        /// The URL-keyed pool where the backend should be returned to
+        /// </summary>
+        private readonly ConcurrentDictionary<string, ConcurrentQueue<IBackend>> pool;
         /// <summary>
         /// Whether the backend should be reused
         /// </summary>
@@ -44,11 +52,13 @@ partial class BackendManager
         /// Creates a new instance of the <see cref="ReclaimableBackend"/> class
         /// </summary>
         /// <param name="backend">The backend to wrap</param>
-        /// <param name="pool">The pool where the backend should be returned to</param>
+        /// <param name="backendUrl">The URL the backend was created for</param>
+        /// <param name="pool">The URL-keyed pool where the backend should be returned to</param>
         /// <param name="reuse">Whether the backend should be reused or disposed</param>
-        public ReclaimableBackend(IBackend backend, ConcurrentQueue<IBackend> pool, bool reuse)
+        public ReclaimableBackend(IBackend backend, string backendUrl, ConcurrentDictionary<string, ConcurrentQueue<IBackend>> pool, bool reuse)
         {
             Backend = backend;
+            this.backendUrl = backendUrl;
             this.pool = pool;
             this.reuse = reuse;
         }
@@ -71,7 +81,15 @@ partial class BackendManager
             disposed = true;
 
             if (reuse)
-                pool.Enqueue(Backend);
+            {
+                // Return the backend to the pool queue for the URL it was created for.
+                if (!pool.TryGetValue(backendUrl, out var queue))
+                {
+                    queue = new ConcurrentQueue<IBackend>();
+                    queue = pool.GetOrAdd(backendUrl, queue);
+                }
+                queue.Enqueue(Backend);
+            }
             else
                 try { Backend.Dispose(); }
                 catch (Exception ex) { Logging.Log.WriteWarningMessage(LOGTAG, "BackendDisposeError", ex, "Failed to dispose backend instance: {0}", ex.Message); }
@@ -97,9 +115,14 @@ partial class BackendManager
         /// </summary>
         private readonly List<Task> activeUploads = [];
         /// <summary>
-        /// The pool of backends currently created
+        /// The pool of backends currently created, keyed by the URL each backend was
+        /// created for. The base URL is the default key; backends bound to a sub-folder
+        /// URL (for non-folder-enabled backends, see
+        /// <see cref="BackendManager.ApplyPathTranslation"/>) are keyed by that
+        /// sub-folder URL so they are only reused for operations targeting the same
+        /// sub-folder.
         /// </summary>
-        private readonly ConcurrentQueue<IBackend> backendPool = new();
+        private readonly ConcurrentDictionary<string, ConcurrentQueue<IBackend>> backendPool = new();
         /// <summary>
         /// The URL of the backend
         /// </summary>
@@ -153,7 +176,7 @@ partial class BackendManager
                 async self =>
                 {
                     using var handler = new Handler(backendUrl, context);
-                    await handler.Run(self.requestChannel);
+                    await handler.RunAsync(self.requestChannel);
                 });
 
         /// <summary>
@@ -177,17 +200,26 @@ partial class BackendManager
         }
 
         /// <summary>
-        /// Creates a new backend instance or reuses an existing one
+        /// Creates a new backend instance or reuses an existing one. The backend is
+        /// created for (and pooled by) the URL the operation targets: the base backend
+        /// URL by default, or the operation's <see cref="PendingOperationBase.BackendUrlOverride"/>
+        /// when set (used to point non-folder backends at a sub-folder).
         /// </summary>
+        /// <param name="op">The operation the backend is created for, used to resolve the target URL.</param>
         /// <returns>The backend instance</returns>
-        private ReclaimableBackend CreateBackend()
+        private ReclaimableBackend CreateBackend(PendingOperationBase op)
         {
-            backendPool.TryDequeue(out var backend);
+            var url = op.BackendUrlOverride ?? backendUrl;
+
+            // Reuse a pooled backend for this URL if one is available; otherwise create one.
+            var queue = backendPool.GetOrAdd(url, _ => new ConcurrentQueue<IBackend>());
+            queue.TryDequeue(out var backend);
             if (backend == null)
-                backend = DynamicLoader.BackendLoader.GetBackend(backendUrl, context.Options.RawOptions);
+                backend = DynamicLoader.BackendLoader.GetBackend(url, context.Options.RawOptions);
 
             return new ReclaimableBackend(
                 backend,
+                url,
                 backendPool,
                 allowBackendReuse
             );
@@ -198,7 +230,7 @@ partial class BackendManager
         /// </summary>
         /// <param name="tasks">The list of tasks to reclaim</param>
         /// <returns>An awaitable task</returns>
-        private static async Task ReclaimCompletedTasks(List<Task> tasks)
+        private static async Task ReclaimCompletedTasksAsync(List<Task> tasks)
         {
             for (int i = tasks.Count - 1; i >= 0; i--)
             {
@@ -216,10 +248,10 @@ partial class BackendManager
         /// Reclaims completed tasks from uploads and downloads
         /// </summary>
         /// <returns>An awaitable task</returns>
-        private async Task ReclaimCompletedTasks()
+        private async Task ReclaimCompletedTasksAsync()
         {
-            await ReclaimCompletedTasks(activeUploads);
-            await ReclaimCompletedTasks(activeDownloads);
+            await ReclaimCompletedTasksAsync(activeUploads);
+            await ReclaimCompletedTasksAsync(activeDownloads);
         }
 
         /// <summary>
@@ -228,12 +260,12 @@ partial class BackendManager
         /// <param name="n">The maximum number of active tasks</param>
         /// <param name="tasks">The list of active tasks</param>
         /// <returns>An awaitable task</returns>
-        private static async Task EnsureAtMostNActiveTasks(int n, List<Task> tasks)
+        private static async Task EnsureAtMostNActiveTasksAsync(int n, List<Task> tasks)
         {
             while (tasks.Count >= n)
             {
                 await Task.WhenAny(tasks).ConfigureAwait(false);
-                await ReclaimCompletedTasks(tasks).ConfigureAwait(false);
+                await ReclaimCompletedTasksAsync(tasks).ConfigureAwait(false);
             }
         }
 
@@ -243,11 +275,11 @@ partial class BackendManager
         /// <param name="uploads">The number of active uploads</param>
         /// <param name="downloads">The number of active downloads</param>
         /// <returns>An awaitable task</returns>        
-        private async Task EnsureAtMostNActiveTasks(int uploads, int downloads)
+        private async Task EnsureAtMostNActiveTasksAsync(int uploads, int downloads)
         {
             context.ProgressHandler?.SetIsBlocking(true);
-            await EnsureAtMostNActiveTasks(uploads, activeUploads).ConfigureAwait(false);
-            await EnsureAtMostNActiveTasks(downloads, activeDownloads).ConfigureAwait(false);
+            await EnsureAtMostNActiveTasksAsync(uploads, activeUploads).ConfigureAwait(false);
+            await EnsureAtMostNActiveTasksAsync(downloads, activeDownloads).ConfigureAwait(false);
             context.ProgressHandler?.SetIsBlocking(false);
         }
 
@@ -256,7 +288,7 @@ partial class BackendManager
         /// </summary>
         /// <param name="requestChannel">The channel for pending operations</param>
         /// <returns>An awaitable task</returns>
-        private async Task Run(IReadChannel<PendingOperationBase> requestChannel)
+        private async Task RunAsync(IReadChannel<PendingOperationBase> requestChannel)
         {
             using var tcs = new CancellationTokenSource();
             try
@@ -269,33 +301,33 @@ partial class BackendManager
                     try
                     {
                         // Clean up completed uploads, if any
-                        await ReclaimCompletedTasks().ConfigureAwait(false);
+                        await ReclaimCompletedTasksAsync().ConfigureAwait(false);
 
                         // Allow PUT operations to be queued, if requested
                         if (op is PutOperation putOp && !putOp.WaitForComplete)
                         {
                             // Wait for any active downloads to complete before starting an upload
-                            await EnsureAtMostNActiveTasks(maxParallelUploads, 1).ConfigureAwait(false);
+                            await EnsureAtMostNActiveTasksAsync(maxParallelUploads, 1).ConfigureAwait(false);
 
                             // Operation is accepted into queue, so we can signal completion
                             putOp.SetComplete(true);
-                            activeUploads.Add(ExecuteWithRetry(putOp, tcs.Token));
+                            activeUploads.Add(ExecuteWithRetryAsync(putOp, tcs.Token));
                         }
                         else if (op is GetOperation getOp)
                         {
                             // Wait for any active uploads to complete before starting a download
-                            await EnsureAtMostNActiveTasks(1, maxParallelDownloads).ConfigureAwait(false);
+                            await EnsureAtMostNActiveTasksAsync(1, maxParallelDownloads).ConfigureAwait(false);
 
                             // Operation is accepted into queue, so we can signal completion
-                            activeDownloads.Add(ExecuteWithRetry(getOp, tcs.Token));
+                            activeDownloads.Add(ExecuteWithRetryAsync(getOp, tcs.Token));
                         }
                         else
                         {
                             // Wait for all of the active uploads and downloads to complete
-                            await EnsureAtMostNActiveTasks(1, 1).ConfigureAwait(false);
+                            await EnsureAtMostNActiveTasksAsync(1, 1).ConfigureAwait(false);
 
                             // Execute the operation
-                            await ExecuteWithRetry(op, tcs.Token).ConfigureAwait(false);
+                            await ExecuteWithRetryAsync(op, tcs.Token).ConfigureAwait(false);
                         }
                     }
                     catch (Exception ex)
@@ -310,16 +342,25 @@ partial class BackendManager
             finally
             {
                 // Terminate any active uploads and downloads. Exceptions thrown by the downloads should be captured by the callers.
-                tcs.Cancel();
+                await tcs.CancelAsync();
 
-                await WaitForPendingItems("upload", activeUploads).ConfigureAwait(false);
-                await WaitForPendingItems("download", activeDownloads).ConfigureAwait(false);
+                await WaitForPendingItemsAsync("upload", activeUploads).ConfigureAwait(false);
+                await WaitForPendingItemsAsync("download", activeDownloads).ConfigureAwait(false);
 
-                // Dispose of any remaining backends
-                while (backendPool.TryDequeue(out var backend))
+                // Dispose of any remaining backends across all pooled URLs.
+                DrainBackendPool();
+            }
+        }
+
+        /// <summary>
+        /// Disposes every backend currently held in the URL-keyed pool, across all URLs.
+        /// </summary>
+        private void DrainBackendPool()
+        {
+            foreach (var queue in backendPool.Values)
+                while (queue.TryDequeue(out var backend))
                     try { backend.Dispose(); }
                     catch (Exception ex) { Logging.Log.WriteWarningMessage(LOGTAG, "BackendManagerDisposeError", ex, "Failed to dispose backend instance: {0}", ex.Message); }
-            }
         }
 
         /// <summary>
@@ -328,7 +369,7 @@ partial class BackendManager
         /// <param name="description"></param>
         /// <param name="tasks"></param>
         /// <returns></returns>
-        private static async Task WaitForPendingItems(string description, List<Task> tasks)
+        private static async Task WaitForPendingItemsAsync(string description, List<Task> tasks)
         {
             // If we have tasks that have completed successfully, remove them from the list
             // as they should not trigger any warnings
@@ -367,12 +408,16 @@ partial class BackendManager
         }
 
         /// <summary>
-        /// Tries to create a folder, handling errors
+        /// Tries to create a folder, handling errors. The folder is created at the
+        /// URL the operation targets (its <see cref="PendingOperationBase.BackendUrlOverride"/>,
+        /// or the base backend URL), so that auto-creating folders works for non-folder
+        /// backends pointed at a sub-folder too.
         /// </summary>
+        /// <param name="op">The operation whose target folder should be created.</param>
         /// <returns><c>true</c> if the folder was created, <c>false</c> otherwise</returns>
-        private async Task<bool> TryCreateFolder()
+        private async Task<bool> TryCreateFolderAsync(PendingOperationBase op)
         {
-            using var backend = CreateBackend();
+            using var backend = CreateBackend(op);
             try
             {
                 // If we successfully create the folder, we can re-use the connection
@@ -395,7 +440,7 @@ partial class BackendManager
         /// <param name="op">The operation to execute</param>
         /// <param name="cancellationToken">The cancellation token</param>
         /// <returns>An awaitable task</returns>
-        private async Task ExecuteWithRetry(PendingOperationBase op, CancellationToken cancellationToken)
+        private async Task ExecuteWithRetryAsync(PendingOperationBase op, CancellationToken cancellationToken)
         {
             // Once in this method, we MUST set the op result,
             // or the program will hang waiting for the operation to complete
@@ -408,7 +453,7 @@ partial class BackendManager
                 try
                 {
                     // Happy case is execute and return
-                    await Execute(op, cancellationToken).ConfigureAwait(false);
+                    await ExecuteAsync(op, cancellationToken).ConfigureAwait(false);
                     return;
                 }
                 catch (Exception ex)
@@ -435,10 +480,10 @@ partial class BackendManager
                     {
                         try
                         {
-                            using (var backend = CreateBackend())
+                            using (var backend = CreateBackend(op))
                                 foreach (var name in await backend.Backend.GetDNSNamesAsync(context.TaskReader.TransferToken).ConfigureAwait(false) ?? [])
                                     if (!string.IsNullOrWhiteSpace(name))
-                                        System.Net.Dns.GetHostEntry(name);
+                                        await System.Net.Dns.GetHostEntryAsync(name);
                         }
                         catch
                         {
@@ -453,7 +498,7 @@ partial class BackendManager
                     // Check if this was a folder missing exception and we are allowed to autocreate folders
                     if (!(anyDownloaded || anyUploaded) && context.Options.AutocreateFolders && Library.Utility.ExceptionExtensions.FlattenException(ex).Any(x => x is FolderMissingException))
                     {
-                        if (await TryCreateFolder().ConfigureAwait(false))
+                        if (await TryCreateFolderAsync(op).ConfigureAwait(false))
                             recovered = true;
                     }
 
@@ -466,7 +511,7 @@ partial class BackendManager
                     }
                 }
 
-                if (!await context.TaskReader.ProgressRendevouz())
+                if (!await context.TaskReader.ProgressRendevouzAsync())
                 {
                     op.SetCancelled();
                     return;
@@ -495,31 +540,40 @@ partial class BackendManager
         /// <param name="op">The operation to execute</param>
         /// <param name="cancellationToken">The cancellation token</param>
         /// <returns>An awaitable task</returns>
-        private async Task Execute(PendingOperationBase op, CancellationToken cancellationToken)
+        private async Task ExecuteAsync(PendingOperationBase op, CancellationToken cancellationToken)
         {
-            await context.TaskReader.ProgressRendevouz().ConfigureAwait(false);
+            await context.TaskReader.ProgressRendevouzAsync().ConfigureAwait(false);
             using (new Logging.Timer(LOGTAG, $"RemoteOperation{op.Operation}", $"RemoteOperation{op.Operation}"))
                 switch (op)
                 {
                     case PutOperation putOp:
-                        await Execute(putOp, cancellationToken).ConfigureAwait(false);
+                        await ExecuteAsync(putOp, cancellationToken).ConfigureAwait(false);
                         anyUploaded = true;
                         return;
                     case GetOperation getOp:
-                        await Execute(getOp, cancellationToken).ConfigureAwait(false);
+                        await ExecuteAsync(getOp, cancellationToken).ConfigureAwait(false);
                         anyDownloaded = true;
                         return;
                     case DeleteOperation deleteOp:
-                        await Execute(deleteOp, cancellationToken).ConfigureAwait(false);
+                        await ExecuteAsync(deleteOp, cancellationToken).ConfigureAwait(false);
                         return;
                     case ListOperation listOp:
-                        await Execute(listOp, cancellationToken).ConfigureAwait(false);
+                        await ExecuteAsync(listOp, cancellationToken).ConfigureAwait(false);
                         return;
                     case QuotaInfoOperation quotaOp:
-                        await Execute(quotaOp, cancellationToken).ConfigureAwait(false);
+                        await ExecuteAsync(quotaOp, cancellationToken).ConfigureAwait(false);
+                        return;
+                    case CreateFolderOperation createFolderOp:
+                        await ExecuteAsync(createFolderOp, cancellationToken).ConfigureAwait(false);
                         return;
                     case WaitForEmptyOperation waitOp:
                         waitOp.SetComplete(true);
+                        return;
+                    case SetObjectLockOperation setLockOp:
+                        await ExecuteAsync(setLockOp, cancellationToken).ConfigureAwait(false);
+                        return;
+                    case GetObjectLockOperation getLockOp:
+                        await ExecuteAsync(getLockOp, cancellationToken).ConfigureAwait(false);
                         return;
                     default:
                         throw new NotImplementedException($"Operation type {op.GetType()} is not supported");
@@ -533,9 +587,9 @@ partial class BackendManager
         /// <param name="op">The operation to execute</param>
         /// <param name="cancellationToken">The cancellation token</param>
         /// <returns>An awaitable task</returns>
-        private async Task Execute<TResult>(PendingOperation<TResult> op, CancellationToken cancellationToken)
+        private async Task ExecuteAsync<TResult>(PendingOperation<TResult> op, CancellationToken cancellationToken)
         {
-            using var backend = CreateBackend();
+            using var backend = CreateBackend(op);
             using var token = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, op.CancelToken, context.TaskReader.TransferToken);
 
             try
@@ -568,7 +622,7 @@ partial class BackendManager
 
         public void Dispose()
         {
-            while (backendPool.TryDequeue(out var backend)) backend?.Dispose();
+            DrainBackendPool();
         }
     }
 }

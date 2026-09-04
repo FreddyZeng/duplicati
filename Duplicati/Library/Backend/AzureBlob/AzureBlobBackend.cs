@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -29,7 +29,7 @@ namespace Duplicati.Library.Backend.AzureBlob
 {
     // ReSharper disable once UnusedMember.Global
     // This class is instantiated dynamically in the BackendLoader.
-    public class AzureBlobBackend : IStreamingBackend
+    public class AzureBlobBackend : IStreamingBackend, ILockingBackend, IRenameEnabledBackend
     {
         /// <summary>
         /// The access to Azure blob storage
@@ -56,6 +56,29 @@ namespace Duplicati.Library.Backend.AzureBlob
         /// The option to specify the Azure access tier
         /// </summary>
         private const string AZURE_ACCESS_TIER_OPTION = "azure-access-tier";
+        /// <summary>
+        /// The option to specify the number of internal retries
+        /// </summary>
+        private const string AZURE_INTERNAL_RETRIES_OPTION = "azure-internal-retries";
+        /// <summary>
+        /// The option to specify the immutability policy mode
+        /// </summary>
+        private const string AZURE_BLOB_IMMUTABILITY_POLICY_MODE_OPTION = "azure-blob-immutability-policy-mode";
+
+        /// <summary>
+        /// The default number of internal retries
+        /// </summary>
+        public const int DEFAULT_INTERNAL_RETRIES = 3;
+
+        /// <summary>
+        /// The default immutability policy mode
+        /// </summary>
+        private const BlobImmutabilityPolicyMode DEFAULT_IMMUTABILITY_MODE = BlobImmutabilityPolicyMode.Unlocked;
+
+        /// <summary>
+        /// The immutability policy mode
+        /// </summary>
+        private readonly BlobImmutabilityPolicyMode _immutabilityPolicyMode;
 
         /// <summary>
         /// The default storage classes that are considered archive classes
@@ -85,12 +108,18 @@ namespace Duplicati.Library.Backend.AzureBlob
         // This constructor is needed by the BackendLoader.
         public AzureBlobBackend(string url, Dictionary<string, string?> options)
         {
-            var uri = new Utility.Uri(url);
+            var uri = new Utility.RelaxedUri(url);
             uri.RequireHost();
 
             var containerName = (uri.Host ?? "").ToLowerInvariant();
 
-            var auth = AuthOptionsHelper.ParseWithAlias(options, uri, AZURE_ACCOUNT_NAME_OPTION, AZURE_ACCESS_KEY_OPTION);
+            // The URL path is used as a blob name prefix, so that
+            // azure://container/some/folder stores all blobs under "some/folder/".
+            var prefix = (uri.Path ?? "").Trim('/');
+            if (prefix.Length != 0)
+                prefix = prefix + "/";
+
+            var auth = AuthOptionsHelper.ParseWithAlias(options, uri.Username, uri.Password, AZURE_ACCOUNT_NAME_OPTION, AZURE_ACCESS_KEY_OPTION);
             var timeouts = TimeoutOptionsHelper.Parse(options);
 
             var sasToken = options.GetValueOrDefault(AZURE_ACCESS_SAS_TOKEN_OPTION);
@@ -106,7 +135,11 @@ namespace Duplicati.Library.Backend.AzureBlob
                 ? null
                 // Warning: The cast here is required to avoid implicit casting null to AccessTier
                 : (AccessTier?)new AccessTier(accessTierValue);
-            _azureBlob = new AzureBlobWrapper(auth.Username!, auth.Password, sasToken, containerName, accessTier, archiveClasses, timeouts);
+            var internalRetries = Utility.Utility.ParseIntOption(options, AZURE_INTERNAL_RETRIES_OPTION, DEFAULT_INTERNAL_RETRIES);
+
+            _immutabilityPolicyMode = Utility.Utility.ParseEnumOption(options, AZURE_BLOB_IMMUTABILITY_POLICY_MODE_OPTION, DEFAULT_IMMUTABILITY_MODE);
+
+            _azureBlob = new AzureBlobWrapper(auth.Username!, auth.Password, sasToken, containerName, prefix, accessTier, archiveClasses, timeouts, internalRetries);
         }
 
         /// <summary>
@@ -165,6 +198,18 @@ namespace Duplicati.Library.Backend.AzureBlob
             return WrapWithExceptionHandler(_azureBlob.DeleteObjectAsync(remotename, cancellationToken));
         }
 
+        /// <inheritdoc />
+        public Task<DateTime?> GetObjectLockUntilAsync(string remotename, CancellationToken cancellationToken)
+        {
+            return _azureBlob.GetObjectLockUntilAsync(remotename, cancellationToken);
+        }
+
+        /// <inheritdoc />
+        public Task SetObjectLockUntilAsync(string remotename, DateTime lockUntilUtc, CancellationToken cancellationToken)
+        {
+            return WrapWithExceptionHandler(_azureBlob.SetObjectLockUntilAsync(remotename, lockUntilUtc, _immutabilityPolicyMode, cancellationToken));
+        }
+
         public IList<ICommandLineArgument> SupportedCommands
         {
             get
@@ -190,9 +235,9 @@ namespace Duplicati.Library.Backend.AzureBlob
                         CommandLineArgument.ArgumentType.Flags,
                         Strings.AzureBlobBackend.ArchiveClassesDescriptionShort,
                         Strings.AzureBlobBackend.ArchiveClassesDescriptionLong,
-                        string.Join(",", DEFAULT_ARCHIVE_CLASSES.Select(x => x.ToString())),
+                        string.Join(",", DEFAULT_ARCHIVE_CLASSES.Select(x => Library.Utility.Utility.FormatInvariantValue(x))),
                         null,
-                        ACCESS_TIERS.Select(x => x.ToString()).ToArray()),
+                        ACCESS_TIERS.Select(x => Library.Utility.Utility.FormatInvariantValue(x)).ToArray()),
                     new CommandLineArgument(AZURE_ACCESS_TIER_OPTION,
                         CommandLineArgument.ArgumentType.String,
                         Strings.AzureBlobBackend.AccessTierDescriptionShort,
@@ -200,6 +245,18 @@ namespace Duplicati.Library.Backend.AzureBlob
                         "",
                         null,
                         ACCESS_TIERS.Select(x => x.ToString()).ToArray()),
+                    new CommandLineArgument(AZURE_INTERNAL_RETRIES_OPTION,
+                        CommandLineArgument.ArgumentType.Integer,
+                        Strings.AzureBlobBackend.InternalRetriesDescriptionShort,
+                        Strings.AzureBlobBackend.InternalRetriesDescriptionLong,
+                        Library.Utility.Utility.FormatInvariantValue(DEFAULT_INTERNAL_RETRIES)),
+                    new CommandLineArgument(AZURE_BLOB_IMMUTABILITY_POLICY_MODE_OPTION,
+                        CommandLineArgument.ArgumentType.Enumeration,
+                        Strings.AzureBlobBackend.ImmutabilityPolicyModeDescriptionShort,
+                        Strings.AzureBlobBackend.ImmutabilityPolicyModeDescriptionLong,
+                        DEFAULT_IMMUTABILITY_MODE.ToString(),
+                        null,
+                        Enum.GetNames(typeof(BlobImmutabilityPolicyMode))),
                     .. TimeoutOptionsHelper.GetOptions()
                 ];
             }
@@ -209,8 +266,8 @@ namespace Duplicati.Library.Backend.AzureBlob
 
         public Task<string[]> GetDNSNamesAsync(CancellationToken cancelToken) => Task.FromResult(_azureBlob.DnsNames);
 
-        public Task TestAsync(CancellationToken cancellationToken)
-            => this.TestReadWritePermissionsAsync(cancellationToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancellationToken)
+            => this.TestBackendAsync(alsoWrite, cancellationToken);
 
         public Task CreateFolderAsync(CancellationToken cancellationToken)
         {
@@ -245,6 +302,15 @@ namespace Duplicati.Library.Backend.AzureBlob
         public void Dispose()
         {
 
+        }
+
+        public Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            return WrapWithExceptionHandler(Task.Run(async () =>
+            {
+                await _azureBlob.CopyFileAsync(oldname, newname, cancellationToken).ConfigureAwait(false);
+                await _azureBlob.DeleteObjectAsync(oldname, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken));
         }
     }
 }

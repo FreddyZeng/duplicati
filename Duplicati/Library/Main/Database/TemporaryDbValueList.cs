@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -26,6 +26,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Utility;
 using Microsoft.Data.Sqlite;
+using Duplicati.Library.Main.Database.Local;
 
 #nullable enable
 
@@ -156,7 +157,7 @@ internal class TemporaryDbValueList : IDisposable, IAsyncDisposable
     private static async Task<TemporaryDbValueList> DoCreateAsync(TemporaryDbValueList valueList, CancellationToken token)
     {
         if (valueList._values.Count() > LocalDatabase.CHUNK_SIZE)
-            await valueList.ForceToTable(token).ConfigureAwait(false);
+            await valueList.ForceToTableAsync(token).ConfigureAwait(false);
 
         return valueList;
     }
@@ -176,12 +177,12 @@ internal class TemporaryDbValueList : IDisposable, IAsyncDisposable
     /// </summary>
     /// <param name="token">A cancellation token to cancel the operation.</param>
     /// <returns>A task that when awaited contains the SQL in clause string.</returns>
-    public async Task<string> GetInClause(CancellationToken token)
+    public async Task<string> GetInClauseAsync(CancellationToken token)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(TemporaryDbValueList));
 
-        await ForceToTable(token).ConfigureAwait(false);
+        await ForceToTableAsync(token).ConfigureAwait(false);
 
         return $@"
             SELECT ""Value""
@@ -194,7 +195,7 @@ internal class TemporaryDbValueList : IDisposable, IAsyncDisposable
     /// </summary>
     /// <param name="token">A cancellation token to cancel the operation.</param>
     /// <returns>A task that completes when the table has been created and the values inserted.</returns>
-    public async Task ForceToTable(CancellationToken token)
+    public async Task ForceToTableAsync(CancellationToken token)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(TemporaryDbValueList));
@@ -221,7 +222,7 @@ internal class TemporaryDbValueList : IDisposable, IAsyncDisposable
             for (int i = 0; i < slice.Length; i++)
                 _cmd.SetParameterValue(parameterNames[i], slice[i]);
 
-            await _cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            await _cmd.ExecuteNonQueryAsync(writeLog: false, default).ConfigureAwait(false);
         }
     }
 

@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 using System;
@@ -29,6 +29,9 @@ using Duplicati.Library.Snapshots.Windows;
 
 namespace Duplicati.Library.Modules.Builtin
 {
+    /// <summary>
+    /// Provides options for Hyper-V backup.
+    /// </summary>
     public class HyperVOptions : Interface.IGenericSourceModule
     {
         /// <summary>
@@ -42,32 +45,51 @@ namespace Duplicati.Library.Modules.Builtin
 
         #region IGenericModule Members
 
+        /// <summary>
+        /// Gets the key identifier for this module.
+        /// </summary>
         public string Key
         {
             get { return "hyperv-options"; }
         }
 
+        /// <summary>
+        /// Gets the display name for this module.
+        /// </summary>
         public string DisplayName
         {
             get { return Strings.HyperVOptions.DisplayName; }
         }
 
+        /// <summary>
+        /// Gets the description of this module.
+        /// </summary>
         public string Description
         {
             get { return Strings.HyperVOptions.Description; }
         }
 
+        /// <summary>
+        /// Gets whether this module should be loaded by default.
+        /// </summary>
         public bool LoadAsDefault
         {
             get { return OperatingSystem.IsWindows(); }
         }
 
+        /// <summary>
+        /// Gets the list of supported command line arguments.
+        /// </summary>
         public IList<Interface.ICommandLineArgument> SupportedCommands
             => new List<Interface.ICommandLineArgument>
             {
                 new Interface.CommandLineArgument(IGNORE_CONSISTENCY_WARNING_OPTION, Interface.CommandLineArgument.ArgumentType.Boolean, Strings.HyperVOptions.IgnoreConsistencyWarningShort, Strings.HyperVOptions.IgnoreConsistencyWarningLong)
             };
 
+        /// <summary>
+        /// Configures the module with the provided command line options.
+        /// </summary>
+        /// <param name="commandlineOptions">The command line options dictionary.</param>
         public void Configure(IDictionary<string, string> commandlineOptions)
         {
             // Do nothing. Implementation needed for IGenericModule interface.
@@ -76,6 +98,13 @@ namespace Duplicati.Library.Modules.Builtin
         #endregion
 
         #region Implementation of IGenericSourceModule
+        /// <summary>
+        /// Parses the source paths for Hyper-V backups.
+        /// </summary>
+        /// <param name="paths">The source paths.</param>
+        /// <param name="filter">The filter string.</param>
+        /// <param name="commandlineOptions">The command line options.</param>
+        /// <returns>A dictionary of changed options.</returns>
         public Dictionary<string, string> ParseSourcePaths(ref string[] paths, ref string filter, Dictionary<string, string> commandlineOptions)
         {
             // Early exit in case we are non-windows to prevent attempting to load Windows-only components
@@ -100,11 +129,33 @@ namespace Duplicati.Library.Modules.Builtin
             return RealParseSourcePaths(ref paths, ref filter, commandlineOptions);
         }
 
+        /// <summary>
+        /// Parses the source paths for Hyper-V backups (real implementation).
+        /// </summary>
+        /// <param name="paths">The source paths.</param>
+        /// <param name="filter">The filter string.</param>
+        /// <param name="commandlineOptions">The command line options.</param>
+        /// <returns>A dictionary of changed options.</returns>
         // Make sure the JIT does not attempt to inline this call and thus load
-        // referenced types from System.Management here
+        // referenced types from Microsoft.Management.Infrastructure here
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         [SupportedOSPlatform("windows")]
-        public Dictionary<string, string> RealParseSourcePaths(ref string[] paths, ref string filter, Dictionary<string, string> commandlineOptions, IHyperVUtility hypervUtility = null)
+        public Dictionary<string, string> RealParseSourcePaths(ref string[] paths, ref string filter, Dictionary<string, string> commandlineOptions)
+        {
+            using var hypervUtility = new HyperVUtility();
+            return RealParseSourcePaths(ref paths, ref filter, commandlineOptions, hypervUtility);
+        }
+
+        /// <summary>
+        /// Parses the source paths for Hyper-V backups (real implementation).
+        /// </summary>
+        /// <param name="paths">The source paths.</param>
+        /// <param name="filter">The filter string.</param>
+        /// <param name="commandlineOptions">The command line options.</param>
+        /// <param name="hypervUtility">The Hyper-V utility instance.</param>
+        /// <returns>A dictionary of changed options.</returns>
+        [SupportedOSPlatform("windows")]
+        internal Dictionary<string, string> RealParseSourcePaths(ref string[] paths, ref string filter, Dictionary<string, string> commandlineOptions, IHyperVUtility hypervUtility)
         {
             var changedOptions = new Dictionary<string, string>();
             var hypervFilters = new List<string>();
@@ -117,8 +168,6 @@ namespace Duplicati.Library.Modules.Builtin
                 var remainingfilters = filters.Where(x => !Regex.IsMatch(x, m_HyperVPathGuidRegExp, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)).ToArray();
                 filter = string.Join(System.IO.Path.PathSeparator.ToString(), remainingfilters);
             }
-
-            hypervUtility ??= new HyperVUtility();
 
             if (paths == null || !ContainFilesForBackup(paths) || !hypervUtility.IsHyperVInstalled)
                 return changedOptions;
@@ -144,7 +193,14 @@ namespace Duplicati.Library.Modules.Builtin
                 Logging.Log.WriteWarningMessage(LOGTAG, "HyperVOnServerOnly", null, "This is client version of Windows. Hyper-V VSS writer is present only on Server version. Backup will continue, but will be crash consistent only in opposite to application consistent in Server version");
 
             Logging.Log.WriteInformationMessage(LOGTAG, "StartingHyperVQuery", "Starting to gather Hyper-V information");
-            var provider = Utility.Utility.ParseEnumOption(changedOptions.AsReadOnly(), "snapshot-provider", WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_QUERY_PROVIDER);
+            var provider = Utility.Utility.ParseEnumOption(commandlineOptions, "snapshot-provider", WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_QUERY_PROVIDER);
+            if (provider == WindowsSnapshotProvider.Wmi)
+            {
+                provider = WindowsSnapshotProvider.Native;
+                changedOptions["snapshot-provider"] = provider.ToString();
+                Logging.Log.WriteWarningMessage(LOGTAG, "WmiNotSupportedForHyperV", null, $"The {WindowsSnapshotProvider.Wmi} cannot be used for HyperV backups, switching to {provider}");
+            }
+
             hypervUtility.QueryHyperVGuestsInfo(provider, true);
 
             if (hypervUtility.Guests == null || hypervUtility.Guests.Count == 0)
@@ -221,7 +277,7 @@ namespace Duplicati.Library.Modules.Builtin
                 .ToList();
 
             var filterhandler = pathFilters.Select(x => x.Filter)
-                .Concat(filter.Split(new[] { System.IO.Path.PathSeparator }, StringSplitOptions.RemoveEmptyEntries))
+                .Concat((filter ?? "").Split(new[] { System.IO.Path.PathSeparator }, StringSplitOptions.RemoveEmptyEntries))
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Select(x => Utility.FilterExpression.StringToIFilter(x))
                 .Append(new Utility.FilterExpression())
@@ -248,6 +304,11 @@ namespace Duplicati.Library.Modules.Builtin
             return changedOptions;
         }
 
+        /// <summary>
+        /// Determines whether the paths contain files for Hyper-V backup.
+        /// </summary>
+        /// <param name="paths">The paths to check.</param>
+        /// <returns>True if the paths contain Hyper-V files for backup.</returns>
         public bool ContainFilesForBackup(string[] paths)
         {
             if (paths == null || !OperatingSystem.IsWindows())

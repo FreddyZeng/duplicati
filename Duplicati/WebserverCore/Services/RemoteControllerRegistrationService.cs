@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -21,6 +21,7 @@
 
 using System.Text.Json;
 using Duplicati.Library.RemoteControl;
+using Duplicati.Server;
 using Duplicati.Server.Database;
 using Duplicati.WebserverCore.Abstractions;
 
@@ -48,6 +49,10 @@ public sealed record RemoteControlConfig
     /// The trusted server certificates.
     /// </summary>
     public required IEnumerable<MiniServerCertificate> ServerCertificates { get; init; }
+    /// <summary>
+    /// The time when the settings should be refreshed.
+    /// </summary>
+    public DateTimeOffset? RefreshSettingsBy { get; init; }
 }
 
 /// <summary>
@@ -55,7 +60,10 @@ public sealed record RemoteControlConfig
 /// </summary>
 /// <param name="connection">The database connection</param>
 /// <param name="httpClientFactory">The HTTP client factory</param>
-public class RemoteControllerRegistrationService(Connection connection, IHttpClientFactory httpClientFactory, IRemoteController remoteController) : IRemoteControllerRegistration
+/// <param name="remoteController">The remote controller</param>
+/// <param name="controllerHandler">The controller handler</param>
+/// <param name="eventPollNotify">The event poll notifier</param>
+public class RemoteControllerRegistrationService(Connection connection, IHttpClientFactory httpClientFactory, IRemoteController remoteController, IRemoteControllerHandler controllerHandler, EventPollNotify eventPollNotify) : IRemoteControllerRegistration
 {
     /// <summary>
     /// The registration process controller this service is wrapping.
@@ -88,7 +96,7 @@ public class RemoteControllerRegistrationService(Connection connection, IHttpCli
     public string? RegistrationUrl { get; private set; }
 
     /// <inheritdoc />
-    public Task RegisterMachine(string registrationUrl)
+    public Task RegisterMachineAsync(string registrationUrl)
     {
         if (_registerForRemote != null)
             throw new InvalidOperationException("Already registering");
@@ -100,32 +108,47 @@ public class RemoteControllerRegistrationService(Connection connection, IHttpCli
 
         return _registrationTask = Task.Run(async () =>
         {
-            _registerForRemote = new RegisterForRemote(registrationUrl, httpClientFactory.CreateClient(), _operationCancellation.Token);
-            var data = await _registerForRemote.Register(maxRetries: 3, retryInterval: TimeSpan.FromSeconds(5));
-
-            // Make the link visible to outside
-            if (data.RegistrationData != null)
-                RegistrationUrl = data.RegistrationData.ClaimLink;
-
-            // Grab the claim data once it is returned
-            var claimData = await _registerForRemote.Claim();
-            connection.ApplicationSettings.RemoteControlConfig = JsonSerializer.Serialize(new RemoteControlConfig
+            try
             {
-                Token = claimData.JWT,
-                ServerCertificates = claimData.ServerCertificates,
-                CertificateUrl = claimData.CertificateUrl,
-                ServerUrl = claimData.ServerUrl
-            });
+                _registerForRemote = new RegisterForRemote(registrationUrl, httpClientFactory.CreateClient(), GetMachineIdOverride(), _operationCancellation.Token);
+                var data = await _registerForRemote.RegisterAsync(maxRetries: 3, retryInterval: TimeSpan.FromSeconds(5));
 
-            // Automatically connect after we are registered
-            if (remoteController.CanEnable)
-                remoteController.Enable();
+                // Make the link visible to outside
+                if (data.RegistrationData != null)
+                    RegistrationUrl = data.RegistrationData.ClaimLink;
 
+                eventPollNotify.SignalRemoteControlUpdate();
+
+                // Grab the claim data once it is returned
+                var claimData = await _registerForRemote.ClaimAsync();
+                connection.ApplicationSettings.RemoteControlConfig = JsonSerializer.Serialize(new RemoteControlConfig
+                {
+                    Token = claimData.JWT,
+                    ServerCertificates = claimData.ServerCertificates,
+                    CertificateUrl = claimData.CertificateUrl,
+                    ServerUrl = claimData.ServerUrl
+                });
+
+                // If settings are present in the claim data, apply them via the control handler
+                if (claimData.Settings != null && claimData.Settings.Count > 0)
+                    await controllerHandler.OnControlAsync(KeepRemoteConnection.ControlMessage.CreateSettingsControlMessage(claimData.Settings));
+
+                // Automatically connect after we are registered
+                if (remoteController.CanEnable)
+                    remoteController.Enable(false);
+            }
+            finally
+            {
+                // Machine is claimed or failed and we are done with the registration process, throw away the data
+                _registerForRemote = null;
+                RegistrationUrl = null;
+                eventPollNotify.SignalRemoteControlUpdate();
+            }
         });
     }
 
     /// </inheritdoc>
-    public Task WaitForRegistration()
+    public Task WaitForRegistrationAsync()
     {
         if (_registrationTask == null)
             throw new InvalidOperationException("Not registering");
@@ -141,5 +164,24 @@ public class RemoteControllerRegistrationService(Connection connection, IHttpCli
         _operationCancellation?.Dispose();
         _registerForRemote = null;
         _operationCancellation = null;
+        RegistrationUrl = null;
+        eventPollNotify.SignalRemoteControlUpdate();
+    }
+
+    /// <summary>
+    /// Gets the machine ID override from the application settings (ANY_BACKUP_ID), if set.
+    /// </summary>
+    /// <returns>The configured machine ID override, or null if not set</returns>
+    private string? GetMachineIdOverride()
+    {
+        if (connection.Settings == null)
+            return null;
+
+        var lookup = connection.Settings
+            .GroupBy(k => k.Name.StartsWith("--", StringComparison.Ordinal) ? k.Name.Substring(2) : k.Name, k => k.Value)
+            .ToDictionary(x => x.Key, x => x.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+
+        var machineId = lookup.GetValueOrDefault("machine-id");
+        return string.IsNullOrWhiteSpace(machineId) ? null : machineId;
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -91,7 +91,7 @@ public static class EncryptedFieldHelper
     /// </summary>
     /// <param name="value">The value to decrypt</param>
     /// <returns><c>true</c> if the string is encrypted; <c>false</c> otherwise</returns>
-    public static bool IsEncryptedString(string value)
+    public static bool IsEncryptedString(string? value)
         => !string.IsNullOrWhiteSpace(value) && value.StartsWith(HEADER_PREFIX);
 
     /// <summary>

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -48,13 +48,13 @@ internal static class ListFileVersionsHandler
             throw new UserInformationException("No local database found, this operation requires a local database", "NoLocalDatabase");
 
         await using var db =
-            await Database.LocalListDatabase.CreateAsync(options.Dbpath, null, result.TaskControl.ProgressToken)
+            await Database.Local.LocalListDatabase.CreateAsync(options.Dbpath, null, result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
         long[]? filesetIds = null;
         if (!options.AllVersions)
         {
             filesetIds = await db
-                .GetFilesetIDs(options.Time, options.Version, false, result.TaskControl.ProgressToken)
+                .GetFilesetIDsAsync(options.Time, options.Version, false, result.TaskControl.ProgressToken)
                 .ToArrayAsync(cancellationToken: result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
@@ -67,7 +67,7 @@ internal static class ListFileVersionsHandler
 
         paths = paths.Select(path => Util.AppendDirSeparator(path)).ToArray();
         result.FileVersions = await db
-            .ListFileVersions(paths, filesetIds, offset, limit, result.TaskControl.ProgressToken)
+            .ListFileVersionsAsync(paths, filesetIds, offset, limit, result.TaskControl.ProgressToken)
             .ConfigureAwait(false);
     }
 }

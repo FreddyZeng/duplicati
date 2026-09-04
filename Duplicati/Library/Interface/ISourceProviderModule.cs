@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,14 +26,6 @@ namespace Duplicati.Library.Interface;
 /// <summary>
 /// Implements a data source that can be backed up
 /// </summary>
-public interface ISourceProviderModule : ISourceProvider, IDynamicModule
+public interface ISourceProviderModule : ISourceProvider, ICommonModule
 {
-    /// <summary>
-    /// Gets the module key
-    /// </summary>
-    string Key { get; }
-    /// <summary>
-    /// Gets the display name of the module
-    /// </summary>
-    string DisplayName { get; }
 }

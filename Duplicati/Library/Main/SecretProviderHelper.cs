@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -33,7 +33,6 @@ using Duplicati.Library.DynamicLoader;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Logging;
 using Duplicati.Library.Utility;
-using Google.Protobuf.WellKnownTypes;
 
 namespace Duplicati.Library.Main;
 
@@ -73,25 +72,6 @@ public static class SecretProviderHelper
     }
 
     /// <summary>
-    /// Creates an instance of a secret provider with caching enabled
-    /// </summary>
-    /// <param name="config">The configuration string</param>
-    /// <param name="cachingLevel">The caching level</param>
-    /// <param name="persistedFolder">The folder to persist the cache to</param>
-    /// <param name="salt">The salt to use for hashing</param>
-    /// <param name="pattern">The pattern to use for matching</param>
-    /// <param name="cancelToken">The cancellation token</param>
-    /// <returns>The secret provider instance</returns>
-    public static async Task<ISecretProvider> CreateInstanceAsync(string config, CachingLevel cachingLevel, string persistedFolder, string salt, string pattern, CancellationToken cancelToken)
-    {
-        var provider = SecretProviderLoader.CreateInstance(config);
-        var sp = WrapWithCache(config, provider, cachingLevel, persistedFolder, salt, pattern);
-        await sp.InitializeAsync(new System.Uri(config), cancelToken).ConfigureAwait(false);
-
-        return sp;
-    }
-
-    /// <summary>
     /// Wraps a secret provider with caching
     /// </summary>
     /// <param name="config">The configuration string</param>
@@ -104,18 +84,49 @@ public static class SecretProviderHelper
     public static ISecretProvider WrapWithCache(string config, ISecretProvider provider, CachingLevel cachingLevel, string persistedFolder, string salt, string? pattern)
         => new SecretProviderCached(config, provider, cachingLevel, persistedFolder, salt, pattern);
 
+
+    /// <summary>
+    /// Gets the default secret provider, if any
+    /// </summary>
+    /// <param name="options">The options passed</param>
+    /// <param name="cancellationToken">The cancellation token</param>
+    /// <returns>The default secret provider, or null if none is available</returns>
+    public static async Task<ISecretProvider?> GetDefaultSecretProviderAsync(Dictionary<string, string?> options, CancellationToken cancellationToken)
+    {
+        if (Library.Utility.Utility.ParseBoolOption(options, "disable-default-secret-provider"))
+            return null;
+
+        var providerConfig = options.GetValueOrDefault("secret-provider");
+        if (!string.IsNullOrWhiteSpace(providerConfig))
+        {
+            var provider = await SecretProviderLoader.CreateInstanceAsync(providerConfig, true, cancellationToken).ConfigureAwait(false);
+            if (provider?.IsSetSupported == true)
+                return provider;
+        }
+
+        try
+        {
+            return await SecretProviderLoader.GetDefaultSecretProviderForOperatingSystem(true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.WriteErrorMessage(LOGTAG, "FailedToGetDefaultSecretProvider", ex, "Failed to get default secret provider");
+            return null;
+        }
+    }
+
     /// <summary>
     /// Applies the secret provider to the arguments.
     /// Note that this method modifes the arguments and options in place.
     /// </summary>
     /// <param name="realUriArguments">The arguments to modify, of type <see cref="System.Uri"/></param>
-    /// <param name="internalUriArguments">The arguments to modify, of type <see cref="Library.Utility.Uri"/></param>
+    /// <param name="internalUriArguments">The arguments to modify, of type <see cref="Library.Utility.RelaxedUri"/></param>
     /// <param name="options">The options to modify</param>
     /// <param name="persistedFolder">The persisted secret cache folder</param>
     /// <param name="fallbackProvider">The fallback provider to use if no provider is specified</param>
     /// <param name="cancellationToken">The cancellation token</param>
     /// <returns>The secret provider</returns>
-    public static async Task<ISecretProvider?> ApplySecretProviderAsync(System.Uri?[] realUriArguments, Library.Utility.Uri[] internalUriArguments, Dictionary<string, string?> options, string persistedFolder, ISecretProvider? fallbackProvider, CancellationToken cancellationToken)
+    public static async Task<ISecretProvider?> ApplySecretProviderAsync(System.Uri?[] realUriArguments, Library.Utility.RelaxedUri[] internalUriArguments, Dictionary<string, string?> options, string persistedFolder, ISecretProvider? fallbackProvider, CancellationToken cancellationToken)
     {
         var provider = options.GetValueOrDefault("secret-provider");
         if (string.IsNullOrWhiteSpace(provider) && fallbackProvider == null)
@@ -131,7 +142,7 @@ public static class SecretProviderHelper
         }
         else
         {
-            var newProvider = SecretProviderLoader.CreateInstance(provider);
+            var newProvider = await SecretProviderLoader.CreateInstanceAsync(provider, false, cancellationToken);
 
             // Weak salt, but semi-static
             string salt;
@@ -159,12 +170,12 @@ public static class SecretProviderHelper
     /// </summary>
     /// <param name="provider">The secret provider to use</param>
     /// <param name="realUriArguments">The arguments to modify, of type <see cref="System.Uri"/></param>
-    /// <param name="internalUriArguments">The arguments to modify, of type <see cref="Library.Utility.Uri"/></param>
+    /// <param name="internalUriArguments">The arguments to modify, of type <see cref="Library.Utility.RelaxedUri"/></param>
     /// <param name="options">Any options to update</param>
     /// <param name="matchpattern">The prefix to look for</param>
     /// <param name="cancelToken">The cancellation token</param>
     /// <returns>An awaitable task</returns>
-    public static async Task ReplaceSecretsAsync(ISecretProvider provider, System.Uri?[] realUriArguments, Library.Utility.Uri[] internalUriArguments, Dictionary<string, string?> options, string matchpattern, CancellationToken cancelToken)
+    public static async Task ReplaceSecretsAsync(ISecretProvider provider, System.Uri?[] realUriArguments, Library.Utility.RelaxedUri[] internalUriArguments, Dictionary<string, string?> options, string matchpattern, CancellationToken cancelToken)
     {
         // Unwrap ${} to support ${name is long}
         var suffix = string.Empty;
@@ -243,11 +254,13 @@ public static class SecretProviderHelper
         foreach (var v in realUriMap)
             foreach (var (s, k) in v.Value)
             {
-                var builder = new UriBuilder(realUriArguments[s]!);
-                var query = HttpUtility.ParseQueryString(builder.Query);
+                // System.UriBuilder collapses host-less urls with schemes it does
+                // not know ("s3://" becomes "s3:/"), so the query is replaced
+                // through the relaxed parser and re-imported into System.Uri
+                var uri = new Library.Utility.RelaxedUri(realUriArguments[s]!.OriginalString);
+                var query = HttpUtility.ParseQueryString(uri.Query ?? string.Empty);
                 query[k] = translated[v.Key];
-                builder.Query = query.ToString();
-                realUriArguments[s] = builder.Uri;
+                realUriArguments[s] = new System.Uri(uri.SetQuery(query.ToString()).ToString());
             }
 
         // Update internal uri arguments by replacing values
@@ -255,14 +268,24 @@ public static class SecretProviderHelper
             foreach (var (s, k) in v.Value)
             {
                 var uri = internalUriArguments[s];
-                var kp = uri.QueryParameters;
-                kp[k] = Library.Utility.Uri.UrlEncode(translated[v.Key]);
-                uri = uri.SetQuery(Library.Utility.Uri.BuildUriQuery(kp));
+                var kp = uri.GetEncodedQueryParameters();
+                kp[k] = Library.Utility.UrlEncoding.UrlEncode(translated[v.Key]);
+                uri = uri.SetQuery(Library.Utility.UrlEncoding.BuildUriQuery(kp, true));
                 internalUriArguments[s] = uri;
             }
 
         return;
     }
+
+    /// <summary>
+    /// Resolves a single secret from the provider
+    /// </summary>
+    /// <param name="provider">The secret provider</param>
+    /// <param name="name">The name of the secret</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>The resolved secret</returns>
+    public static async Task<string> ResolveSecretAsync(this ISecretProvider provider, string name, CancellationToken cancelToken)
+        => (await provider.ResolveSecretsAsync([name], cancelToken).ConfigureAwait(false))[name];
 
     /// <summary>
     /// Gets the key from a value using the pattern, and also collects partial matches
@@ -394,6 +417,12 @@ public static class SecretProviderHelper
 
         /// <inheritdoc/>
         public string Description => _provider.Description;
+
+        /// <inheritdoc />
+        public Task<bool> IsSupported(CancellationToken cancellationToken) => _provider.IsSupported(cancellationToken);
+
+        /// <inheritdoc />
+        public bool IsSetSupported => _provider.IsSetSupported;
 
         /// <inheritdoc/>
         public IList<ICommandLineArgument> SupportedCommands => _provider.SupportedCommands;
@@ -570,6 +599,29 @@ public static class SecretProviderHelper
 
 
             return result;
+        }
+
+        /// <inheritdoc />
+        public async Task SetSecretAsync(string key, string value, bool overwrite, CancellationToken cancellationToken)
+        {
+            if (!_initialized)
+                throw new InvalidOperationException("The provider has not been initialized");
+
+            await _provider.SetSecretAsync(key, value, overwrite, cancellationToken).ConfigureAwait(false);
+
+            if (_cachingLevel == CachingLevel.InMemory || _cachingLevel == CachingLevel.Persistent)
+            {
+                lock (_lock)
+                {
+                    if (!_cache.ContainsKey(_config))
+                        _cache[_config] = new Dictionary<string, string>();
+
+                    _cache[_config][key] = value;
+                }
+
+                if (_cachingLevel == CachingLevel.Persistent)
+                    await SaveCacheAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 }

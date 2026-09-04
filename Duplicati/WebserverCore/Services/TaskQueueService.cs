@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -84,19 +84,19 @@ public class TaskQueueService(IQueueRunnerService queueRunnerService) : ITaskQue
     }
 
     /// <inheritdoc/>
-    public void StopTask(long taskid)
-        => StopOrAbortTask(taskid, false);
+    public Task StopTaskAsync(long taskid)
+        => StopOrAbortTaskAsync(taskid, false);
 
     /// <inheritdoc/>
-    public void AbortTask(long taskid)
-        => StopOrAbortTask(taskid, true);
+    public Task AbortTaskAsync(long taskid)
+        => StopOrAbortTaskAsync(taskid, true);
 
     /// <summary>
     /// Stops or aborts a task based on the provided task ID.
     /// </summary>
     /// <param name="taskid">The ID of the task to stop or abort.</param>
     /// <param name="abort">If true, the task will be aborted; otherwise, it will be stopped gracefully.</param>
-    private void StopOrAbortTask(long taskid, bool abort)
+    private async Task StopOrAbortTaskAsync(long taskid, bool abort)
     {
         var task = queueRunnerService.GetCurrentTask();
         var tasks = queueRunnerService.GetCurrentTasks();
@@ -108,9 +108,11 @@ public class TaskQueueService(IQueueRunnerService queueRunnerService) : ITaskQue
         if (task == null)
             throw new NotFoundException("No such task found");
 
+        queueRunnerService.CancelCurrentTaskLockWait(task.TaskID);
+
         if (abort)
-            task.Abort();
+            await task.AbortAsync().ConfigureAwait(false);
         else
-            task.Stop();
+            await task.StopAsync().ConfigureAwait(false);
     }
 }

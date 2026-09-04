@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -123,9 +123,9 @@ namespace Duplicati.Library.Backend.TencentCOS
 
         public COS(string url, Dictionary<string, string?> options)
         {
-            var uri = new Utility.Uri(url?.Trim() ?? "");
+            var uri = new Utility.RelaxedUri(url?.Trim() ?? "");
             var prefix = uri.HostAndPath?.Trim()?.Trim('/')?.Trim('\\');
-            var auth = AuthOptionsHelper.ParseWithAlias(options, uri, COS_SECRET_ID, COS_SECRET_KEY)
+            var auth = AuthOptionsHelper.ParseWithAlias(options, uri.Username, uri.Password, COS_SECRET_ID, COS_SECRET_KEY)
                 .RequireCredentials();
 
             var bucket = options.GetValueOrDefault(COS_BUCKET);
@@ -243,7 +243,7 @@ namespace Duplicati.Library.Backend.TencentCOS
             }
         }
 
-        public async Task TestAsync(CancellationToken cancelToken)
+        public async Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
         {
             var json = JsonConvert.SerializeObject(_cosOptions);
             try
@@ -271,7 +271,8 @@ namespace Duplicati.Library.Backend.TencentCOS
                 throw;
             }
 
-            await this.TestReadWritePermissionsAsync(cancelToken).ConfigureAwait(false);
+            if (alsoWrite)
+                await this.TestReadWritePermissionsAsync(cancelToken).ConfigureAwait(false);
         }
 
         public Task CreateFolderAsync(CancellationToken cancelToken)

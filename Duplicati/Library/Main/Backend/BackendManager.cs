@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Data;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -28,9 +27,9 @@ internal partial class BackendManager : IBackendManager
     private static readonly string LOGTAG = Logging.Log.LogTagFromType<BackendManager>();
 
     /// <summary>
-    /// The channel for issuing and handling requests
+    /// The channel for issuing and handling requests.
     /// </summary>
-    private readonly IChannel<PendingOperationBase> requestChannel = ChannelManager.CreateChannel<PendingOperationBase>(name: "BackendManager");
+    private readonly IChannel<PendingOperationBase> requestChannel = ChannelManager.CreateChannel<PendingOperationBase>(name: "BackendManager-" + Guid.NewGuid().ToString("N"));
 
     /// <summary>
     /// The queue runner task
@@ -41,6 +40,26 @@ internal partial class BackendManager : IBackendManager
     /// The execution context
     /// </summary>
     private readonly ExecuteContext context;
+
+    /// <summary>
+    /// The backend URL this manager is bound to. Used as the base URL when
+    /// computing per-operation URL overrides for backends that do not support
+    /// folder operations (see <see cref="ApplyPathTranslation"/>).
+    /// </summary>
+    private readonly string backendUrl;
+
+    /// <summary>
+    /// Indicates whether the backend supports object locking
+    /// </summary>
+    private readonly Lazy<bool> supportsObjectLocking;
+
+    /// <summary>
+    /// Indicates whether the backend supports folder operations. Kept internal:
+    /// the <see cref="IBackendManager"/> interface no longer exposes it, but the
+    /// backend manager still needs it to decide how to translate relative paths
+    /// for backends that only understand a single flat namespace per URL.
+    /// </summary>
+    private readonly Lazy<bool> supportsFolderOperations;
 
     /// <summary>
     /// Flag keeping track of whether the object has been disposed
@@ -59,6 +78,8 @@ internal partial class BackendManager : IBackendManager
         if (string.IsNullOrWhiteSpace(backendUrl))
             throw new ArgumentNullException(nameof(backendUrl));
 
+        this.backendUrl = backendUrl;
+
         var isThrottleDisabled = options.DisableThrottle || options.ThrottleDisabledBackends.Contains(Library.Utility.Utility.GuessScheme(backendUrl) ?? string.Empty);
 
         // To avoid excessive parameter passing, the context is captured here
@@ -70,8 +91,39 @@ internal partial class BackendManager : IBackendManager
             new ThrottleManager() { Limit = isThrottleDisabled ? 0 : options.MaxDownloadPrSecond },
             taskReader ?? throw new ArgumentNullException(nameof(taskReader)),
             isThrottleDisabled,
-            options ?? throw new ArgumentNullException(nameof(options))
+            options ?? throw new ArgumentNullException(nameof(options)),
+            new SharedParityProvider(options)
         );
+
+        supportsObjectLocking = new Lazy<bool>(() =>
+        {
+            var backend = DynamicLoader.BackendLoader.GetBackend(backendUrl, context.Options.RawOptions);
+            if (backend == null)
+                return false;
+            try
+            {
+                return backend is ILockingBackend;
+            }
+            finally
+            {
+                (backend as IDisposable)?.Dispose();
+            }
+        }, isThreadSafe: true);
+
+        supportsFolderOperations = new Lazy<bool>(() =>
+        {
+            var backend = DynamicLoader.BackendLoader.GetBackend(backendUrl, context.Options.RawOptions);
+            if (backend == null)
+                return false;
+            try
+            {
+                return backend is IFolderEnabledBackend;
+            }
+            finally
+            {
+                (backend as IDisposable)?.Dispose();
+            }
+        }, isThreadSafe: true);
 
         // The BackendManager class is a wrapper that essentially sends
         // requests into a queue and processes them in order.
@@ -83,11 +135,16 @@ internal partial class BackendManager : IBackendManager
     }
 
     /// <summary>
+    /// Gets a value indicating whether the configured backend supports object locking
+    /// </summary>
+    public bool SupportsObjectLocking => supportsObjectLocking.Value;
+
+    /// <summary>
     /// Enters a task into the queue for processing.
     /// </summary>
     /// <param name="op">The operation to queue</param>
     /// <returns>An awaitable task</returns>
-    private async Task QueueTask(PendingOperationBase op)
+    private async Task QueueTaskAsync(PendingOperationBase op)
     {
         if (queueRunner.IsCompleted)
         {
@@ -126,16 +183,87 @@ internal partial class BackendManager : IBackendManager
     }
 
     /// <summary>
+    /// Merges a relative sub-path onto the backend URL, returning a new backend URL
+    /// that points at the sub-path. The merge is done on the path component of the
+    /// URL so it works across schemes (file://, s3://, ssh://, ...). An empty or null
+    /// sub-path returns the original URL unchanged.
+    /// </summary>
+    /// <param name="subPath">The relative sub-path to append (using '/' as separator), or null/empty for the root.</param>
+    /// <returns>A backend URL that points at <paramref name="subPath"/> under the backend root.</returns>
+    private string MergeBackendPath(string? subPath)
+    {
+        if (string.IsNullOrWhiteSpace(subPath))
+            return backendUrl;
+
+        var uri = new Library.Utility.RelaxedUri(backendUrl);
+        // Trim trailing path separators from the existing path AND the sub-path before
+        // joining with a single '/'. The URL path can end with a backslash on Windows
+        // (e.g. a file:// URL built from a TempFolder path, which always carries a
+        // trailing directory separator); only trimming '/' would leave that backslash in
+        // place and produce a doubled separator (e.g. "D:\...\temp\Stage1" -> "...\temp\\Stage1"
+        // after the OS normalizes the '/'), which on Windows yields an invalid path
+        // ("\\?\D:\...\temp\\Stage1"). Trimming both separators and joining with a single
+        // '/' keeps the merged path well-formed regardless of the host OS or how the
+        // backend URL was constructed.
+        var basePath = uri.Path?.TrimEnd('/', '\\') ?? "";
+        var sub = subPath.Trim('/', '\\');
+        var mergedPath = string.IsNullOrEmpty(basePath)
+            ? sub
+            : basePath + "/" + sub;
+        return uri.SetPath(mergedPath).ToString();
+    }
+
+    /// <summary>
+    /// Applies path translation to a file-oriented operation (put/get/delete) for
+    /// backends that do not support folder operations.
+    ///
+    /// This is only invoked for operations where the caller explicitly passes a
+    /// relative path that may contain sub-folders (the sync operation). Regular
+    /// backup volume uploads pass an opaque volume name (which may legitimately
+    /// contain '/' from a --prefix value) and must not be split.
+    ///
+    /// Backends that implement <see cref="IFolderEnabledBackend"/> accept a relative
+    /// path (including sub-folders) directly in their put/get/delete calls, so no
+    /// translation is applied and the operation runs against the base backend URL with
+    /// the full relative path as the remote name.
+    ///
+    /// Backends that do NOT support folder operations only understand a flat namespace
+    /// of filenames relative to a single backend URL. For those, the relative path is
+    /// split into a directory part and a filename part: the backend is pointed at the
+    /// directory (via <see cref="PendingOperationBase.BackendUrlOverride"/>) and the
+    /// operation passes only the filename to the backend (via
+    /// <see cref="PendingOperationBase.EffectiveRemoteName"/>). The operation keeps
+    /// using the full relative path for all bookkeeping (database, progress, logging).
+    /// </summary>
+    /// <param name="op">The operation to translate. Its <see cref="PendingOperationBase.RemoteFilename"/> must be set.</param>
+    private void ApplyPathTranslation(PendingOperationBase op)
+    {
+        if (supportsFolderOperations.Value)
+            return; // Folder-enabled backends take the full relative path directly.
+
+        // Non-folder backend: split the relative path into (subPath, filename).
+        var relPath = op.RemoteFilename;
+        var lastSlash = relPath.LastIndexOf('/');
+        if (lastSlash < 0)
+            return; // Flat filename, no sub-path: use the base backend URL as-is.
+
+        var subPath = relPath.Substring(0, lastSlash);
+        var filename = relPath.Substring(lastSlash + 1);
+
+        op.BackendUrlOverride = MergeBackendPath(subPath);
+        op.EffectiveRemoteName = filename;
+    }
+
+    /// <summary>
     /// Decrypts a file using the specified options
     /// </summary>
-    /// <param name="tmpfile">The file to decrypt</param>
-    /// <param name="filename">The name of the file. Used for detecting encryption algorithm if not specified in options or if it differs from the options</param>
+    /// <param name="volume">The file to decrypt</param>
+    /// <param name="volume_name">The name of the file. Used for detecting encryption algorithm if not specified in options or if it differs from the options</param>
     /// <param name="options">The Duplicati options</param>
+    /// <param name="dispose">True if the input file should be disposed after decryption</param>
     /// <returns>The decrypted file</returns>
-    public TempFile DecryptFile(TempFile volume, string volume_name, Options options)
-    {
-        return GetOperation.DecryptFile(volume, volume_name, options);
-    }
+    public TempFile DecryptFile(TempFile volume, string volume_name, Options options, bool dispose)
+        => GetOperation.DecryptFile(volume, volume_name, options, dispose);
 
     /// <summary>
     /// Deletes a remote file
@@ -148,8 +276,54 @@ internal partial class BackendManager : IBackendManager
     public async Task DeleteAsync(string remotename, long size, bool waitForComplete, CancellationToken cancelToken)
     {
         var op = new DeleteOperation(remotename, size, context, waitForComplete, cancelToken);
-        await QueueTask(op).ConfigureAwait(false);
-        await op.GetResult().ConfigureAwait(false);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Deletes a remote file, treating the remote name as a relative path that may
+    /// contain sub-folders. For backends without folder support the path is split
+    /// so the delete targets the sub-folder; folder-enabled backends receive the
+    /// path unchanged.
+    /// </summary>
+    /// <param name="remotename">The relative path of the remote file, which may contain sub-folders</param>
+    /// <param name="size">The size of the remote file, for statistics</param>
+    /// <param name="waitForComplete">True if the operation should wait for the file to actually be deleted. If this argument is false, the task will complete once the operation is queued</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>An awaitable task</returns>
+    public async Task DeleteWithPathAsync(string remotename, long size, bool waitForComplete, CancellationToken cancelToken)
+    {
+        var op = new DeleteOperation(remotename, size, context, waitForComplete, cancelToken);
+        ApplyPathTranslation(op);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Applies or updates an object lock on a remote file
+    /// </summary>
+    /// <param name="remotename">The name of the remote file</param>
+    /// <param name="lockUntilUtc">The UTC time until which the lock should remain in effect</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>An awaitable task</returns>
+    public async Task SetObjectLockUntilAsync(string remotename, DateTime lockUntilUtc, CancellationToken cancelToken)
+    {
+        var op = new SetObjectLockOperation(remotename, lockUntilUtc, context, cancelToken);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Gets the object lock expiration time for a remote file
+    /// </summary>
+    /// <param name="remotename">The name of the remote file</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>The UTC time the lock expires, or null if no lock is set</returns>
+    public async Task<DateTime?> GetObjectLockUntilAsync(string remotename, CancellationToken cancelToken)
+    {
+        var op = new GetObjectLockOperation(remotename, context, cancelToken);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        return await op.GetResultAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -158,17 +332,19 @@ internal partial class BackendManager : IBackendManager
     /// <param name="remotename">The name of the remote file</param>
     /// <param name="hash">The hash of the remote file, for verification</param>
     /// <param name="size">The size of the remote file, for verification</param>
+    /// <param name="allowParityRepair">Whether a failed download may be repaired using parity data</param>
     /// <param name="cancelToken">The cancellation token</param>
     /// <returns>A temporary file with the contents of the remote file</returns>
-    public async Task<TempFile> GetAsync(string remotename, string hash, long size, CancellationToken cancelToken)
+    public async Task<TempFile> GetAsync(string remotename, string hash, long size, bool allowParityRepair, CancellationToken cancelToken)
     {
         var op = new GetOperation(remotename, size, context, cancelToken)
         {
             Hash = hash,
-            Decrypt = true
+            Decrypt = true,
+            AllowParityRepair = allowParityRepair
         };
-        await QueueTask(op).ConfigureAwait(false);
-        (var file, var _, var _) = await op.GetResult().ConfigureAwait(false);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        (var file, var _, var _) = await op.GetResultAsync().ConfigureAwait(false);
         return file;
     }
 
@@ -178,17 +354,19 @@ internal partial class BackendManager : IBackendManager
     /// <param name="remotename">The name of the remote file</param>
     /// <param name="hash">The hash of the remote file, for verification</param>
     /// <param name="size">The size of the remote file, for verification</param>
+    /// <param name="allowParityRepair">Whether a failed download may be repaired using parity data</param>
     /// <param name="cancelToken">The cancellation token</param>
     /// <returns>A temporary file with the contents of the remote file</returns>
-    public async Task<TempFile> GetDirectAsync(string remotename, string hash, long size, CancellationToken cancelToken)
+    public async Task<TempFile> GetDirectAsync(string remotename, string hash, long size, bool allowParityRepair, CancellationToken cancelToken)
     {
         var op = new GetOperation(remotename, size, context, cancelToken)
         {
             Hash = hash,
-            Decrypt = false
+            Decrypt = false,
+            AllowParityRepair = allowParityRepair
         };
-        await QueueTask(op).ConfigureAwait(false);
-        (var file, var _, var _) = await op.GetResult().ConfigureAwait(false);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        (var file, var _, var _) = await op.GetResultAsync().ConfigureAwait(false);
         return file;
     }
 
@@ -200,8 +378,8 @@ internal partial class BackendManager : IBackendManager
     public async Task<IQuotaInfo?> GetQuotaInfoAsync(CancellationToken cancelToken)
     {
         var op = new QuotaInfoOperation(context, cancelToken);
-        await QueueTask(op).ConfigureAwait(false);
-        return await op.GetResult().ConfigureAwait(false);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        return await op.GetResultAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -210,30 +388,73 @@ internal partial class BackendManager : IBackendManager
     /// <param name="remotename">The name of the remote file</param>
     /// <param name="hash">The hash of the remote file, or null if not known</param>
     /// <param name="size">The size of the remote file, or -1 if not known</param>
+    /// <param name="allowParityRepair">Whether a failed download may be repaired using parity data</param>
     /// <param name="cancelToken">The cancellation token</param>
     /// <returns>A tuple containing the temporary file, the hash of the file, and the size of the file</returns>
-    public async Task<(TempFile File, string Hash, long Size)> GetWithInfoAsync(string remotename, string hash, long size, CancellationToken cancelToken)
+    public async Task<(TempFile File, string Hash, long Size)> GetWithInfoAsync(string remotename, string hash, long size, bool allowParityRepair, CancellationToken cancelToken)
     {
         var op = new GetOperation(remotename, size, context, cancelToken)
         {
             Hash = hash,
-            Decrypt = true
+            Decrypt = true,
+            AllowParityRepair = allowParityRepair
         };
-        await QueueTask(op).ConfigureAwait(false);
-        (var file, var downloadHash, var downloadSize) = await op.GetResult().ConfigureAwait(false);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        (var file, var downloadHash, var downloadSize) = await op.GetResultAsync().ConfigureAwait(false);
         return (file, downloadHash, downloadSize);
     }
 
     /// <summary>
-    /// Lists files on the remote destination
+    /// Lists files on the remote destination at the specified path
     /// </summary>
+    /// <param name="path">The path to list, or null for the root folder</param>
     /// <param name="cancelToken">The cancellation token</param>
     /// <returns>The list of files</returns>
-    public async Task<IEnumerable<Interface.IFileEntry>> ListAsync(CancellationToken cancelToken)
+    public async Task<IEnumerable<Interface.IFileEntry>> ListAsync(string? path, CancellationToken cancelToken)
     {
-        var op = new ListOperation(context, cancelToken);
-        await QueueTask(op).ConfigureAwait(false);
-        return await op.GetResult().ConfigureAwait(false);
+        // For folder-enabled backends, ListAsync(path) lists the direct children of
+        // the sub-folder (the backend supports folder-scoped listing). For backends
+        // that do not support folder operations, there is no folder-scoped list call,
+        // so we point the backend at the sub-folder URL (via BackendUrlOverride) and
+        // ask for a flat listing of that folder instead (UseRootList = true,
+        // listPath = null). When listing the root (path == null) both kinds behave
+        // the same: flat listing of the base backend URL.
+        var useRootList = !supportsFolderOperations.Value;
+        string? listPath = useRootList ? null : path;
+        string? urlOverride = useRootList && !string.IsNullOrEmpty(path) ? MergeBackendPath(path) : null;
+
+        var op = new ListOperation(listPath, context, cancelToken)
+        {
+            BackendUrlOverride = urlOverride,
+            UseRootList = useRootList,
+        };
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        return await op.GetResultAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Ensures the folder at the specified relative path exists on the backend.
+    ///
+    /// The backend is created bound to the sub-folder URL (the path merged onto the
+    /// backend URL, the same resolution used for put/get/delete on non-folder backends)
+    /// and <see cref="IBackend.CreateFolderAsync"/> is invoked. A
+    /// <see cref="FolderAreadyExistedException"/> is treated as success. This works
+    /// for both folder-enabled and non-folder backends: pointing the backend at the
+    /// sub-folder URL means <c>CreateFolderAsync</c> creates that sub-folder
+    /// (backends create the folder at their bound URL).
+    /// </summary>
+    /// <param name="path">The relative path of the folder to ensure, or null/empty for the backend root.</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>An awaitable task</returns>
+    public async Task EnsureFolderAsync(string? path, CancellationToken cancelToken)
+    {
+        var urlOverride = string.IsNullOrEmpty(path) ? null : MergeBackendPath(path);
+        var op = new CreateFolderOperation(context, cancelToken)
+        {
+            BackendUrlOverride = urlOverride,
+        };
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -262,18 +483,50 @@ internal partial class BackendManager : IBackendManager
 
         // Prepare encryption
         op.StartEncryptionAndHashing();
-        await QueueTask(op).ConfigureAwait(false);
-        await op.GetResult().ConfigureAwait(false);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Uploads a verification file to the remote location without encryption
+    /// Uploads a file to the remote location without encryption
     /// </summary>
     /// <param name="remotename">The name of the remote file</param>
     /// <param name="tempFile">The temporary file to upload</param>
     /// <param name="cancelToken">The cancellation token</param>
     /// <returns>An awaitable task</returns>
-    public async Task PutVerificationFileAsync(string remotename, TempFile tempFile, CancellationToken cancelToken)
+    public async Task PutFileUnencryptedAsync(string remotename, TempFile tempFile, CancellationToken cancelToken)
+    {
+        var op = CreateUnencryptedPutOperation(remotename, tempFile, cancelToken);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Uploads a file to the remote location without encryption, treating the
+    /// remote name as a relative path that may contain sub-folders. For backends
+    /// without folder support the path is split so the upload targets the
+    /// sub-folder; folder-enabled backends receive the path unchanged.
+    /// </summary>
+    /// <param name="remotename">The relative path of the remote file, which may contain sub-folders</param>
+    /// <param name="tempFile">The temporary file to upload</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>An awaitable task</returns>
+    public async Task PutFileUnencryptedWithPathAsync(string remotename, TempFile tempFile, CancellationToken cancelToken)
+    {
+        var op = CreateUnencryptedPutOperation(remotename, tempFile, cancelToken);
+        ApplyPathTranslation(op);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Creates a prepared operation for uploading a file without encryption
+    /// </summary>
+    /// <param name="remotename">The name of the remote file</param>
+    /// <param name="tempFile">The temporary file to upload</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>The prepared put operation, ready to be queued</returns>
+    private PutOperation CreateUnencryptedPutOperation(string remotename, TempFile tempFile, CancellationToken cancelToken)
     {
         var op = new PutOperation(remotename, context, true, cancelToken)
         {
@@ -287,8 +540,7 @@ internal partial class BackendManager : IBackendManager
 
         // Sets the task as already completed
         op.StartEncryptionAndHashing();
-        await QueueTask(op).ConfigureAwait(false);
-        await op.GetResult().ConfigureAwait(false);
+        return op;
     }
 
     /// <summary>
@@ -297,9 +549,9 @@ internal partial class BackendManager : IBackendManager
     /// <param name="database">The database to write to.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that completes when the messages are flushed.</returns>
-    public async Task FlushPendingMessagesAsync(LocalDatabase database, CancellationToken cancellationToken)
+    public async Task FlushPendingMessagesAsync(IBackendManagerDatabase database, CancellationToken cancellationToken)
     {
-        await context.Database.FlushPendingMessages(database, cancellationToken).ConfigureAwait(false);
+        await context.Database.FlushPendingMessagesAsync(database, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -310,18 +562,17 @@ internal partial class BackendManager : IBackendManager
     public async Task WaitForEmptyAsync(CancellationToken cancellationToken)
     {
         var op = new WaitForEmptyOperation(context, cancellationToken);
-        await QueueTask(op).ConfigureAwait(false);
-        await op.GetResult().ConfigureAwait(false);
+        await QueueTaskAsync(op).ConfigureAwait(false);
+        await op.GetResultAsync().ConfigureAwait(false);
     }
 
     /// <summary>
     /// Waits for the backend queue to be empty and flushes the database messages
     /// </summary>
     /// <param name="database">The database to write to</param>
-    /// <param name="transaction">The transaction to use</param>
     /// <param name="cancellationToken">The cancellation token</param>
     /// <returns>An awaitable task</returns>
-    public async Task WaitForEmptyAsync(LocalDatabase database, CancellationToken cancellationToken)
+    public async Task WaitForEmptyAsync(IBackendManagerDatabase database, CancellationToken cancellationToken)
     {
         await FlushPendingMessagesAsync(database, cancellationToken).ConfigureAwait(false);
         await WaitForEmptyAsync(cancellationToken).ConfigureAwait(false);
@@ -333,7 +584,7 @@ internal partial class BackendManager : IBackendManager
     /// </summary>
     /// <param name="database">The database to write pending messages to.</param>
     /// <returns>A task that completes when the runner is stopped and messages are flushed.</returns>
-    public async Task StopRunnerAndFlushMessages(LocalDatabase database)
+    public async Task StopRunnerAndFlushMessagesAsync(IBackendManagerDatabase database)
     {
         await requestChannel.RetireAsync().ConfigureAwait(false);
         await FlushPendingMessagesAsync(database, CancellationToken.None).ConfigureAwait(false);
@@ -357,22 +608,23 @@ internal partial class BackendManager : IBackendManager
     /// Performs a download of the files specified, with pre-fetch to overlap the download and processing
     /// </summary>
     /// <param name="volumes">The volumes to download</param>
+    /// <param name="allowParityRepair">Whether a failed download may be repaired using parity data</param>
     /// <param name="cancelToken">The cancellation token</param>
     /// <returns>The downloaded files and the volume they came from</returns>
-    public async IAsyncEnumerable<(TempFile File, string Hash, long Size, string Name)> GetFilesOverlappedAsync(IEnumerable<IRemoteVolume> volumes, [EnumeratorCancellation] CancellationToken cancelToken)
+    public async IAsyncEnumerable<(TempFile File, string Hash, long Size, string Name)> GetFilesOverlappedAsync(IEnumerable<IRemoteVolume> volumes, bool allowParityRepair, [EnumeratorCancellation] CancellationToken cancelToken)
     {
         var prevVolume = volumes.FirstOrDefault();
         if (prevVolume == null)
             yield break;
 
         // Get the first volume, so we do not have pending parallel transfers
-        var prevResult = await GetWithInfoAsync(prevVolume.Name, prevVolume.Hash, prevVolume.Size, cancelToken)
+        var prevResult = await GetWithInfoAsync(prevVolume.Name, prevVolume.Hash, prevVolume.Size, allowParityRepair, cancelToken)
             .ConfigureAwait(false);
 
         foreach (var volume in volumes.Skip(1))
         {
             // Prepare the next volume, while processing the previous one
-            var nextTask = GetWithInfoAsync(volume.Name, volume.Hash, volume.Size, cancelToken);
+            var nextTask = GetWithInfoAsync(volume.Name, volume.Hash, volume.Size, allowParityRepair, cancelToken);
 
             // Assuming we do not throw while yielding, otherwise we would need to dispose nextTask
             yield return (prevResult.File, prevResult.Hash, prevResult.Size, prevVolume.Name);
@@ -386,6 +638,42 @@ internal partial class BackendManager : IBackendManager
         // Return the last result
         yield return (prevResult.File, prevResult.Hash, prevResult.Size, prevVolume.Name);
         prevResult.File.Dispose();
+    }
+
+    /// <summary>
+    /// Performs a direct download of the files specified, with pre-fetch to overlap the download and processing
+    /// </summary>
+    /// <param name="volumes">The volumes to download</param>
+    /// <param name="allowParityRepair">Whether a failed download may be repaired using parity data</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>The downloaded files and the volume they came from</returns>
+    public async IAsyncEnumerable<(TempFile File, string Name)> GetFilesOverlappedDirectAsync(IEnumerable<IRemoteVolume> volumes, bool allowParityRepair, [EnumeratorCancellation] CancellationToken cancelToken)
+    {
+        var prevVolume = volumes.FirstOrDefault();
+        if (prevVolume == null)
+            yield break;
+
+        // Get the first volume, so we do not have pending parallel transfers
+        var prevResult = await GetDirectAsync(prevVolume.Name, prevVolume.Hash, prevVolume.Size, allowParityRepair, cancelToken)
+            .ConfigureAwait(false);
+
+        foreach (var volume in volumes.Skip(1))
+        {
+            // Prepare the next volume, while processing the previous one
+            var nextTask = GetDirectAsync(volume.Name, volume.Hash, volume.Size, allowParityRepair, cancelToken);
+
+            // Assuming we do not throw while yielding, otherwise we would need to dispose nextTask
+            yield return (prevResult, prevVolume.Name);
+            prevResult.Dispose();
+
+            // Set up for next iteration
+            prevVolume = volume;
+            prevResult = await nextTask.ConfigureAwait(false);
+        }
+
+        // Return the last result
+        yield return (prevResult, prevVolume.Name);
+        prevResult.Dispose();
     }
 
     /// <summary>
@@ -412,6 +700,7 @@ internal partial class BackendManager : IBackendManager
 
         isDisposed = true;
         requestChannel.RetireAsync().Await();
+        context.Parity.Dispose();
         context.Database.FlushMessagesToLog();
 
         if (!queueRunner.IsCompleted)

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -125,4 +125,32 @@ public class ServerSettings
     {
         get => applicationSettings.ServerSSLCertificate != null;
     }
+}
+
+public class LicenseStatusDto
+{
+    /// <summary>
+    /// Whether a license is configured.
+    /// </summary>
+    public required bool IsConfigured { get; init; }
+
+    /// <summary>
+    /// Whether the license is currently valid.
+    /// </summary>
+    public required bool IsValid { get; init; }
+
+    /// <summary>
+    /// Whether the license is in its grace period (expired but still functional).
+    /// </summary>
+    public required bool IsInGracePeriod { get; init; }
+
+    /// <summary>
+    /// The license expiration date (null if no license configured).
+    /// </summary>
+    public required DateTimeOffset? ExpiresAt { get; init; }
+
+    /// <summary>
+    /// The license expiration date including grace period (null if no license configured).
+    /// </summary>
+    public required DateTimeOffset? ExpiresWithGraceAt { get; init; }
 }

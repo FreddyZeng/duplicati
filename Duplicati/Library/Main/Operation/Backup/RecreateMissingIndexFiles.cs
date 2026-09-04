@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -31,24 +31,41 @@ internal static class RecreateMissingIndexFiles
 	/// </summary>
 	private static readonly string LOGTAG = Logging.Log.LogTagFromType(typeof(RecreateMissingIndexFiles));
 
-	public static async Task Run(BackupDatabase database, IBackendManager backendManager, Options options, ITaskReader taskreader)
+	public static async Task RunAsync(BackupDatabase database, IBackendManager backendManager, Options options, ITaskReader taskreader)
 	{
 		if (options.IndexfilePolicy != Options.IndexFileStrategy.None)
 		{
+			var anyfiles = false;
 			await foreach (var blockfile in (await database.GetMissingIndexFilesAsync(taskreader.ProgressToken).ConfigureAwait(false)).ConfigureAwait(false))
 			{
-				if (!await taskreader.ProgressRendevouz().ConfigureAwait(false))
+				if (!await taskreader.ProgressRendevouzAsync().ConfigureAwait(false))
 					return;
 
 				Logging.Log.WriteInformationMessage(LOGTAG, "RecreateMissingIndexFile", "Re-creating missing index file for {0}", blockfile);
-				var w = await Common.IndexVolumeCreator.CreateIndexVolume(blockfile, options, database, taskreader.ProgressToken).ConfigureAwait(false);
+				var w = await Common.IndexVolumeCreator.CreateIndexVolumeAsync(blockfile, options, database, taskreader.ProgressToken).ConfigureAwait(false);
 
-				if (!await taskreader.ProgressRendevouz().ConfigureAwait(false))
+				if (!await taskreader.ProgressRendevouzAsync().ConfigureAwait(false))
 					return;
 
+				anyfiles = true;
 				await database.UpdateRemoteVolumeAsync(w.RemoteFilename, RemoteVolumeState.Uploading, -1, null, false, default, null, taskreader.ProgressToken).ConfigureAwait(false);
-				await database.CommitTransactionAsync("RecreateMissingIndexFile", true, taskreader.ProgressToken).ConfigureAwait(false);
-				await backendManager.PutAsync(w, null, null, false, () => database.FlushBackendMessagesAndCommitAsync(backendManager, taskreader.ProgressToken), taskreader.ProgressToken).ConfigureAwait(false);
+
+				if (options.Dryrun)
+				{
+					Logging.Log.WriteDryrunMessage(LOGTAG, "WouldUploadFile", "Would upload file: {0}", w.RemoteFilename);
+				}
+				else
+				{
+					await database.CommitTransactionAsync("RecreateMissingIndexFile", true, taskreader.ProgressToken).ConfigureAwait(false);
+					await backendManager.PutAsync(w, null, null, false, () => database.FlushBackendMessagesAndCommitAsync(backendManager, taskreader.ProgressToken), taskreader.ProgressToken).ConfigureAwait(false);
+				}
+			}
+
+			// If we uploaded/fixed any files, make sure the backup does not start before the files are settled
+			if (anyfiles)
+			{
+				await backendManager.WaitForEmptyAsync(taskreader.ProgressToken).ConfigureAwait(false);
+				await database.FlushBackendMessagesAndCommitAsync(backendManager, taskreader.ProgressToken).ConfigureAwait(false);
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -29,6 +29,11 @@ namespace Duplicati.Library.Main.Volumes
 {
     public abstract class VolumeReaderBase : VolumeBase, IDisposable
     {
+        /// <summary>
+        /// The tag used for log messages
+        /// </summary>
+        private static readonly string LOGTAG = Logging.Log.LogTagFromType(typeof(VolumeReaderBase));
+
         public bool IsFullBackup { get; set; }
 
         protected readonly bool m_disposeCompression = false;
@@ -136,6 +141,56 @@ namespace Duplicati.Library.Main.Volumes
         }
 
         /// <summary>
+        /// Reads the labels.json file from a fileset volume, if present.
+        /// </summary>
+        /// <param name="compressor">The compressor to use</param>
+        /// <returns>A dictionary mapping backup timestamps (UTC) to labels; empty if the volume has no labels file or the file cannot be parsed</returns>
+        public static IReadOnlyDictionary<DateTime, string> GetLabelsData(ICompression compressor)
+        {
+            using (var s = compressor.OpenRead(LABELS_FILENAME))
+            {
+                if (s == null)
+                    return new Dictionary<DateTime, string>();
+
+                using (var fs = new StreamReader(s, ENCODING))
+                {
+                    Dictionary<string, string> data;
+                    try
+                    {
+                        data = JsonConvert.DeserializeObject<Dictionary<string, string>>(fs.ReadToEnd());
+                    }
+                    catch (Exception ex)
+                    {
+                        // A corrupt labels file should not fail the operation using the volume
+                        Logging.Log.WriteWarningMessage(LOGTAG, "InvalidLabelsFile", ex, "Failed to parse the {0} file in the volume, ignoring it", LABELS_FILENAME);
+                        return new Dictionary<DateTime, string>();
+                    }
+
+                    if (data == null)
+                        return new Dictionary<DateTime, string>();
+
+                    var res = new Dictionary<DateTime, string>();
+                    foreach (var kv in data)
+                    {
+                        if (string.IsNullOrWhiteSpace(kv.Value))
+                            continue;
+
+                        try
+                        {
+                            res[Library.Utility.Utility.DeserializeDateTime(kv.Key).ToUniversalTime()] = kv.Value;
+                        }
+                        catch
+                        {
+                            // Ignore entries with unparseable timestamps
+                        }
+                    }
+
+                    return res;
+                }
+            }
+        }
+
+        /// <summary>
         /// Updates the options with data from the manifest file, but does not overwrite existing values
         /// </summary>
         /// <param name="compressor">The compressor to use</param>
@@ -153,7 +208,6 @@ namespace Duplicati.Library.Main.Volumes
         /// Updates the options with data from the manifest file, but does not overwrite existing values
         /// </summary>
         /// <param name="compressor">The compressor to use</param>
-        /// <param name="file">The file to read the manifest from</param>
         /// <param name="options">The options to update</param>
         public static void UpdateOptionsFromManifest(ICompression compressor, Options options)
         {
@@ -164,14 +218,14 @@ namespace Duplicati.Library.Main.Volumes
                 if (d.Version > ManifestData.VERSION)
                     throw new InvalidManifestException("Version", d.Version.ToString(), ManifestData.VERSION.ToString());
 
-                string n;
-
-                if (!options.RawOptions.TryGetValue("blocksize", out n) || string.IsNullOrEmpty(n))
+                if (string.IsNullOrWhiteSpace(options.RawOptions.GetValueOrDefault("blocksize")))
                     options.RawOptions["blocksize"] = d.Blocksize + "b";
-                if (!options.RawOptions.TryGetValue("block-hash-algorithm", out n) || string.IsNullOrEmpty(n))
+                if (string.IsNullOrWhiteSpace(options.RawOptions.GetValueOrDefault("block-hash-algorithm")))
                     options.RawOptions["block-hash-algorithm"] = d.BlockHash;
-                if (!options.RawOptions.TryGetValue("file-hash-algorithm", out n) || string.IsNullOrEmpty(n))
+                if (string.IsNullOrWhiteSpace(options.RawOptions.GetValueOrDefault("file-hash-algorithm")))
                     options.RawOptions["file-hash-algorithm"] = d.FileHash;
+                if (string.IsNullOrWhiteSpace(options.RawOptions.GetValueOrDefault("compression-module")))
+                    options.RawOptions["compression-module"] = compressor.FilenameExtension;
             }
         }
 
@@ -225,6 +279,9 @@ namespace Duplicati.Library.Main.Volumes
             var buffer = new byte[hashsize];
             using var hashalg = HashFactory.CreateHasher(blockHashAlgorithm);
             using var fs = compression.OpenRead(filename);
+
+            if (fs == null)
+                throw new InvalidDataException($"Blocklist file {filename} not found in archive");
 
             int s;
             var read = 0L;

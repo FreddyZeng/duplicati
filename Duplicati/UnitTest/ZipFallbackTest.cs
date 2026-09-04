@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -24,15 +24,37 @@ using System.IO;
 using System.Linq;
 using Duplicati.Library.Utility;
 using NUnit.Framework;
+using System.Threading.Tasks;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace Duplicati.UnitTest
 {
     public class ZipFallbackTest : BasicSetupHelper
     {
+        private static async Task DeleteDatabaseWithRetryAsync(string path)
+        {
+            const int maxAttempts = 10;
+
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Delete(path);
+                    return;
+                }
+                catch (IOException) when (OperatingSystem.IsWindows() && attempt < maxAttempts)
+                {
+                    // Windows can retain SQLite file handles until pending finalizers complete.
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                }
+            }
+        }
+
         [Test]
         [Category("Targeted")]
-        public void FallbackToSharpCompressOnDecompressLzmaStreams()
+        public async Task FallbackToSharpCompressOnDecompressLzmaStreamsAsync()
         {
             var testopts = TestOptions;
             testopts["zip-compression-method"] = "lzma";
@@ -43,13 +65,13 @@ namespace Duplicati.UnitTest
             File.WriteAllBytes(Path.Combine(DATAFOLDER, "a"), data);
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var r = c.Backup(new string[] { DATAFOLDER });
+                var r = await c.BackupAsync(new string[] { DATAFOLDER });
                 Assert.AreEqual(0, r.Errors.Count());
                 Assert.AreEqual(0, r.Warnings.Count());
             }
 
             // Delete the local database
-            File.Delete(DBFILE);
+            await DeleteDatabaseWithRetryAsync(DBFILE);
 
             // Switch back to built-in compression
             testopts.Remove("zip-compression-method");
@@ -58,7 +80,7 @@ namespace Duplicati.UnitTest
             // Recreate the database
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var r = c.Repair();
+                var r = await c.RepairAsync();
                 Assert.AreEqual(0, r.Errors.Count());
                 // Ensure that we get warnings for the fallback, one for the dlist and one for the dindex
                 Assert.AreEqual(2, r.Warnings.Count());
@@ -68,7 +90,7 @@ namespace Duplicati.UnitTest
             // Restore files
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts.Expand(new { restore_path = RESTOREFOLDER }), null))
             {
-                var r = c.Restore(null);
+                var r = await c.RestoreAsync(null);
                 Assert.AreEqual(0, r.Errors.Count());
                 // Ensure that we get warnings for the fallback, one for the dblock file
                 Assert.AreEqual(1, r.Warnings.Count());
@@ -83,7 +105,7 @@ namespace Duplicati.UnitTest
         [Category("Targeted")]
         [TestCase("zip-sc")]
         [TestCase("zip-io")]
-        public void SupportZip64WithDefaultSettings(string module)
+        public async Task SupportZip64WithDefaultSettingsAsync(string module)
         {
             const long testfileSize = 5L * 1024 * 1024 * 1024;
             var testopts = TestOptions;
@@ -111,22 +133,22 @@ namespace Duplicati.UnitTest
                 var data = new byte[1024 * 1024 * 10];
                 File.WriteAllBytes(Path.Combine(DATAFOLDER, "a"), data);
                 using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts.Expand(new { control_files = tempfile.Name }), null))
-                    TestUtils.AssertResults(c.Backup(new string[] { DATAFOLDER }));
+                    TestUtils.AssertResults(await c.BackupAsync(new string[] { DATAFOLDER }));
             }
 
             // Delete the local database
-            File.Delete(DBFILE);
+            await DeleteDatabaseWithRetryAsync(DBFILE);
 
             // Recreate the database
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-                TestUtils.AssertResults(c.Repair());
+                TestUtils.AssertResults(await c.RepairAsync());
 
             var restoredfile = Path.Combine(RESTOREFOLDER, tempfilename);
             try
             {
                 // Restore control file
                 using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts.Expand(new { restore_path = RESTOREFOLDER }), null))
-                    TestUtils.AssertResults(c.RestoreControlFiles(["*"]));
+                    TestUtils.AssertResults(await c.RestoreControlFilesAsync(["*"]));
 
                 // Check that the control file was restored
                 Assert.That(File.Exists(restoredfile), Is.True, "Control file was not restored");

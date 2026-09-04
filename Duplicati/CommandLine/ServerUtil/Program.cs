@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,8 +20,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.CommandLine;
-using System.CommandLine.Builder;
-using System.CommandLine.Parsing;
 using Duplicati.CommandLine.ServerUtil.Commands;
 using Duplicati.Library.AutoUpdater;
 using Duplicati.Library.Utility;
@@ -38,7 +36,7 @@ public static class Program
     /// </summary>
     /// <param name="args"></param>
     /// <returns>The return code</returns>
-    public static async Task<int> Main(string[] args)
+    public static async Task<int> MainAsync(string[] args)
     {
         PreloadSettingsLoader.ConfigurePreloadSettings(ref args, PackageHelper.NamedExecutable.ServerUtil);
 
@@ -46,6 +44,7 @@ public static class Program
             {
                 Pause.Create(),
                 Resume.Create(),
+                DeleteBackup.Create(),
                 ListBackups.Create(),
                 RunBackup.Create(),
                 Login.Create(),
@@ -59,42 +58,49 @@ public static class Program
             };
 
         rootCmd = SettingsBinder.AddGlobalOptions(rootCmd);
+        rootCmd.UseAdditionalHelpAliases();
 
-        return await new CommandLineBuilder(rootCmd)
-            .UseDefaults()
-            .UseExceptionHandler((ex, context) =>
+        try
+        {
+            var exitCode = await rootCmd.Parse(args).InvokeAsync(new InvocationConfiguration
             {
-                OutputInterceptorBinder.Instance?.SetResult(false);
-                
-                if (ex is UserReportedException ure)
-                {
-                    OutputInterceptorBinder.Instance?.AppendExceptionMessage(ure.Message);
-                    context.ExitCode = 2;
-                }
-                else
-                {
-                    OutputInterceptorBinder.Instance?.AppendExceptionMessage(ex.ToString());
-                    context.ExitCode = 1;
-                }
+                EnableDefaultExceptionHandler = false
+            });
 
+            // Propagate a non-zero result from the command (e.g. a backup that
+            // finished with warnings/errors) to the process exit code. The exception
+            // path already sets the exit code directly and never reaches here.
+            if (OutputInterceptorBinder.Instance is { ExitCode: not 0 } instance)
+                exitCode = instance.ExitCode;
+
+            var jsonResult = OutputInterceptorBinder.Instance?.GetSerializedResult();
+            if (jsonResult != null)
+                Console.WriteLine(jsonResult);
+
+            return exitCode;
+        }
+        catch (Exception ex)
+        {
+            OutputInterceptorBinder.Instance?.SetResult(false);
+
+            if (ex is UserReportedException ure)
+            {
+                OutputInterceptorBinder.Instance?.AppendExceptionMessage(ure.Message);
                 if (OutputInterceptorBinder.Instance != null)
-                {
-                    OutputInterceptorBinder.Instance.ExitCode = context.ExitCode;
-                    Console.WriteLine(OutputInterceptorBinder.Instance.GetSerializedResult());
-                }
-            })
-            .AddMiddleware(async (context, next) =>
+                    OutputInterceptorBinder.Instance.ExitCode = 2;
+            }
+            else
             {
-                // Inject settings with custom binder
-                if (context.ParseResult.CommandResult.Command is { } cmd)
-                    context.BindingContext.AddService(_ => SettingsBinder.GetSettings(context.BindingContext));
-                
-                context.BindingContext.AddService(_ => OutputInterceptorBinder.GetConsoleInterceptor(context.BindingContext));
-                
-                await next(context);
-                Console.WriteLine(OutputInterceptorBinder.Instance?.GetSerializedResult());
-            })
-            .UseAdditionalHelpAliases()
-            .Build().InvokeAsync(args);
+                OutputInterceptorBinder.Instance?.AppendExceptionMessage(ex.ToString());
+                if (OutputInterceptorBinder.Instance != null)
+                    OutputInterceptorBinder.Instance.ExitCode = 1;
+            }
+
+            var jsonResult = OutputInterceptorBinder.Instance?.GetSerializedResult();
+            if (jsonResult != null)
+                Console.WriteLine(jsonResult);
+
+            return OutputInterceptorBinder.Instance?.ExitCode ?? 1;
+        }
     }
 }

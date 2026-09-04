@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -31,7 +31,7 @@ namespace Duplicati.Library.Backend.Mega
 {
     // ReSharper disable once UnusedMember.Global
     // This class is instantiated dynamically in the BackendLoader.
-    public class MegaBackend : IBackend, IStreamingBackend
+    public class MegaBackend : IBackend, IStreamingBackend, IRenameEnabledBackend
     {
         private readonly string m_username;
         private readonly string m_password;
@@ -73,9 +73,9 @@ namespace Duplicati.Library.Backend.Mega
 
         public MegaBackend(string url, Dictionary<string, string?> options)
         {
-            var uri = new Utility.Uri(url);
+            var uri = new Utility.RelaxedUri(url);
 
-            var auth = AuthOptionsHelper.Parse(options, uri);
+            var auth = AuthOptionsHelper.Parse(options, uri.Username, uri.Password);
             if (options.ContainsKey("auth-two-factor-key"))
                 m_twoFactorKey = options["auth-two-factor-key"];
 
@@ -251,8 +251,8 @@ namespace Duplicati.Library.Backend.Mega
         }
 
         /// <inheritdoc/>
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         /// <inheritdoc/>
         public Task CreateFolderAsync(CancellationToken cancelToken)
@@ -281,6 +281,17 @@ namespace Duplicati.Library.Backend.Mega
 
         /// <inheritdoc/>
         public Task<string[]> GetDNSNamesAsync(CancellationToken cancelToken) => Task.FromResult(Array.Empty<string>());
+
+        public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            var client = await GetClient(cancellationToken).ConfigureAwait(false);
+            var node = await GetFileNodeAsync(oldname, cancellationToken).ConfigureAwait(false);
+            await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken, _ => client.RenameAsync(node, newname)).ConfigureAwait(false);
+
+            // Update cache
+            if (m_filecache != null)
+                m_filecache.Remove(oldname);
+        }
 
         #endregion
 

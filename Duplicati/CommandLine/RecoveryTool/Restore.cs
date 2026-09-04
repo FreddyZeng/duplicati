@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -78,8 +78,10 @@ namespace Duplicati.CommandLine.RecoveryTool
                 filelist = List.SelectListFile(args[2], folder);
             }
 
-            Library.Main.Volumes.VolumeReaderBase.UpdateOptionsFromManifest(Path.GetExtension(filelist).Trim('.'), filelist, new Duplicati.Library.Main.Options(options));
+            var parsedoptions = new Library.Main.Options(options);
+            Library.Main.Volumes.VolumeReaderBase.UpdateOptionsFromManifest(Path.GetExtension(filelist).Trim('.'), filelist, parsedoptions);
 
+            options = parsedoptions.RawOptions;
             options.TryGetValue("blocksize", out var blocksize_str);
             options.TryGetValue("block-hash-algorithm", out var blockhash_str);
             options.TryGetValue("block-hash-algorithm", out var filehash_str);
@@ -103,6 +105,7 @@ namespace Duplicati.CommandLine.RecoveryTool
 
             var useIndexMap = !Library.Utility.Utility.ParseBoolOption(options, "reduce-memory-use");
             var disableFileVerify = Library.Utility.Utility.ParseBoolOption(options, "disable-file-verify");
+            var allowPathTraversal = Library.Utility.Utility.ParseBoolOption(options, "allow-restore-outside-target-directory");
 
             var startedCount = 0L;
             var restoredCount = 0L;
@@ -151,6 +154,14 @@ namespace Duplicati.CommandLine.RecoveryTool
                         try
                         {
                             var targetfile = MapToRestorePath(f.Path, largestprefix, targetpath, sourceDirsep);
+
+                            if (!allowPathTraversal && !string.IsNullOrWhiteSpace(targetpath) && !Util.IsPathInsideTarget(targetfile, targetpath))
+                            {
+                                Console.WriteLine($"WARNING: Path traversal detected: {targetfile} resolves outside {targetpath}, skipping entry. Use --allow-restore-outside-target-directory if you are sure this is safe.");
+                                errorCount++;
+                                continue;
+                            }
+
                             if (!systemIO.DirectoryExists(systemIO.PathGetDirectoryName(targetfile)))
                                 systemIO.DirectoryCreate(systemIO.PathGetDirectoryName(targetfile));
 

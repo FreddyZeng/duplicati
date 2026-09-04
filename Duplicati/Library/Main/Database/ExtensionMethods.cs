@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -32,9 +32,26 @@ using Microsoft.Data.Sqlite;
 
 namespace Duplicati.Library.Main.Database;
 
+// This file is the layer that wraps the command's own execute methods, so it is the one place
+// that has to call them. Everywhere else in this project the ban applies; see BannedSymbols.txt.
+#pragma warning disable RS0030
+
 /// <summary>
 /// Extension method for <see cref="IDbCommand"/>
 /// </summary>
+/// <remarks>
+/// These are what register a query with <see cref="SlowQueryMonitor"/>, so a query that is
+/// executed through the command's own methods instead is invisible to it, no matter how long
+/// it runs or how low the threshold is set.
+///
+/// Adding a <c>(this SqliteCommand, CancellationToken)</c> overload would not help: an
+/// applicable instance method always wins over an extension method. There is a proof of that
+/// in this file - <see cref="ExecuteScalarAsync(SqliteCommand, bool, string?, Dictionary{string, object?}?, CancellationToken)"/>
+/// calls <c>self.ExecuteScalarAsync(cancellationToken)</c>, which would be an unbounded
+/// recursion if the extension were picked. So the call has to name the overload it wants, and
+/// <c>writeLog: false</c> is the one that registers with the monitor without also writing a
+/// profiling record.
+/// </remarks>
 public static partial class ExtensionMethods
 {
 
@@ -154,6 +171,27 @@ public static partial class ExtensionMethods
 
     /// <summary>
     /// Executes the command asynchronously and returns the number of rows affected.
+    /// This method bypasses logging unless explicitly activated to avoid slowdowns caused by logging.
+    /// </summary>
+    /// <param name="self">The <see cref="SqliteCommand"/> instance to execute on.</param>
+    /// <param name="writeLog">Whether to write a log entry.</param>
+    /// <param name="cancellationToken">Cancellation token to cancel the operation.</param>
+    /// <returns>A task that when awaited contains the number of rows affected.</returns>
+    /// <remarks>
+    /// Without a log entry this deliberately skips <see cref="SlowQueryMonitor"/> as well. The
+    /// callers are the per-block loops in the backup, where registering every statement would
+    /// put a lock and a dictionary insert in the innermost loop. It is not an oversight.
+    /// </remarks>
+    public static Task<int> ExecuteNonQueryPerformanceSensitiveAsync(this SqliteCommand self, bool writeLog, CancellationToken cancellationToken)
+    {
+        if (!writeLog)
+            return self.ExecuteNonQueryAsync(cancellationToken);
+
+        return ExecuteNonQueryAsync(self, writeLog, cancellationToken);
+    }
+
+    /// <summary>
+    /// Executes the command asynchronously and returns the number of rows affected.
     /// </summary>
     /// <param name="self">The <see cref="SqliteCommand"/> instance to execute on.</param>
     /// <param name="writeLog">Whether to write a log entry.</param>
@@ -182,6 +220,7 @@ public static partial class ExtensionMethods
         if (values != null && values.Count > 0)
             self.SetParameterValues(values);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteNonQueryAsync"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteNonQueryAsync", string.Format("ExecuteNonQueryAsync: {0}", self.GetPrintableCommandText())) : null)
             return await self.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -243,6 +282,7 @@ public static partial class ExtensionMethods
         if (values != null && values.Count > 0)
             self.SetParameterValues(values);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteReaderAsync"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteReader", string.Format("ExecuteReader: {0}", self.GetPrintableCommandText())) : null)
             return await self.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -299,22 +339,11 @@ public static partial class ExtensionMethods
         if (values != null && values.Count > 0)
             self.SetParameterValues(values);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteReaderEnumerableAsync"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteReaderEnumerableAsync", $"ExecuteReaderEnumerableAsync: {self.GetPrintableCommandText()}") : null)
         await using (var rd = await self.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             while (await rd.ReadAsync(cancellationToken).ConfigureAwait(false))
                 yield return rd;
-    }
-
-    /// <summary>
-    /// Executes the command asynchronously and returns the first column of the first row in the result set.
-    /// </summary>
-    /// <param name="self">The <see cref="SqliteCommand"/> instance to execute on.</param>
-    /// <param name="cancellationToken">Cancellation token to cancel the operation.</param>
-    /// <returns>A task that when awaited contains the first column of the first row in the result set, or null if no rows are returned.</returns>
-    public static async Task<object?> ExecuteScalarAsync(this SqliteCommand self, CancellationToken cancellationToken)
-    {
-        return await self.ExecuteScalarAsync(true, null, null, cancellationToken)
-            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -374,6 +403,7 @@ public static partial class ExtensionMethods
         if (values != null && values.Count > 0)
             self.SetParameterValues(values);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteScalarAsync"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteScalarAsync", string.Format("ExecuteScalarAsync: {0}", self.GetPrintableCommandText())) : null)
             return await self.ExecuteScalarAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -407,6 +437,32 @@ public static partial class ExtensionMethods
     /// <returns>A task that when awaited contains the first column of the first row in the result set as an Int64, or -1 if no rows are returned or the value cannot be converted.</returns>
     public static Task<long> ExecuteScalarInt64Async(this SqliteCommand self, bool writeLog, CancellationToken cancellationToken)
         => ExecuteScalarInt64Async(self, writeLog, null, null, -1, cancellationToken);
+
+    /// <summary>
+    /// Executes the command asynchronously and returns the first column of the first row in the result set as an Int64.
+    /// </summary>
+    /// <param name="self">The <see cref="SqliteCommand"/> instance to execute on.</param>
+    /// <param name="writeLog">Whether to write a log entry.</param>
+    /// <param name="cancellationToken">Cancellation token to cancel the operation.</param>
+    /// <returns>A task that when awaited contains the first column of the first row in the result set as an Int64, or the default value if no rows are returned or the value cannot be converted.</returns>
+    /// <remarks>
+    /// Without a log entry this deliberately skips <see cref="SlowQueryMonitor"/> as well. The
+    /// callers are the per-block loops in the backup, where registering every statement would
+    /// put a lock and a dictionary insert in the innermost loop. It is not an oversight.
+    /// </remarks>
+    public static async Task<long> ExecuteScalarInt64PerformanceSensitiveAsync(this SqliteCommand self, bool writeLog, CancellationToken cancellationToken)
+    {
+        if (!writeLog)
+        {
+            await using (var rd = await self.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+                if (await rd.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    return ConvertValueToInt64(rd, 0, -1);
+
+            return -1;
+        }
+
+        return await ExecuteScalarInt64Async(self, writeLog, null, null, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Executes the command asynchronously and returns the first column of the first row in the result set as an Int64.
@@ -493,6 +549,7 @@ public static partial class ExtensionMethods
         if (values != null && values.Count > 0)
             self.SetParameterValues(values);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteScalarInt64Async"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteScalarInt64Async", string.Format("ExecuteScalarInt64Async: {0}", self.GetPrintableCommandText())) : null)
         await using (var rd = await self.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             if (await rd.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -560,7 +617,7 @@ public static partial class ExtensionMethods
         // We have a temporary table, so we need to replace the parameter with the table name
         cmd.CommandText = cmd.CommandText.Replace(
             originalParamName,
-            await values.GetInClause(cancellationToken).ConfigureAwait(false),
+            await values.GetInClauseAsync(cancellationToken).ConfigureAwait(false),
             StringComparison.OrdinalIgnoreCase
         );
 
@@ -780,8 +837,11 @@ public static partial class ExtensionMethods
             else
                 v = Library.Utility.Utility.FormatInvariantValue(p.Value);
 
+            paramName = Regex.Escape(paramName);
+            v = v.Replace("$", "$$");
+
             // Replace all occurrences of the parameter (with word boundary)
-            txt = Regex.Replace(txt, $@"\B{Regex.Escape(paramName)}\b", v, RegexOptions.IgnoreCase);
+            txt = Regex.Replace(txt, $@"\B{paramName}\b", v, RegexOptions.IgnoreCase);
         }
 
         return txt;
@@ -803,7 +863,6 @@ public static partial class ExtensionMethods
     /// </summary>
     /// <param name="self">The command instance to execute on</param>
     /// <param name="cmd">The command string to execute</param>
-    /// <param name="values">The values to use as parameters. The parameters must already be added.</param>
     /// <returns>The number of rows affected</returns>
     public static int ExecuteNonQuery(this IDbCommand self, string cmd)
         => ExecuteNonQuery(self, true, cmd);
@@ -834,6 +893,7 @@ public static partial class ExtensionMethods
         if (values != null && values.Count > 0)
             self.SetParameterValues(values);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteNonQuery"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteNonQuery", string.Format("ExecuteNonQuery: {0}", self.GetPrintableCommandText())) : null)
             return self.ExecuteNonQuery();
     }
@@ -850,6 +910,7 @@ public static partial class ExtensionMethods
         if (cmd != null)
             self.SetCommandAndParameters(cmd);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteNonQuery"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteNonQuery", string.Format("ExecuteNonQuery: {0}", self.GetPrintableCommandText())) : null)
             return self.ExecuteNonQuery();
     }
@@ -862,6 +923,7 @@ public static partial class ExtensionMethods
     /// <returns>The number of rows affected</returns>
     public static int ExecuteNonQuery(this IDbCommand self, IDbTransaction? transaction)
     {
+        using var _ = SlowQueryMonitor.StartQuery(self, "ExecuteNonQuery");
         self.Transaction = transaction;
         return self.ExecuteNonQuery();
     }
@@ -887,6 +949,7 @@ public static partial class ExtensionMethods
         if (cmd != null)
             self.SetCommandAndParameters(cmd);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteScalar"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteScalar", string.Format("ExecuteScalar: {0}", self.GetPrintableCommandText())) : null)
             return self.ExecuteScalar();
     }
@@ -946,6 +1009,7 @@ public static partial class ExtensionMethods
         if (cmd != null)
             self.SetCommandAndParameters(cmd);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteScalarInt64"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteScalarInt64", string.Format("ExecuteScalarInt64: {0}", self.GetPrintableCommandText())) : null)
         using (var rd = self.ExecuteReader())
             if (rd.Read())
@@ -986,6 +1050,7 @@ public static partial class ExtensionMethods
         if (cmd != null)
             self.SetCommandAndParameters(cmd);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteReader"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteReader", string.Format("ExecuteReader: {0}", self.GetPrintableCommandText())) : null)
             return self.ExecuteReader();
     }
@@ -1006,6 +1071,7 @@ public static partial class ExtensionMethods
         if (values != null && values.Count > 0)
             self.SetParameterValues(values);
 
+        using (SlowQueryMonitor.StartQuery(self, "ExecuteReader"))
         using (writeLog ? new Logging.Timer(LOGTAG, "ExecuteReader", string.Format("ExecuteReader: {0}", self.GetPrintableCommandText())) : null)
             return self.ExecuteReader();
     }
@@ -1014,27 +1080,32 @@ public static partial class ExtensionMethods
     /// Executes the given command string `cmd` on the given database command `self` with the given values `values` and returns an enumerable of data readers.
     /// </summary>
     /// <param name="self">The database command to execute on.</param>
+    /// <param name="writeLog">Whether to write a log entry.</param>
     /// <param name="cmd">The command string to execute.</param>
-    /// <returns></returns>
-    public static IEnumerable<IDataReader> ExecuteReaderEnumerable(this IDbCommand self, string cmd)
+    /// <returns>An enumerable of data readers.</returns>
+    public static IEnumerable<IDataReader> ExecuteReaderEnumerable(this IDbCommand self, bool writeLog, string? cmd)
     {
-        using var rd = ExecuteReader(self, cmd);
-        while (rd.Read())
-            yield return rd;
+        using (var rd = ExecuteReader(self, writeLog, cmd))
+            while (rd.Read())
+                yield return rd;
     }
 
     /// <summary>
-    /// Executes the given command string `cmd` on the given database command `self` with the given values `values` and returns an enumerable of data readers.
+    /// Executes the given command string `cmd` on the given database command `self` and returns an enumerable of data readers.
     /// </summary>
     /// <param name="self">The database command to execute on.</param>
     /// <param name="cmd">The command string to execute.</param>
-    /// <returns></returns>
+    /// <returns>An enumerable of data readers.</returns>
+    public static IEnumerable<IDataReader> ExecuteReaderEnumerable(this IDbCommand self, string cmd)
+        => ExecuteReaderEnumerable(self, true, cmd);
+
+    /// <summary>
+    /// Executes the current command string on the given database command `self` and returns an enumerable of data readers.
+    /// </summary>
+    /// <param name="self">The database command to execute on.</param>
+    /// <returns>An enumerable of data readers.</returns>
     public static IEnumerable<IDataReader> ExecuteReaderEnumerable(this IDbCommand self)
-    {
-        using var rd = self.ExecuteReader();
-        while (rd.Read())
-            yield return rd;
-    }
+        => ExecuteReaderEnumerable(self, true, null);
 
     /// <summary>
     /// Converts the value at the given index of the given data reader to a string.
@@ -1077,7 +1148,7 @@ public static partial class ExtensionMethods
     /// </summary>
     /// <param name="self">The connection to create the command on.</param>
     /// <param name="transaction">The transaction to use for the command.</param>
-    /// <param name="cmd">The command string to create the command with.</param>
+    /// <param name="cmdtext">The command string to create the command with.</param>
     /// <returns>A new command with the given transaction.</returns>
     public static IDbCommand CreateCommand(this IDbConnection self, IDbTransaction? transaction, string? cmdtext = null)
     {
@@ -1194,7 +1265,7 @@ public static partial class ExtensionMethods
             return ExpandInClauseParameter(cmd, originalParamName, values.Values);
 
         // We have a temporary table, so we need to replace the parameter with the table name
-        cmd.CommandText = cmd.CommandText.Replace(originalParamName, values.GetInClause(default).Await(), StringComparison.OrdinalIgnoreCase);
+        cmd.CommandText = cmd.CommandText.Replace(originalParamName, values.GetInClauseAsync(default).Await(), StringComparison.OrdinalIgnoreCase);
         return cmd;
     }
 

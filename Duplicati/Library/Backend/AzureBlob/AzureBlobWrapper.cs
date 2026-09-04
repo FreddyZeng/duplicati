@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -19,14 +19,15 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
 // DEALINGS IN THE SOFTWARE.
 
+using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using System.Runtime.CompilerServices;
 using Duplicati.Library.Common.IO;
 using Duplicati.Library.Interface;
-using Uri = System.Uri;
 using Duplicati.Library.Utility.Options;
 using Duplicati.Library.Utility;
+using Azure.Core.Pipeline;
 
 namespace Duplicati.Library.Backend.AzureBlob
 {
@@ -39,6 +40,13 @@ namespace Duplicati.Library.Backend.AzureBlob
         private readonly TimeoutOptionsHelper.Timeouts _timeouts;
         private readonly IReadOnlySet<AccessTier> _archiveClasses;
         private readonly AccessTier? _accessTier;
+
+        /// <summary>
+        /// The blob name prefix from the backend URL path, ending with a '/' when
+        /// non-empty. All blob names are prefixed with this value so a backend URL
+        /// of azure://container/some/folder stores blobs under "some/folder/".
+        /// </summary>
+        private readonly string _prefix;
 
         /// <summary>
         /// Gets an array of DNS names associated with the blob container.
@@ -61,26 +69,52 @@ namespace Duplicati.Library.Backend.AzureBlob
         /// <param name="accessKey">The access key for the storage account.</param>
         /// <param name="sasToken">The Shared Access Signature (SAS) token for authentication.</param>
         /// <param name="containerName">The name of the blob container.</param>
+        /// <param name="prefix">The blob name prefix from the URL path; empty or ending with '/'.</param>
         /// <param name="accessTier">The access tier assigned to blobs on upload.</param>
         /// <param name="archiveClasses">The storage classes that are considered archive classes.</param>
         /// <param name="timeouts">The timeout options.</param>
-        public AzureBlobWrapper(string accountName, string? accessKey, string? sasToken, string containerName, AccessTier? accessTier, IReadOnlySet<AccessTier> archiveClasses, TimeoutOptionsHelper.Timeouts timeouts)
+        /// <param name="maxRetries">The maximum number of retries for Azure operations.</param>
+        public AzureBlobWrapper(string accountName, string? accessKey, string? sasToken, string containerName, string prefix, AccessTier? accessTier, IReadOnlySet<AccessTier> archiveClasses, TimeoutOptionsHelper.Timeouts timeouts, int maxRetries)
         {
             BlobServiceClient blobServiceClient;
+            var maxTicks = timeouts.ReadWriteTimeout.Ticks - TimeSpan.FromSeconds(1).Ticks;
+
+            // If not infinite, then share the timeout across retries
+            var delay = maxTicks <= 0
+                ? TimeSpan.FromSeconds(1)
+                : TimeSpan.FromTicks(maxTicks / Math.Max(1, maxRetries));
+
+            var maxDelay = maxTicks <= 0
+                ? TimeSpan.FromSeconds(10)
+                : TimeSpan.FromTicks(maxTicks);
+
+            var blobServiceOptions = new BlobClientOptions()
+            {
+                Retry =
+                {
+                    MaxRetries = maxRetries,
+                    Mode = Azure.Core.RetryMode.Exponential,
+                    Delay = delay,
+                    MaxDelay = maxDelay
+                },
+                Transport = new HttpClientTransport(new HttpClient { Timeout = Timeout.InfiniteTimeSpan })
+            };
+
             if (sasToken != null)
             {
                 var sasUri = new Uri($"https://{accountName}.blob.core.windows.net/?{sasToken}");
-                blobServiceClient = new BlobServiceClient(sasUri);
+                blobServiceClient = new BlobServiceClient(sasUri, blobServiceOptions);
             }
             else
             {
                 var connectionString = $"DefaultEndpointsProtocol=https;AccountName={accountName};AccountKey={accessKey};EndpointSuffix=core.windows.net";
-                blobServiceClient = new BlobServiceClient(connectionString);
+                blobServiceClient = new BlobServiceClient(connectionString, blobServiceOptions);
             }
 
             _accessTier = accessTier;
             _archiveClasses = archiveClasses;
             _container = blobServiceClient.GetBlobContainerClient(containerName);
+            _prefix = prefix ?? "";
             _timeouts = timeouts;
         }
 
@@ -106,7 +140,7 @@ namespace Duplicati.Library.Backend.AzureBlob
         /// <returns>A task that represents the asynchronous download operation.</returns>
         public async Task GetFileStreamAsync(string keyName, Stream target, CancellationToken cancellationToken)
         {
-            var blobClient = _container.GetBlobClient(keyName);
+            var blobClient = _container.GetBlobClient(_prefix + keyName);
             using var timeoutStream = target.ObserveWriteTimeout(_timeouts.ReadWriteTimeout, false);
             await blobClient.DownloadToAsync(target, cancellationToken).ConfigureAwait(false);
         }
@@ -120,7 +154,7 @@ namespace Duplicati.Library.Backend.AzureBlob
         /// <returns>A task that represents the asynchronous upload operation.</returns>
         public async Task AddFileStream(string keyName, Stream source, CancellationToken cancelToken)
         {
-            var blobClient = _container.GetBlobClient(keyName);
+            var blobClient = _container.GetBlobClient(_prefix + keyName);
             using var timeoutStream = source.ObserveReadTimeout(_timeouts.ReadWriteTimeout, false);
             var options = new BlobUploadOptions()
             {
@@ -138,10 +172,31 @@ namespace Duplicati.Library.Backend.AzureBlob
         /// <param name="cancelToken">A token to monitor for cancellation requests.</param>
         public async Task DeleteObjectAsync(string keyName, CancellationToken cancelToken)
         {
-            var blobClient = _container.GetBlobClient(keyName);
+            var blobClient = _container.GetBlobClient(_prefix + keyName);
             await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken, async ct =>
                 await blobClient.DeleteIfExistsAsync(cancellationToken: ct).ConfigureAwait(false)
             ).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Copies a blob to a new name asynchronously.
+        /// </summary>
+        /// <param name="sourceKeyName">The name of the source blob.</param>
+        /// <param name="destinationKeyName">The name of the destination blob.</param>
+        /// <param name="cancelToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A task that represents the asynchronous copy operation.</returns>
+        public async Task CopyFileAsync(string sourceKeyName, string destinationKeyName, CancellationToken cancelToken)
+        {
+            var sourceBlobClient = _container.GetBlobClient(_prefix + sourceKeyName);
+            var destinationBlobClient = _container.GetBlobClient(_prefix + destinationKeyName);
+
+            // Start the copy operation
+            var operation = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken, async ct =>
+                await destinationBlobClient.StartCopyFromUriAsync(sourceBlobClient.Uri, cancellationToken: ct).ConfigureAwait(false)
+            ).ConfigureAwait(false);
+
+            // Wait for the copy to complete
+            await operation.WaitForCompletionAsync(cancelToken).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -152,7 +207,9 @@ namespace Duplicati.Library.Backend.AzureBlob
         /// <exception cref="FolderMissingException">Thrown when the container is not found</exception>
         public virtual async IAsyncEnumerable<IFileEntry> ListContainerEntriesAsync([EnumeratorCancellation] CancellationToken cancelToken)
         {
-            await using var blobEnumerator = _container.GetBlobsAsync().GetAsyncEnumerator(cancelToken);
+            // Only list blobs below the prefix (if any), and strip the prefix from the
+            // returned names so callers see names relative to the bound URL path.
+            await using var blobEnumerator = _container.GetBlobsAsync(BlobTraits.None, BlobStates.None, string.IsNullOrEmpty(_prefix) ? null : _prefix, cancelToken).GetAsyncEnumerator(cancelToken);
 
             while (true)
             {
@@ -175,7 +232,18 @@ namespace Duplicati.Library.Backend.AzureBlob
 
                 if (blobEnumerator.Current is { } blob)
                 {
-                    var blobName = Uri.UnescapeDataString(blob.Name.Replace("+", "%2B"));
+                    // Match and strip the prefix on the raw name, which is the
+                    // representation the server-side prefix filter operates on.
+                    // Decoding before comparing could drop blobs when the prefix
+                    // contains characters affected by the unescape step below.
+                    var rawName = blob.Name;
+                    if (!string.IsNullOrEmpty(_prefix))
+                    {
+                        if (!rawName.StartsWith(_prefix, StringComparison.Ordinal))
+                            continue;
+                        rawName = rawName.Substring(_prefix.Length);
+                    }
+                    var blobName = Uri.UnescapeDataString(rawName.Replace("+", "%2B"));
                     var lastModified = blob.Properties.LastModified?.UtcDateTime ?? DateTime.UtcNow;
                     var isArchive = blob.Properties.AccessTier.HasValue && _archiveClasses.Contains(blob.Properties.AccessTier.Value);
 
@@ -190,6 +258,64 @@ namespace Duplicati.Library.Backend.AzureBlob
                         IsFolder = false,
                     };
                 }
+            }
+        }
+
+        public async Task<DateTime?> GetObjectLockUntilAsync(string keyName, CancellationToken cancellationToken)
+        {
+            var blobClient = _container.GetBlobClient(_prefix + keyName);
+
+            try
+            {
+                var properties = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken, ct
+                    => blobClient.GetPropertiesAsync(cancellationToken: ct)
+                ).ConfigureAwait(false);
+
+                return properties.Value.ImmutabilityPolicy?.ExpiresOn?.UtcDateTime;
+            }
+            catch (RequestFailedException e) when (e.Status == 404
+                                                    || e.ErrorCode == BlobErrorCode.BlobNotFound
+                                                    || e.ErrorCode == BlobErrorCode.ResourceNotFound)
+            {
+                throw new FileMissingException(e.Message, e);
+            }
+            catch (RequestFailedException e) when (e.ErrorCode == BlobErrorCode.ContainerNotFound
+                                                    || e.ErrorCode == BlobErrorCode.ContainerBeingDeleted
+                                                    || e.ErrorCode == BlobErrorCode.ContainerDisabled)
+            {
+                throw new FolderMissingException(e.Message, e);
+            }
+        }
+
+        public async Task SetObjectLockUntilAsync(string keyName, DateTime lockUntilUtc, BlobImmutabilityPolicyMode policyMode, CancellationToken cancellationToken)
+        {
+            var blobClient = _container.GetBlobClient(_prefix + keyName);
+            var policy = new BlobImmutabilityPolicy
+            {
+                ExpiresOn = new DateTimeOffset(lockUntilUtc.ToUniversalTime(), TimeSpan.Zero),
+                PolicyMode = policyMode
+            };
+
+            try
+            {
+                var result = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken, async ct
+                    => await blobClient.SetImmutabilityPolicyAsync(policy, cancellationToken: ct).ConfigureAwait(false)
+                ).ConfigureAwait(false);
+
+                if (result.Value.ExpiresOn == null)
+                    throw new Exception("Failed to set object lock, call succeeded but no immutability policy returned");
+            }
+            catch (RequestFailedException e) when (e.Status == 404
+                                                    || e.ErrorCode == BlobErrorCode.BlobNotFound
+                                                    || e.ErrorCode == BlobErrorCode.ResourceNotFound)
+            {
+                throw new FileMissingException(e.Message, e);
+            }
+            catch (RequestFailedException e) when (e.ErrorCode == BlobErrorCode.ContainerNotFound
+                                                    || e.ErrorCode == BlobErrorCode.ContainerBeingDeleted
+                                                    || e.ErrorCode == BlobErrorCode.ContainerDisabled)
+            {
+                throw new FolderMissingException(e.Message, e);
             }
         }
     }

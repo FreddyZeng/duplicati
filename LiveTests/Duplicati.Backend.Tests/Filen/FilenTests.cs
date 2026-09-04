@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -32,10 +32,15 @@ public sealed class FilenTests : BaseTest
     {
         CheckRequiredEnvironment(["TESTCREDENTIAL_FILEN_FOLDER", "TESTCREDENTIAL_FILEN_USERNAME", "TESTCREDENTIAL_FILEN_PASSWORD"]);
 
+        var url = $"filen://{Environment.GetEnvironmentVariable("TESTCREDENTIAL_FILEN_FOLDER")}?auth-username={Uri.EscapeDataString(Environment.GetEnvironmentVariable("TESTCREDENTIAL_FILEN_USERNAME")!)}&auth-password={Uri.EscapeDataString(Environment.GetEnvironmentVariable("TESTCREDENTIAL_FILEN_PASSWORD")!)}";
+        var apiKey = Environment.GetEnvironmentVariable("TESTCREDENTIAL_FILEN_APIKEY");
+        if (!string.IsNullOrEmpty(apiKey))
+            url += $"&api-key={Uri.EscapeDataString(apiKey)}";
+
         var exitCode = CommandLine.BackendTester.Program.Main(
             new[]
             {
-                $"filen://{Environment.GetEnvironmentVariable("TESTCREDENTIAL_FILEN_FOLDER")}?auth-username={Uri.EscapeDataString(Environment.GetEnvironmentVariable("TESTCREDENTIAL_FILEN_USERNAME")!)}&auth-password={Uri.EscapeDataString(Environment.GetEnvironmentVariable("TESTCREDENTIAL_FILEN_PASSWORD")!)}",
+                url,
 
             }.Concat(Parameters.GlobalTestParameters).ToArray());
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,7 +22,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
@@ -80,12 +79,12 @@ namespace Duplicati.Library.Main.Operation
             DateTime compareVersionTime;
 
             using var tmpdb = useLocalDb ? null : new TempFile();
-            await using var db = await Database.LocalListChangesDatabase.CreateAsync(useLocalDb ? m_options.Dbpath : (string)tmpdb, null, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
-            await using var storageKeeper = await db.CreateStorageHelper(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+            await using var db = await Database.Local.LocalListChangesDatabase.CreateAsync(useLocalDb ? m_options.Dbpath : (string)tmpdb, null, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+            await using var storageKeeper = await db.CreateStorageHelperAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
             if (useLocalDb)
             {
                 var dbtimes = await db
-                    .FilesetTimes(m_result.TaskControl.ProgressToken)
+                    .FilesetTimesAsync(m_result.TaskControl.ProgressToken)
                     .ToListAsync(cancellationToken: m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
 
@@ -101,17 +100,17 @@ namespace Duplicati.Library.Main.Operation
                 SelectTime(compareVersion, times, out compareVersionIndex, out compareVersionTime, out compareVersionId);
 
                 await storageKeeper
-                    .AddFromDb(baseVersionId, false, filter, m_result.TaskControl.ProgressToken)
+                    .AddFromDbAsync(baseVersionId, false, filter, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
                 await storageKeeper
-                    .AddFromDb(compareVersionId, true, filter, m_result.TaskControl.ProgressToken)
+                    .AddFromDbAsync(compareVersionId, true, filter, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
             }
             else
             {
                 Logging.Log.WriteInformationMessage(LOGTAG, "NoLocalDatabase", "No local database, accessing remote store");
 
-                var parsedlist = (await backendManager.ListAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                var parsedlist = (await backendManager.ListAsync(null, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                     .Select(n => Volumes.VolumeBase.ParseFilename(n))
                     .Where(p => p != null && p.FileType == RemoteVolumeType.Files)
                     .OrderByDescending(p => p.Time)
@@ -143,39 +142,41 @@ namespace Duplicati.Library.Main.Operation
                     }
                 };
 
-                if (!await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                     return;
 
-                using (var tmpfile = await backendManager.GetAsync(baseFile.File.Name, null, baseFile.File.Size, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                using (new Logging.Timer(LOGTAG, "InsertBaseFiles", "Inserting base files into database"))
+                using (var tmpfile = await backendManager.GetAsync(baseFile.File.Name, null, baseFile.File.Size, allowParityRepair: true, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                 using (var rd = new Volumes.FilesetVolumeReader(RestoreHandler.GetCompressionModule(baseFile.File.Name), tmpfile, m_options))
                     foreach (var f in rd.Files)
                         if (FilterExpression.Matches(filter, f.Path))
                             await storageKeeper
-                                .AddElement(f.Path, f.Hash, f.Metahash, f.Size, conv(f.Type), false, m_result.TaskControl.ProgressToken)
+                                .AddElementAsync(f.Path, f.Hash, f.Metahash, f.Size, conv(f.Type), false, false, m_result.TaskControl.ProgressToken)
                                 .ConfigureAwait(false);
 
-                if (!await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                     return;
 
-                using (var tmpfile = await backendManager.GetAsync(compareFile.File.Name, null, compareFile.File.Size, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                using (new Logging.Timer(LOGTAG, "InsertCompareFiles", "Inserting compare files into database"))
+                using (var tmpfile = await backendManager.GetAsync(compareFile.File.Name, null, compareFile.File.Size, allowParityRepair: true, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                 using (var rd = new Volumes.FilesetVolumeReader(RestoreHandler.GetCompressionModule(compareFile.File.Name), tmpfile, m_options))
                     foreach (var f in rd.Files)
                         if (FilterExpression.Matches(filter, f.Path))
                             await storageKeeper
-                                .AddElement(f.Path, f.Hash, f.Metahash, f.Size, conv(f.Type), true, m_result.TaskControl.ProgressToken)
+                                .AddElementAsync(f.Path, f.Hash, f.Metahash, f.Size, conv(f.Type), true, false, m_result.TaskControl.ProgressToken)
                                 .ConfigureAwait(false);
             }
 
             var changes = await storageKeeper
-                .CreateChangeCountReport(m_result.TaskControl.ProgressToken)
+                .CreateChangeCountReportAsync(m_result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
             var sizes = await storageKeeper
-                .CreateChangeSizeReport(m_result.TaskControl.ProgressToken)
+                .CreateChangeSizeReportAsync(m_result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
             var lst = (m_options.FullResult || callback != null) ?
-                    (from n in storageKeeper.CreateChangedFileReport(m_result.TaskControl.ProgressToken)
+                    (from n in storageKeeper.CreateChangedFileReportAsync(m_result.TaskControl.ProgressToken)
                      select n) : null;
 
             m_result.SetResult(
@@ -188,7 +189,7 @@ namespace Duplicati.Library.Main.Operation
             );
 
             if (callback != null)
-                callback(m_result, lst.ToEnumerable());
+                callback(m_result, lst.ToBlockingEnumerable());
 
             return;
         }

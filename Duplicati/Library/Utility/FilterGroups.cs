@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -21,10 +21,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Xml.Linq;
-using Duplicati.Library.Common;
 
 using Duplicati.Library.Localization.Short;
 
@@ -81,6 +81,9 @@ namespace Duplicati.Library.Utility
     /// </summary>
     public static class FilterGroups
     {
+        private const string CONTROL_DIRECTORY_NAME = "control_dir_v2";
+        private const string DEFAULT_CONTROL_DIRECTORY_FILTER = @"*/Duplicati/control_dir_v2/";
+
         /// <summary>
         /// In addition to the default names from the enums, these alternate / shorter names are also available.
         /// </summary>
@@ -115,16 +118,6 @@ namespace Duplicati.Library.Utility
                 { "Include", FilterGroup.DefaultIncludes },
                 { "Inc", FilterGroup.DefaultIncludes },
             };
-
-        /// <summary>
-        /// Regex escaped string for the AltDirectorySeparatorChar
-        /// </summary>
-        private static readonly string RegexEscapedAltDirectorySeparatorChar = System.Text.RegularExpressions.Regex.Escape(Common.IO.Util.AltDirectorySeparatorString);
-
-        /// <summary>
-        /// Regex escaped string for the DirectorySeparatorChar
-        /// </summary>
-        private static readonly string RegexEscapedDirectorySeparatorChar = System.Text.RegularExpressions.Regex.Escape(Common.IO.Util.DirectorySeparatorString);
 
         /// <summary>
         /// Gets the list of alternate aliases which can refer to this group.
@@ -186,7 +179,7 @@ namespace Duplicati.Library.Utility
             }
 
             var ind = new string(' ', indentation);
-            
+
             var sb = new System.Text.StringBuilder();
             sb.AppendLine(ind + LC.L("{0}: Selects no filters.", nameof(FilterGroup.None)));
             sb.AppendLine(ind + LC.L("{0}: A set of default exclude filters, currently evaluates to: {1}.", nameof(FilterGroup.DefaultExcludes), string.Join(",", defaultExcludeValues.DefaultIfEmpty(nameof(FilterGroup.None)))));
@@ -213,7 +206,7 @@ namespace Duplicati.Library.Utility
                     }
                 }
             };
-            
+
             sb.AppendLine(ind + LC.L("{0}: Files that are owned by the system or not suited to be backed up. This includes any operating system reported protected files. Most users should at least apply these filters.", nameof(FilterGroup.SystemFiles)));
             appendAliasesAndValues(FilterGroup.SystemFiles, false);
             sb.AppendLine(ind + LC.L("{0}: Files that belong to the operating system. These files are restored when the operating system is re-installed.", nameof(FilterGroup.OperatingSystem)));
@@ -235,10 +228,21 @@ namespace Duplicati.Library.Utility
         /// <param name="group">The group to use.</param>
         public static IEnumerable<string> GetFilterStrings(FilterGroup group)
         {
+            return GetFilterStrings(group, GetApplicationDataFolder());
+        }
+
+        /// <summary>
+        /// Gets the filters for a specific group using the supplied application data folder.
+        /// </summary>
+        /// <param name="group">The group to use.</param>
+        /// <param name="applicationDataFolder">The application data folder.</param>
+        /// <returns>The filters from the group.</returns>
+        internal static IEnumerable<string> GetFilterStrings(FilterGroup group, string applicationDataFolder)
+        {
             IEnumerable<string> osFilters;
 
             if (OperatingSystem.IsMacOS())
-                osFilters = CreateOSXFilters(group);
+                osFilters = CreateMacOSFilters(group);
             else if (OperatingSystem.IsLinux())
                 osFilters = CreateLinuxFilters(group);
             else if (OperatingSystem.IsWindows())
@@ -248,7 +252,7 @@ namespace Duplicati.Library.Utility
 
             return
                 FilterPrefixMatches(
-                    CreateCommonFilters(group)
+                    CreateCommonFilters(group, applicationDataFolder)
                         .Concat(osFilters)
                         .Where(x => !string.IsNullOrWhiteSpace(x))
                     )
@@ -305,15 +309,13 @@ namespace Duplicati.Library.Utility
         /// Creates common filters
         /// </summary>
         /// <param name="group">The groups to create the filters for</param>
+        /// <param name="applicationDataFolder">The application data folder.</param>
         /// <returns>Common filters</returns>
-        private static IEnumerable<string> CreateCommonFilters(FilterGroup group)
+        private static IEnumerable<string> CreateCommonFilters(FilterGroup group, string applicationDataFolder)
         {
             if (group.HasFlag(FilterGroup.CacheFiles))
             {
-                // TODO: The control_dir_v2 might be under a different path for OEM branded instances.
-                // However, the AppName is loaded and controlled by the AutoUpdater assembly, which we can't reference here without an ugly circular dependency or dependency injection.
-                // What is the best way to solve this?
-                yield return FilterGroups.CreateWildcardFilter(@"*/Duplicati/control_dir_v2/"); // Duplicati uses this directory to store lock files and communicate with other processes.
+                yield return CreateControlDirectoryFilter(applicationDataFolder); // Duplicati uses this directory to store lock files and communicate with other processes.
                 yield return FilterGroups.CreateWildcardFilter(@"*/Google/Chrome/*cache*");
                 yield return FilterGroups.CreateWildcardFilter(@"*/Google/Chrome/*LOCK*"); // Chrome appears to lock various files under it's settings folder using files named 'LOCK' or 'lockfile'
                 yield return FilterGroups.CreateWildcardFilter(@"*/Google/Chrome/*Current*"); // 'Current Session' and 'Current Tabs' appear to be locked while running Chrome
@@ -328,6 +330,50 @@ namespace Duplicati.Library.Utility
             {
                 yield return Library.Utility.TempFolder.SystemTempPath;
             }
+        }
+
+        /// <summary>
+        /// Gets the application data folder without introducing a circular dependency on the AutoUpdater assembly.
+        /// </summary>
+        /// <returns>The application data folder, or null if it could not be resolved.</returns>
+        private static string GetApplicationDataFolder()
+        {
+            try
+            {
+                var managerType = Type.GetType("Duplicati.Library.AutoUpdater.DataFolderManager, Duplicati.Library.AutoUpdater", false);
+                var accessModeType = managerType?.GetNestedType("AccessMode", System.Reflection.BindingFlags.Public);
+                if (managerType == null || accessModeType == null)
+                    return null;
+
+                var getDataFolder = managerType.GetMethod(
+                    "GetDataFolder",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                    null,
+                    new[] { accessModeType },
+                    null);
+                if (getDataFolder == null)
+                    return null;
+
+                var probeOnly = Enum.Parse(accessModeType, "ProbeOnly");
+                return getDataFolder.Invoke(null, new[] { probeOnly }) as string;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Creates the filter for the directory used for single-instance control files.
+        /// </summary>
+        /// <param name="applicationDataFolder">The application data folder.</param>
+        /// <returns>The control directory filter.</returns>
+        private static string CreateControlDirectoryFilter(string applicationDataFolder)
+        {
+            if (string.IsNullOrWhiteSpace(applicationDataFolder))
+                return CreateWildcardFilter(DEFAULT_CONTROL_DIRECTORY_FILTER);
+
+            return CreateWildcardFilter(Common.IO.Util.AppendDirSeparator(Path.Combine(applicationDataFolder, CONTROL_DIRECTORY_NAME)));
         }
 
         /// <summary>
@@ -355,6 +401,7 @@ namespace Duplicati.Library.Utility
                 yield return FilterGroups.CreateWildcardFilter(@"?:/Recycled/");
                 yield return FilterGroups.CreateWildcardFilter(@"?:/Recycler/");
                 yield return FilterGroups.CreateWildcardFilter(@"?:/System Volume Information/");
+                yield return FilterGroups.CreateWildcardFilter(@"*/DfsrPrivate/"); // DFS Replication private folder
                 yield return FilterGroups.CreateWildcardFilter(FilterGroups.CreateSpecialFolderFilter(Environment.SpecialFolder.Windows) + "Installer/");
 
                 foreach (var s in GetWindowsRegistryFilters() ?? new string[0])
@@ -441,11 +488,11 @@ namespace Duplicati.Library.Utility
         }
 
         /// <summary>
-        /// Creates OSX filters
+        /// Creates MacOS filters
         /// </summary>
         /// <param name="group">The groups to create the filters for</param>
-        /// <returns>OSX filters</returns>
-        private static IEnumerable<string> CreateOSXFilters(FilterGroup group)
+        /// <returns>MacOS filters</returns>
+        private static IEnumerable<string> CreateMacOSFilters(FilterGroup group)
         {
             if (group.HasFlag(FilterGroup.SystemFiles))
             {
@@ -468,7 +515,7 @@ namespace Duplicati.Library.Utility
                 yield return FilterGroups.CreateWildcardFilter(@"/private/var/spool/postfix/");
                 yield return FilterGroups.CreateWildcardFilter(@"/private/var/vm/");
 
-                foreach (var p in GetOSXExcludeFiles() ?? new string[0])
+                foreach (var p in GetMacOSExcludeFiles() ?? new string[0])
                     yield return p;
             }
 
@@ -637,57 +684,67 @@ namespace Duplicati.Library.Utility
         /// <summary>
         /// Gets a list of exclude paths from the MacOS system
         /// </summary>
-        /// <returns>The list of paths to exclude on OSX backups.</returns>
-        private static IEnumerable<string> GetOSXExcludeFiles()
+        /// <returns>The list of paths to exclude on MacOS backups.</returns>
+        private static IEnumerable<string> GetMacOSExcludeFiles()
         {
-            var res = new List<string>();
-            if (OperatingSystem.IsMacOS())
+            if (!OperatingSystem.IsMacOS())
+                return null;
+
+            try
             {
-                try
+                //TODO: Consider the dynamic list:
+                // ~> sudo mdfind "com_apple_backup_excludeItem = 'com.apple.backupd'"
+
+                var doc = XDocument.Load("/System/Library/CoreServices/backupd.bundle/Contents/Resources/StdExclusions.plist");
+                var toplevel = doc.Element("plist")?.Element("dict")?.Elements("key");
+                var res = new List<string>();
+                var excludes = new HashSet<string>(StringComparer.Ordinal)
                 {
-                    //TODO: Consider the dynamic list:
-                    // ~> sudo mdfind "com_apple_backup_excludeItem = 'com.apple.backupd'"
+                    "PathsExcluded",
+                    "ContentsExcluded",
+                    "FileContentsExcluded"
+                };
 
-                    var doc = System.Xml.Linq.XDocument.Load("/System/Library/CoreServices/backupd.bundle/Contents/Resources/StdExclusions.plist");
-                    var toplevel = doc.Element("plist")?.Element("dict")?.Elements("key");
-
-                    foreach (var n in toplevel)
+                foreach (var n in toplevel)
+                {
+                    if (excludes.Contains(n.Value))
                     {
-                        if (new string[] { "PathsExcluded", "ContentsExcluded", "FileContentsExcluded" }.Contains(n.Value, StringComparer.Ordinal))
-                        {
-                            if (n.NextNode is XContainer container)
-                                foreach (var p in container.Elements("string"))
-                                {
-                                    if (System.IO.File.Exists(p.Value))
-                                        res.Add(p.Value);
-                                    else if (System.IO.Directory.Exists(p.Value))
-                                        res.Add(p.Value + "/");
-                                    else
-                                        res.Add(p.Value);
-                                }
-                                
-                        }
-                        else if (string.Equals(n.Value, "UserPathsExcluded", StringComparison.Ordinal))
-                        {
-                            // TODO: We need to figure out how to map the paths to either a file or a folder.
-                            // alternatively, we can use a regex with an optional trailing slash,
-                            // but this has a large performance overhead, so for now the code below
-                            // works but has been commented out
+                        if (n.NextNode is XContainer container)
+                            foreach (var p in container.Elements("string"))
+                            {
+                                if (p?.Value == null)
+                                    continue;
 
-                            /*
-                            if (n.NextNode is System.Xml.Linq.XContainer)
-                                foreach (var p in ((System.Xml.Linq.XContainer)n.NextNode).Elements("string"))
-                                    res.Add("[/Users/[^/]+/" + System.Text.RegularExpressions.Regex.Escape(p.Value) + "/?]");
-                            */
-                        }
+                                if (File.Exists(p.Value))
+                                    res.Add(p.Value);
+                                else if (Directory.Exists(p.Value))
+                                    res.Add(p.Value + "/");
+                                else
+                                    res.Add(p.Value);
+                            }
+
                     }
+                    else if (string.Equals(n.Value, "UserPathsExcluded", StringComparison.Ordinal))
+                    {
+                        // TODO: We need to figure out how to map the paths to either a file or a folder.
+                        // alternatively, we can use a regex with an optional trailing slash,
+                        // but this has a large performance overhead, so for now the code below
+                        // works but has been commented out
 
-                    return res;
+                        /*
+                        if (n.NextNode is System.Xml.Linq.XContainer)
+                            foreach (var p in ((System.Xml.Linq.XContainer)n.NextNode).Elements("string"))
+                                res.Add("[/Users/[^/]+/" + System.Text.RegularExpressions.Regex.Escape(p.Value) + "/?]");
+                        */
+                    }
                 }
-                catch
-                {
-                }
+
+                return res;
             }
+            catch
+            {
+            }
+
 
             return null;
         }
@@ -716,7 +773,7 @@ namespace Duplicati.Library.Utility
 
         /// <summary>
         /// Helper method that reads the Windows registry and finds paths to exclude.
-        /// This method should not be called directly as that could cause loader errors on Mono.
+        /// This method is not inlined, so the Registry types are not loaded when the calling method is JIT'ed on non-Windows platforms.
         /// </summary>
         /// <returns>The list of paths to exclude.</returns>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -62,7 +62,7 @@ namespace Duplicati.UnitTest
         // ReSharper disable once UnusedMember.Global
         public DeterministicErrorBackend(string url, Dictionary<string, string> options)
         {
-            var u = new Library.Utility.Uri(url).SetScheme(WrappedBackend).ToString();
+            var u = new Library.Utility.RelaxedUri(url).SetScheme(WrappedBackend).ToString();
             m_backend = (IStreamingBackend)Library.DynamicLoader.BackendLoader.GetBackend(u, options);
         }
 
@@ -111,9 +111,9 @@ namespace Duplicati.UnitTest
             await m_backend.DeleteAsync(remotename, cancelToken).ConfigureAwait(false);
             ThrowError(BackendAction.DeleteAfter, remotename);
         }
-        public Task TestAsync(CancellationToken cancelToken)
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
         {
-            return m_backend.TestAsync(cancelToken);
+            return m_backend.TestAsync(alsoWrite, cancelToken);
         }
         public Task CreateFolderAsync(CancellationToken cancelToken)
         {

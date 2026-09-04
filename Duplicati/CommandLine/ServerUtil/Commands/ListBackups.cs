@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,24 +20,30 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.CommandLine;
-using System.CommandLine.NamingConventionBinder;
 using System.Globalization;
 
 namespace Duplicati.CommandLine.ServerUtil.Commands;
 
 public static class ListBackups
 {
-    public static Command Create() =>
-        new Command("list-backups", "List all backups")
+    public static Command Create()
+    {
+        var detailedOption = new Option<bool>("--detailed")
         {
-            new Option<bool>("--detailed", "Show detailed information about each backup")
-            {
-                IsRequired = false
-            },
-        }
-        .WithHandler(CommandHandler.Create<Settings, OutputInterceptor, bool>(async (settings, output, detailed) =>
+            Description = "Show detailed information about each backup"
+        };
+
+        var cmd = new Command("list-backups", "List all backups")
         {
-            var bks = await (await settings.GetConnection(output)).ListBackups();
+            detailedOption
+        };
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var settings = SettingsBinder.GetSettings(parseResult);
+            var output = OutputInterceptorBinder.GetConsoleInterceptor(parseResult);
+            var detailed = parseResult.GetValue(detailedOption);
+
+            var bks = await (await settings.GetConnectionAsync(output)).ListBackupsAsync();
 
             var backupEntries = bks as Connection.BackupEntry[] ?? bks.ToArray();
             if (backupEntries.Any())
@@ -99,5 +105,7 @@ public static class ListBackups
                 output.AppendConsoleMessage("No backups found");
 
             output.SetResult(true);
-        }));
+        });
+        return cmd;
+    }
 }

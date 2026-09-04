@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -31,13 +31,35 @@ namespace Duplicati.Library.Main.Volumes
             [JsonProperty("IsFullBackup")]
             public bool IsFullBackup { get; set; } = true;
 
-            public static string GetFilesetInstance(bool isFullBackup = true)
+            /// <summary>
+            /// The time of the fileset, when it is not the time in the filename.
+            /// A file is never given a name that has been used before, so a replacement
+            /// dlist file gets a new name and therefore a new time. Recording the fileset
+            /// time here keeps it available after a database recreate, which otherwise
+            /// takes the time from the filename. Absent means: use the filename.
+            /// </summary>
+            [JsonProperty("Timestamp", NullValueHandling = NullValueHandling.Ignore)]
+            public string Timestamp { get; set; }
+
+            public static string GetFilesetInstance(bool isFullBackup = true, DateTime? filesetTime = null)
             {
                 return JsonConvert.SerializeObject(new FilesetData
                 {
-                    IsFullBackup = isFullBackup
+                    IsFullBackup = isFullBackup,
+                    Timestamp = filesetTime.HasValue
+                        ? Library.Utility.Utility.SerializeDateTime(filesetTime.Value)
+                        : null
                 });
             }
+
+            /// <summary>
+            /// Gets the recorded fileset time, if the dlist file carries one.
+            /// </summary>
+            /// <returns>The fileset time, or null when it is absent or unreadable.</returns>
+            public DateTime? GetFilesetTime()
+                => !string.IsNullOrWhiteSpace(Timestamp) && Library.Utility.Utility.TryDeserializeDateTime(Timestamp, out var t)
+                    ? t
+                    : null;
         }
 
         protected class ManifestData
@@ -93,10 +115,13 @@ namespace Duplicati.Library.Main.Volumes
             public string CompressionModule { get; private set; }
             public string EncryptionModule { get; private set; }
             public Library.Interface.IFileEntry File { get; private set; }
+            public bool IsParity { get; private set; }
+            public string ParityModule { get; private set; }
 
             internal static readonly IDictionary<RemoteVolumeType, string> REMOTE_TYPENAME_MAP;
             internal static readonly IDictionary<string, RemoteVolumeType> REVERSE_REMOTE_TYPENAME_MAP;
             private static readonly System.Text.RegularExpressions.Regex FILENAME_REGEXP;
+            private static readonly System.Text.RegularExpressions.Regex FILENAME_REGEXP_IGNORE_CASE;
 
             static ParsedVolume()
             {
@@ -111,15 +136,25 @@ namespace Duplicati.Library.Main.Volumes
 
                 REMOTE_TYPENAME_MAP = dict;
                 REVERSE_REMOTE_TYPENAME_MAP = reversedict;
-                FILENAME_REGEXP = new System.Text.RegularExpressions.Regex(@"(?<prefix>[^\-]+)\-(([i|b|I|B](?<guid>[0-9A-Fa-f]+))|((?<time>\d{8}T\d{6}Z))).(?<filetype>(" + string.Join(")|(", dict.Values) + @"))\.(?<compression>[^\.]+)(\.(?<encryption>.+))?");
+                var pattern = @"(?<prefix>[^\-]+)\-(([i|b|I|B](?<guid>[0-9A-Fa-f]+))|((?<time>\d{8}T\d{6}Z))).(?<filetype>(" + string.Join(")|(", dict.Values) + @"))\.(?<compression>[^\.]+)(\.(?<encryption>.+))?";
+                FILENAME_REGEXP = new System.Text.RegularExpressions.Regex(pattern);
+                FILENAME_REGEXP_IGNORE_CASE = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             }
 
             private ParsedVolume() { }
 
-            public static IParsedVolume Parse(string filename, Library.Interface.IFileEntry file = null)
+            public static IParsedVolume Parse(string filename, Library.Interface.IFileEntry file = null, bool caseInsensitive = false)
             {
-                var m = FILENAME_REGEXP.Match(filename);
-                if (!m.Success || m.Length != filename.Length)
+                // A parity companion file is named "<data volume name>.<parityextension>".
+                // Because the main filename regex has a greedy encryption group, it would
+                // otherwise mis-parse a parity file as a data volume with a bogus encryption
+                // module. So a parity suffix is detected and stripped first, and the remainder
+                // is parsed as the owning data volume.
+                var parityModule = MatchParitySuffix(filename);
+                var dataname = parityModule == null ? filename : filename.Substring(0, filename.Length - parityModule.Length - 1);
+
+                var m = (caseInsensitive ? FILENAME_REGEXP_IGNORE_CASE : FILENAME_REGEXP).Match(dataname);
+                if (!m.Success || m.Length != dataname.Length)
                     return null;
 
                 RemoteVolumeType t;
@@ -131,11 +166,32 @@ namespace Duplicati.Library.Main.Volumes
                     Prefix = m.Groups["prefix"].Value,
                     FileType = t,
                     Guid = m.Groups["guid"].Success ? m.Groups["guid"].Value : null,
-                    Time = m.Groups["time"].Success ? Library.Utility.Utility.DeserializeDateTime(m.Groups["time"].Value).ToUniversalTime() : new DateTime(0, DateTimeKind.Utc),
+                    Time = m.Groups["time"].Success ? Library.Utility.Utility.DeserializeDateTime(caseInsensitive ? m.Groups["time"].Value.ToUpperInvariant() : m.Groups["time"].Value).ToUniversalTime() : new DateTime(0, DateTimeKind.Utc),
                     CompressionModule = m.Groups["compression"].Value,
                     EncryptionModule = m.Groups["encryption"].Success ? m.Groups["encryption"].Value : null,
+                    IsParity = parityModule != null,
+                    ParityModule = parityModule,
                     File = file
                 };
+            }
+
+            /// <summary>
+            /// Returns the parity module key if the filename ends with a registered parity
+            /// module extension, otherwise null.
+            /// </summary>
+            /// <param name="filename">The filename to inspect</param>
+            private static string MatchParitySuffix(string filename)
+            {
+                var idx = filename.LastIndexOf('.');
+                if (idx < 0 || idx == filename.Length - 1)
+                    return null;
+
+                var ext = filename.Substring(idx + 1);
+                foreach (var key in DynamicLoader.ParityLoader.Keys)
+                    if (string.Equals(key, ext, StringComparison.OrdinalIgnoreCase))
+                        return key;
+
+                return null;
             }
         }
 
@@ -159,9 +215,25 @@ namespace Duplicati.Library.Main.Volumes
             return volumename;
         }
 
+        /// <summary>
+        /// Generates the filename of the parity companion file for a data volume.
+        /// The parity file is named "&lt;data volume name&gt;.&lt;parity extension&gt;".
+        /// </summary>
+        /// <param name="dataVolumeName">The full name of the data volume being protected</param>
+        /// <param name="parityExtension">The parity module extension (e.g. "par2")</param>
+        public static string GenerateParityFilename(string dataVolumeName, string parityExtension)
+        {
+            return dataVolumeName + "." + parityExtension;
+        }
+
         public static IParsedVolume ParseFilename(Library.Interface.IFileEntry file)
         {
             return ParsedVolume.Parse(file.Name, file);
+        }
+
+        public static IParsedVolume ParseFilename(Library.Interface.IFileEntry file, bool caseInsensitive)
+        {
+            return ParsedVolume.Parse(file.Name, file, caseInsensitive);
         }
 
         public static IParsedVolume ParseFilename(string filename)
@@ -169,9 +241,15 @@ namespace Duplicati.Library.Main.Volumes
             return ParsedVolume.Parse(filename);
         }
 
+        public static IParsedVolume ParseFilename(string filename, bool caseInsensitive)
+        {
+            return ParsedVolume.Parse(filename, caseInsensitive: caseInsensitive);
+        }
+
         protected const string FILESET_FILENAME = "fileset";
         protected const string MANIFEST_FILENAME = "manifest";
         protected const string FILELIST = "filelist.json";
+        protected const string LABELS_FILENAME = "labels.json";
 
         protected const string INDEX_VOLUME_FOLDER = "vol/";
         protected const string INDEX_BLOCKLIST_FOLDER = "list/";

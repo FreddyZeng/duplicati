@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -43,21 +43,12 @@ namespace Duplicati.Library.Main.Operation.Restore
         private static readonly string LOGTAG = Logging.Log.LogTagFromType<VolumeDecryptor>();
 
         /// <summary>
-        /// Id of the next decryptor. Used to give each decryptor a unique index.
-        /// </summary>
-        public static int IdCounter = -1;
-        /// <summary>
-        /// Maximum processing times for each active decryptor.
-        /// </summary>
-        public static int[] MaxProcessingTimes = [];
-
-        /// <summary>
         /// Runs the volume decryptor process.
         /// </summary>
         /// <param name="channels">The named channels for the restore operation.</param>
         /// <param name="backend">The backend manager.</param>
         /// <param name="options">The restore options.</param>
-        public static Task Run(Channels channels, IBackendManager backend, Options options)
+        public static Task RunAsync(Channels channels, IBackendManager backend, Options options)
         {
             return AutomationExtensions.RunTask(
             new
@@ -73,9 +64,6 @@ namespace Duplicati.Library.Main.Operation.Restore
                 Stopwatch? sw_bvr = options.InternalProfiling ? new() : null;
                 Stopwatch? sw_vw = options.InternalProfiling ? new() : null;
 
-                Stopwatch sw_processing = new();
-                int id = Interlocked.Increment(ref IdCounter);
-
                 try
                 {
                     while (true)
@@ -86,10 +74,9 @@ namespace Duplicati.Library.Main.Operation.Restore
                         sw_read?.Stop();
                         Logging.Log.WriteExplicitMessage(LOGTAG, "DecryptVolume", null, "Decrypting volume {0} (ID: {1})", volume_name, volume_id);
 
-                        sw_processing.Restart();
                         // Decrypt the volume.
                         sw_decrypt?.Start();
-                        var tmpfile = backend.DecryptFile(volume, volume_name, options);
+                        var tmpfile = backend.DecryptFile(volume, volume_name, options, dispose: true);
                         sw_decrypt?.Stop();
                         Logging.Log.WriteExplicitMessage(LOGTAG, "DecryptVolume", null, "Decrypted volume {0} (ID: {1})", volume_name, volume_id);
 
@@ -101,13 +88,23 @@ namespace Duplicati.Library.Main.Operation.Restore
                         var volume_wrapper = new VolumeWrapper(tmpfile, bvr);
                         sw_vw?.Stop();
                         Logging.Log.WriteExplicitMessage(LOGTAG, "BlockVolumeReader", null, "Created BlockVolumeReader for volume {0} (ID: {1})", volume_name, volume_id);
-                        sw_processing.Stop();
-                        // This is the only writing process to that int, so an update is safe.
-                        MaxProcessingTimes[id] = Math.Max(MaxProcessingTimes[id], (int)sw_processing.ElapsedMilliseconds);
 
                         sw_write?.Start();
-                        // Pass the decrypted volume to the `VolumeDecompressor` process.
-                        await self.Output.WriteAsync((volume_id, volume_wrapper)).ConfigureAwait(false);
+                        try
+                        {
+                            // Pass the decrypted volume to the `VolumeDecompressor` process.
+                            await self.Output.WriteAsync((volume_id, volume_wrapper)).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                            // The handoff failed, so no other process took ownership and nothing
+                            // else will dispose the volume. Without this the decrypted temporary
+                            // file stays open and is left behind, because the volume reader holds
+                            // it without `FileShare.Delete` and `TempFile`'s finalizer therefore
+                            // cannot delete it.
+                            volume_wrapper.Dispose();
+                            throw;
+                        }
                         sw_write?.Stop();
                         Logging.Log.WriteExplicitMessage(LOGTAG, "DecryptVolume", null, "Passed decrypted volume {0} (ID: {1}) to next stage", volume_name, volume_id);
                     }

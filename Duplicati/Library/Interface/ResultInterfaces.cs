@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 using System;
@@ -106,6 +106,10 @@ namespace Duplicati.Library.Interface
         DateTime Time { get; }
         long FileCount { get; }
         long FileSizes { get; }
+        /// <summary>
+        /// The label assigned to the version, or null if no label is set
+        /// </summary>
+        string Label { get; }
     }
 
     public interface IListResults : IBasicResults
@@ -140,6 +144,29 @@ namespace Duplicati.Library.Interface
         /// The size of the files in the fileset; not set if listing remote
         /// </summary>
         long? FileSizes { get; }
+        /// <summary>
+        /// The label assigned to the version; not set if listing remote or no label is set
+        /// </summary>
+        string Label { get; }
+    }
+
+    /// <summary>
+    /// The result of a set version label operation
+    /// </summary>
+    public interface ISetVersionLabelResults : IBasicResults
+    {
+        /// <summary>
+        /// The backup version that was updated
+        /// </summary>
+        long BackupVersion { get; }
+        /// <summary>
+        /// The timestamp of the version that was updated
+        /// </summary>
+        DateTime Time { get; }
+        /// <summary>
+        /// The label that was assigned, or null if the label was cleared
+        /// </summary>
+        string Label { get; }
     }
 
     /// <summary>
@@ -222,6 +249,11 @@ namespace Duplicati.Library.Interface
         /// The last modified time of the entry
         /// </summary>
         DateTime LastModified { get; }
+
+        /// <summary>
+        /// The metadata of the entry, if any
+        /// </summary>
+        Dictionary<string, string> Metadata { get; }
     }
 
     /// <summary>
@@ -290,6 +322,10 @@ namespace Duplicati.Library.Interface
         /// The matched path of the file version
         /// </summary>
         Range MatchedPathRange { get; }
+        /// <summary>
+        /// The metadata of the entry, if any
+        /// </summary>
+        Dictionary<string, string> Metadata { get; }
     }
 
     public interface IListAffectedResults : IBasicResults
@@ -300,7 +336,7 @@ namespace Duplicati.Library.Interface
         IEnumerable<IListResultRemoteVolume> RemoteVolumes { get; }
     }
 
-    public interface IDeleteResults : IBasicResults
+    public interface IDeleteResults : IBasicResults, IBackendStatsticsReporter
     {
         IEnumerable<Tuple<long, DateTime>> DeletedSets { get; }
         ICompactResults CompactResults { get; }
@@ -333,18 +369,28 @@ namespace Duplicati.Library.Interface
         ICompactResults CompactResults { get; }
         IDeleteResults DeleteResults { get; }
         IRepairResults RepairResults { get; }
+        ISetLockResults LockResults { get; }
+
+        /// <summary>
+        /// Results from remote synchronization operations to multiple destinations.
+        /// </summary>
+        IRemoteSynchronizationResults[] RemoteSynchronizationResults { get; }
     }
 
     public interface IRestoreResults : IBasicResults
     {
         long RestoredFiles { get; }
         long SizeOfRestoredFiles { get; }
+        long SizeOfRestoredData { get; }
         long RestoredFolders { get; }
         long RestoredSymlinks { get; }
         long PatchedFiles { get; }
         long DeletedFiles { get; }
         long DeletedFolders { get; }
         long DeletedSymlinks { get; }
+        long UnmodifiedFiles { get; }
+        long SizeOfUnmodifiedFiles { get; }
+        string RestorePath { get; }
 
         IRecreateDatabaseResults RecreateDatabaseResults { get; }
     }
@@ -358,7 +404,7 @@ namespace Duplicati.Library.Interface
         IEnumerable<IFileEntry> Files { get; }
     }
 
-    public interface ICompactResults : IBasicResults, IResultsWithVacuum
+    public interface ICompactResults : IBasicResults, IResultsWithVacuum, IBackendStatsticsReporter
     {
         long DeletedFileCount { get; }
         long DownloadedFileCount { get; }
@@ -367,6 +413,47 @@ namespace Duplicati.Library.Interface
         long DownloadedFileSize { get; }
         long UploadedFileSize { get; }
         bool Dryrun { get; }
+    }
+
+    /// <summary>
+    /// Results from a remote synchronization operation to a single destination.
+    /// </summary>
+    public interface IRemoteSynchronizationResults : IBasicResults
+    {
+        /// <summary>
+        /// The destination URL or identifier.
+        /// </summary>
+        string Destination { get; }
+
+        /// <summary>
+        /// Number of files deleted from the destination.
+        /// </summary>
+        long DeletedFileCount { get; }
+
+        /// <summary>
+        /// Number of files renamed at the destination (retention mode).
+        /// </summary>
+        long RenamedFileCount { get; }
+
+        /// <summary>
+        /// Number of files copied to the destination.
+        /// </summary>
+        long CopiedFileCount { get; }
+
+        /// <summary>
+        /// Number of files verified at the destination.
+        /// </summary>
+        long VerifiedFileCount { get; }
+
+        /// <summary>
+        /// Number of files that failed verification.
+        /// </summary>
+        long FailedVerificationCount { get; }
+
+        /// <summary>
+        /// Total size of files copied in bytes.
+        /// </summary>
+        long CopiedFileSize { get; }
     }
 
     public interface ICreateLogDatabaseResults : IBasicResults
@@ -452,7 +539,7 @@ namespace Duplicati.Library.Interface
     }
 
     /// <summary>
-    /// The status of a change in a test entry 
+    /// The status of a change in a test entry
     /// </summary>
     public enum TestEntryStatus
     {
@@ -518,5 +605,90 @@ namespace Duplicati.Library.Interface
     public interface IVacuumResults : IBasicResults
     {
     }
-}
 
+    /// <summary>
+    /// Results of a sync operation.
+    /// </summary>
+    public interface ISyncResults : IBasicResults
+    {
+        /// <summary>
+        /// The number of folders created on the remote destination.
+        /// </summary>
+        long FoldersCreated { get; }
+
+        /// <summary>
+        /// The number of folders deleted from the remote destination.
+        /// </summary>
+        long FoldersDeleted { get; }
+
+        /// <summary>
+        /// The number of files uploaded to the remote destination (new files plus
+        /// updated files whose content changed).
+        /// </summary>
+        long FilesUploaded { get; }
+
+        /// <summary>
+        /// The number of files that were examined but left unchanged because the
+        /// local and remote content already matched (size/mtime, or hash when
+        /// <c>--sync-verify-hash</c> is set).
+        /// </summary>
+        long UnchangedFiles { get; }
+
+        /// <summary>
+        /// The number of files deleted from the remote destination (unknown remote
+        /// files removed when <c>--sync-then-delete</c> is set).
+        /// </summary>
+        long FilesDeleted { get; }
+
+        /// <summary>
+        /// The total number of local source files encountered during enumeration
+        /// across all folders, regardless of whether they were uploaded, unchanged,
+        /// or skipped.
+        /// </summary>
+        long SourceFiles { get; }
+
+        /// <summary>
+        /// The total size in bytes of all local source files encountered during
+        /// enumeration, regardless of whether they were uploaded or left unchanged.
+        /// </summary>
+        long SizeOfSourceFiles { get; }
+
+        /// <summary>
+        /// The total size in bytes of the files uploaded to the remote destination
+        /// (new files plus updated files whose content changed).
+        /// </summary>
+        long SizeOfUploadedFiles { get; }
+
+        /// <summary>
+        /// The total size in bytes of the files deleted from the remote destination
+        /// (unknown remote files removed when <c>--sync-then-delete</c> is set).
+        /// </summary>
+        long SizeOfDeletedFiles { get; }
+    }
+
+    public interface ISetLockResults : IBasicResults
+    {
+        /// <summary>
+        /// Number of remote volumes that were considered for setting an object lock.
+        /// </summary>
+        long VolumesRead { get; }
+
+        /// <summary>
+        /// Number of remote volumes that had their object lock updated.
+        /// </summary>
+        long VolumesUpdated { get; }
+    }
+
+    public interface IReadLockInfoResults : IBasicResults
+    {
+        /// <summary>
+        /// Number of remote volumes that were queried for object lock information.
+        /// </summary>
+        long VolumesRead { get; }
+
+        /// <summary>
+        /// Number of remote volumes whose lock information was updated in the local database.
+        /// </summary>
+        long VolumesUpdated { get; }
+    }
+}

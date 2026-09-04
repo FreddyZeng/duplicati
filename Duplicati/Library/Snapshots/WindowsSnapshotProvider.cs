@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -23,8 +23,21 @@ namespace Duplicati.Library.Snapshots;
 
 public enum WindowsSnapshotProvider
 {
+    /// <summary>
+    /// Legacy AlphaVSS provider, requires VCRedist, library is not maintained
+    /// </summary>
     AlphaVSS,
-    Wmic,
+    /// <summary>
+    /// Pure VMI implementation, does not flush writers, just creates the snapshot
+    /// </summary>
+    Wmi,
+    /// <summary>
+    /// Experimental Vanara version based on COM mapping
+    /// </summary>
     Vanara,
+    /// <summary>
+    /// Snapshot provider using the VSS requestor COM API via pure C# interop
+    /// </summary>
+    Native,
 }
 

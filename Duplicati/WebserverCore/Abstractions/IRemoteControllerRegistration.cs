@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -30,13 +30,13 @@ public interface IRemoteControllerRegistration
     /// </summary>
     /// <param name="registrationUrl">The URL to register the machine with</param>
     /// <returns>The task to wait on</returns>
-    Task RegisterMachine(string registrationUrl);
+    Task RegisterMachineAsync(string registrationUrl);
 
     /// <summary>
     /// Waits for the registration to complete.
     /// </summary>
     /// <returns>The task to wait on</returns>
-    public Task WaitForRegistration();
+    public Task WaitForRegistrationAsync();
 
     /// <summary>
     /// Cancels the registration of the machine

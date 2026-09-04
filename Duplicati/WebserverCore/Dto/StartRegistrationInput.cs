@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -24,4 +24,4 @@ namespace Duplicati.WebserverCore.Dto;
 /// The required data for starting a registration
 /// </summary>
 /// <param name="RegistrationUrl">The URL to register the machine with</param>
-public sealed record StartRegistrationInput(string RegistrationUrl);
+public sealed record StartRegistrationInput(string? RegistrationUrl);

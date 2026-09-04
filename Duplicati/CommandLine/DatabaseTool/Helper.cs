@@ -7,19 +7,27 @@ using Duplicati.Library.SQLiteHelper;
 
 namespace Duplicati.CommandLine.DatabaseTool;
 
+
+public enum DatabaseType
+{
+    Server,
+    Backup,
+    Sync
+}
+
 public static class Helper
 {
     /// <summary>
     /// Creates a backup of the file
     /// </summary>
-    /// <param name="filename">The filename to backup</param>
+    /// <param name="path">The path of the file to backup</param>
     public static void CreateFileBackup(string path)
     {
         path = Path.GetFullPath(path);
         var dir = Path.GetDirectoryName(path) ?? "";
         var filename = Path.GetFileNameWithoutExtension(path);
 
-        var newname = $"{filename}-{DateTime.Now:yyyMMddhhmmss}.bak";
+        var newname = $"{filename}-{DateTime.Now:yyyyMMddHHmmss}.bak";
         var backup = Path.Combine(dir, newname);
         var retry = 0;
         while (File.Exists(backup))
@@ -28,7 +36,7 @@ public static class Helper
                 throw new IOException($"Cannot create backup file {backup} - too many retries");
 
             retry++;
-            newname = $"{filename}-{DateTime.Now:yyyMMddhhmmss}-{retry}.bak";
+            newname = $"{filename}-{DateTime.Now:yyyyMMddHHmmss}-{retry}.bak";
             backup = Path.Combine(dir, newname);
         }
 
@@ -42,7 +50,7 @@ public static class Helper
     /// <param name="datafolder">The folder to scan</param>
     /// <param name="scanExtra">Whether to scan for extra databases</param>
     /// <returns>A task that when awaited contains the list of databases.</returns>
-    public static async Task<string[]> FindAllDatabases(string[]? databases, string datafolder, bool scanExtra)
+    public static async Task<string[]> FindAllDatabasesAsync(string[]? databases, string datafolder, bool scanExtra)
     {
         databases ??= [];
         if (databases.Length != 0)
@@ -67,7 +75,14 @@ public static class Helper
                     FROM ""Backup""
                 ");
                 await foreach (var rd in cmd.ExecuteReaderEnumerableAsync(CancellationToken.None).ConfigureAwait(false))
-                    dbpaths.Add(rd.ConvertValueToString(0) ?? "");
+                {
+                    var rawPath = rd.ConvertValueToString(0) ?? "";
+                    if (!string.IsNullOrEmpty(rawPath))
+                    {
+                        var resolvedPath = Path.IsPathRooted(rawPath) ? rawPath : Path.Combine(datafolder, rawPath);
+                        dbpaths.Add(Path.GetFullPath(resolvedPath));
+                    }
+                }
             }
             catch
             {
@@ -91,7 +106,7 @@ public static class Helper
     /// </summary>
     /// <param name="db">The path to the database</param>
     /// <returns>A task that when awaited contains a tuple with the version and whether it is a server database</returns>
-    public static async Task<(int Version, bool isserver)> ExamineDatabase(string db)
+    public static async Task<(int Version, DatabaseType)> ExamineDatabaseAsync(string db)
     {
         await using var con = await SQLiteLoader.LoadConnectionAsync(db)
             .ConfigureAwait(false);
@@ -107,13 +122,32 @@ public static class Helper
             ", CancellationToken.None)
             .ConfigureAwait(false) == 2;
 
+        bool issyncdb = false;
+        if (!isserverdb)
+        {
+            var remoteInventoryCount = await cmd.ExecuteScalarInt64Async(@"
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type='table' AND name='RemoteInventory'
+            ", CancellationToken.None).ConfigureAwait(false);
+
+            var remoteVolumeCount = await cmd.ExecuteScalarInt64Async(@"
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type='table' AND name='Remotevolume'
+            ", CancellationToken.None).ConfigureAwait(false);
+
+            issyncdb = remoteInventoryCount == 1 && remoteVolumeCount == 0;
+        }
+
         var version = (int)await cmd.ExecuteScalarInt64Async(@"
                 SELECT MAX(Version)
                 FROM Version
             ", CancellationToken.None)
             .ConfigureAwait(false);
 
-        return (version, isserverdb);
+        var type = isserverdb ? DatabaseType.Server : issyncdb ? DatabaseType.Sync : DatabaseType.Backup;
+        return (version, type);
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -58,7 +58,11 @@ public enum SubscriptionService
     /// <summary>
     /// Scheduler updates, such as when scheduled tasks are added, removed, or changed.
     /// </summary>
-    Scheduler
+    Scheduler,
+    /// <summary>
+    /// Remote control status updates, such as when enabled, disabled, or connected state changes.
+    /// </summary>
+    RemoteControl
 }
 
 
@@ -73,5 +77,5 @@ public interface IWebsocketAccessor
     /// <param name="newConnection">The new WebSocket connection to add.</param>
     /// <param name="subscribeToLegacyStatus">If true, the connection will subscribe to legacy status updates.</param>
     /// <returns>A task representing the asynchronous operation.</returns>
-    Task AddConnection(WebSocket newConnection, bool subscribeToLegacyStatus);
+    Task AddConnectionAsync(WebSocket newConnection, bool subscribeToLegacyStatus);
 }

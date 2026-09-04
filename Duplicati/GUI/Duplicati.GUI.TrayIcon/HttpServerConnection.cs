@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -27,7 +27,6 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Net.Security;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -87,11 +86,10 @@ namespace Duplicati.GUI.TrayIcon
 
         private record BackgroundRequest(string Method, string Endpoint, string? Body, TimeSpan? Timeout = null);
 
-        private readonly string m_apiUri;
-        private readonly string m_baseUri;
-        private string m_password;
         private string? m_accesstoken;
         private bool m_isTryingWithPassword;
+        private string ApiUri => BaseUri + "api/v1";
+        private string BaseUri => Util.AppendDirSeparator(_passwordStorageHelper.HostUrl ?? "", "/");
 
         public Func<IServerStatus, Task>? OnStatusUpdated;
         public Action? ConnectionClosed;
@@ -114,7 +112,6 @@ namespace Duplicati.GUI.TrayIcon
         private Task m_pollThread;
         private readonly CancellationTokenSource m_stopToken = new CancellationTokenSource();
 
-        private readonly Dictionary<string, string> m_options;
         private readonly Program.PasswordSource m_passwordSource;
 
         public IServerStatus Status
@@ -122,28 +119,37 @@ namespace Duplicati.GUI.TrayIcon
             get { return m_status; }
         }
 
+        private void UpdateServerUri()
+        {
+            // Reset state to ensure clean reconnection to the new server
+            m_lastEventId = 0;
+            m_lastDataUpdateId = -1;
+            m_lastNotificationId = -1;
+        }
+
         private readonly IChannel<BackgroundRequest> m_workQueue =
             Channel.Create<BackgroundRequest>(name: "TrayIconRequestQueue");
 
         private readonly CancellationToken _applicationExitEvent;
+        private readonly PasswordStorageHelper _passwordStorageHelper;
 
-        public HttpServerConnection(IApplicationSettings? applicationSettings, System.Uri server, string password,
+        public Program.PasswordSource PasswordSource => m_passwordSource;
+
+        public HttpServerConnection(IApplicationSettings? applicationSettings,
             Program.PasswordSource passwordSource, bool disableTrayIconLogin, string acceptedHostCertificate,
-            Dictionary<string, string> options)
+            bool ignoreRevocationFailure,
+            Dictionary<string, string> options,
+            PasswordStorageHelper passwordStorageHelper)
         {
             _applicationExitEvent = applicationSettings?.ApplicationExit
                 ?? CancellationToken.None;
 
-            m_baseUri = Util.AppendDirSeparator(server.ToString(), "/");
-
-            m_apiUri = m_baseUri + "api/v1";
-
+            _passwordStorageHelper = passwordStorageHelper;
+            _passwordStorageHelper.OnPasswordChanged += (sender, e) => UpdateServerUri();
             m_disableTrayIconLogin = disableTrayIconLogin;
 
             m_firstNotificationTime = DateTime.Now;
 
-            m_password = password;
-            m_options = options;
             m_passwordSource = passwordSource;
 
             var acceptedCertificates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -151,28 +157,19 @@ namespace Duplicati.GUI.TrayIcon
                 acceptedCertificates.UnionWith(acceptedHostCertificate.Split(new char[] { ',', ';' },
                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
-            HTTPCLIENT = new(new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = acceptedCertificates switch
-                {
-                    { Count: 0 } or null => null,
+            // Configure the certificate validator using the shared helper, which handles
+            // accept-all, specific hashes and the ignore-revocation-failure option in a
+            // single place instead of replicating the logic here.
+            var httpHandler = new HttpClientHandler();
+            var acceptAll = acceptedCertificates.Contains("*");
+            if (acceptAll || acceptedCertificates.Count > 0 || ignoreRevocationFailure)
+                Duplicati.Library.Utility.HttpClientHelper.ConfigureHandlerCertificateValidator(
+                    httpHandler,
+                    acceptAll,
+                    acceptAll ? null : [.. acceptedCertificates],
+                    ignoreRevocationFailure);
 
-                    { } when acceptedCertificates.Contains("*") => HttpClientHandler
-                        .DangerousAcceptAnyServerCertificateValidator,
-
-                    _ => (sender, cert, chain, sslPolicyErrors) =>
-                    {
-                        if (sslPolicyErrors == SslPolicyErrors.None)
-                            return true;
-
-                        if (cert == null)
-                            return false;
-
-                        var certHash = cert.GetCertHashString();
-                        return acceptedCertificates.Contains(certHash);
-                    }
-                }
-            })
+            HTTPCLIENT = new HttpClient(httpHandler)
             {
                 // Max time a request can be pending, actual requests can set a lower limit
                 Timeout = Library.Utility.Timeparser.ParseTimeSpan(LONGPOLL_TIMEOUT) + TimeSpan.FromSeconds(10),
@@ -186,8 +183,8 @@ namespace Duplicati.GUI.TrayIcon
                 }
             };
 
-            m_requestHandlerTask = ThreadRunner();
-            m_pollThread = LongPollRunner();
+            m_requestHandlerTask = ThreadRunnerAsync();
+            m_pollThread = LongPollRunnerAsync();
 
             m_requestHandlerTask.ContinueWith(t =>
             {
@@ -208,8 +205,11 @@ namespace Duplicati.GUI.TrayIcon
             });
         }
 
-        public Task UpdateStatus()
-            => UpdateStatusAsync(false);
+        public async Task UpdateStatusAsync()
+        {
+            await PasswordAvailableIfNeededAsync().ConfigureAwait(false);
+            await UpdateStatusAsync(false).ConfigureAwait(false);
+        }
 
         private async Task UpdateStatusAsync(bool longpoll)
         {
@@ -254,11 +254,20 @@ namespace Duplicati.GUI.TrayIcon
         {
             var settings = await PerformRequestAsync<Dictionary<string, string>>("GET", "/serversettings", null, null)
                 .ConfigureAwait(false);
-            if (settings != null && settings.TryGetValue("disable-tray-icon-login", out var str))
+            if (settings != null && settings.TryGetValue(Server.Database.ServerSettings.CONST.DISABLE_TRAY_ICON_LOGIN, out var str))
                 m_disableTrayIconLogin = Library.Utility.Utility.ParseBool(str, false);
         }
 
-        private async Task LongPollRunner()
+        private async Task PasswordAvailableIfNeededAsync()
+        {
+            if (m_passwordSource == Program.PasswordSource.SuppliedPassword && string.IsNullOrWhiteSpace(_passwordStorageHelper.Password))
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(m_stopToken.Token, _applicationExitEvent);
+                await _passwordStorageHelper.WaitForPasswordUpdateAsync(cts.Token).ConfigureAwait(false);
+            }
+        }
+
+        private async Task LongPollRunnerAsync()
         {
             var started = DateTime.Now;
             var errorCount = 0;
@@ -275,6 +284,8 @@ namespace Duplicati.GUI.TrayIcon
                         using var cts = CancellationTokenSource.CreateLinkedTokenSource(m_stopToken.Token, _applicationExitEvent);
                         await Task.Delay(waitTime, cts.Token).ConfigureAwait(false);
                     }
+
+                    await PasswordAvailableIfNeededAsync().ConfigureAwait(false);
 
                     started = DateTime.Now;
                     await UpdateStatusAsync(true).ConfigureAwait(false);
@@ -309,7 +320,7 @@ namespace Duplicati.GUI.TrayIcon
             }
         }
 
-        private async Task ThreadRunner()
+        private async Task ThreadRunnerAsync()
         {
             while (true)
             {
@@ -400,10 +411,10 @@ namespace Duplicati.GUI.TrayIcon
             }
 
             // If we know the password, issue a token from the API
-            if (!string.IsNullOrWhiteSpace(m_password))
+            if (!string.IsNullOrWhiteSpace(_passwordStorageHelper.Password))
             {
                 m_accesstoken = (await PerformRequestInternalAsync<SigninResponse>("POST", "/auth/login",
-                    JsonSerializer.Serialize(new { Password = m_password }), null).ConfigureAwait(false)).AccessToken;
+                    JsonSerializer.Serialize(new { Password = _passwordStorageHelper.Password }), null).ConfigureAwait(false)).AccessToken;
                 return;
             }
 
@@ -421,7 +432,7 @@ namespace Duplicati.GUI.TrayIcon
         private async Task<T> PerformRequestInternalAsync<T>(string method, string endpoint, string? body,
             TimeSpan? timeout)
         {
-            var request = new HttpRequestMessage(new HttpMethod(method), new Uri(m_apiUri + endpoint));
+            var request = new HttpRequestMessage(new HttpMethod(method), new Uri(ApiUri + endpoint));
             if (!string.IsNullOrWhiteSpace(m_accesstoken))
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", m_accesstoken);
 
@@ -501,8 +512,8 @@ namespace Duplicati.GUI.TrayIcon
             }
 
             // If we know the password, issue a token from the API
-            if (string.IsNullOrWhiteSpace(signinjwt) && !string.IsNullOrWhiteSpace(m_password))
-                signinjwt = await IssueSigninTokenAsync(m_password);
+            if (string.IsNullOrWhiteSpace(signinjwt) && !string.IsNullOrWhiteSpace(_passwordStorageHelper.Password))
+                signinjwt = await IssueSigninTokenAsync(_passwordStorageHelper.Password);
 
             return signinjwt;
         }
@@ -522,8 +533,8 @@ namespace Duplicati.GUI.TrayIcon
             }
 
             return string.IsNullOrWhiteSpace(signinjwt)
-                ? m_baseUri + STATUS_WINDOW
-                : m_baseUri + SIGNIN_WINDOW + $"?token={signinjwt}";
+                ? BaseUri + STATUS_WINDOW
+                : BaseUri + SIGNIN_WINDOW + $"?token={signinjwt}";
         }
     }
 }

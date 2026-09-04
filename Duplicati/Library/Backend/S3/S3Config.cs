@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -34,7 +34,9 @@ namespace Duplicati.Library.Backend
             Providers,
             Regions,
             RegionHosts,
-            StorageClasses
+            StorageClasses,
+            DigitalOceanRegions,
+            HetznerRegions,
         }
 
         public S3Config()
@@ -43,11 +45,11 @@ namespace Duplicati.Library.Backend
 
         #region IWebModule implementation
 
-        public IDictionary<string, string?> Execute(IDictionary<string, string?> options)
+        public Task<IDictionary<string, string?>> Execute(IDictionary<string, string?> options, CancellationToken cancellationToken)
         {
             var ct = Utility.Utility.ParseEnumOption(options.AsReadOnly(), KEY_CONFIGTYPE, DEFAULT_CONFIG_TYPE);
             GetLookups().TryGetValue(ct.ToString(), out var dict);
-            return dict ?? new Dictionary<string, string?>();
+            return Task.FromResult(dict ?? new Dictionary<string, string?>());
         }
 
         public string Key => "s3-getconfig";
@@ -68,6 +70,8 @@ namespace Duplicati.Library.Backend
                 { ConfigType.Regions.ToString(), S3.KNOWN_S3_LOCATIONS.ToDictionary((x) => x.Key, (y) => y.Value) },
                 { ConfigType.RegionHosts.ToString(), S3.DEFAULT_S3_LOCATION_BASED_HOSTS.ToDictionary((x) => x.Key, (y) => y.Value) },
                 { ConfigType.StorageClasses.ToString(), S3.KNOWN_S3_STORAGE_CLASSES.ToDictionary((x) => x.Key, (y) => y.Value) },
+                { ConfigType.DigitalOceanRegions.ToString(), S3.DIGITALOCEAN_REGIONS.ToDictionary((x) => x.Key, (y) => y.Value) },
+                { ConfigType.HetznerRegions.ToString(), S3.HETZNER_REGIONS.ToDictionary((x) => x.Key, (y) => y.Value) },
             };
 
         #endregion

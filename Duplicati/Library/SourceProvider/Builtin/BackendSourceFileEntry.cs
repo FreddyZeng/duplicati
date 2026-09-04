@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -76,9 +76,6 @@ public class BackendSourceFileEntry(BackendSourceProvider parent, string path, b
     public FileAttributes Attributes => IsFolder
         ? FileAttributes.Directory
         : FileAttributes.Normal;
-
-    /// <inheritdoc/>
-    public Dictionary<string, string> MinorMetadata => new Dictionary<string, string>();
 
     /// <inheritdoc/>
     public bool IsBlockDevice => false;
@@ -196,10 +193,6 @@ public class BackendSourceFileEntry(BackendSourceProvider parent, string path, b
         }
     }
 
-    /// <inheritdoc/>
-    public Task<Stream?> OpenMetadataRead(CancellationToken cancellationToken)
-        => Task.FromResult<Stream?>(null);
-
     /// <summary>
     /// Helper class for reporting th length of a stream
     /// </summary>
@@ -307,6 +300,9 @@ public class BackendSourceFileEntry(BackendSourceProvider parent, string path, b
             }
         }
     }
+
+    /// <inheritdoc/>
+    public Task<Dictionary<string, string?>> GetMinorMetadata(CancellationToken cancellationToken) => Task.FromResult(new Dictionary<string, string?>());
 
     /// <summary>
     /// Normalizes the path, turning backslashes into forward slashes,

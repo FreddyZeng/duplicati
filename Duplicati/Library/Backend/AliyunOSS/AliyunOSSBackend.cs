@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -56,10 +56,10 @@ namespace Duplicati.Library.Backend.AliyunOSS
         {
             _timeouts = TimeoutOptionsHelper.Parse(options);
 
-            var uri = new Utility.Uri(url?.Trim() ?? "");
+            var uri = new Utility.RelaxedUri(url?.Trim() ?? "");
             var prefix = uri.HostAndPath?.TrimPath();
 
-            var auth = AuthOptionsHelper.ParseWithAlias(options, uri, OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET)
+            var auth = AuthOptionsHelper.ParseWithAlias(options, uri.Username, uri.Password, OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET)
                 .RequireCredentials();
 
             _ossOptions = new AliyunOSSOptions()
@@ -175,8 +175,8 @@ namespace Duplicati.Library.Backend.AliyunOSS
             }
         }
 
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         public Task CreateFolderAsync(CancellationToken cancelToken)
             // No need to create folders
@@ -235,7 +235,7 @@ namespace Duplicati.Library.Backend.AliyunOSS
                     throw new Exception("Get failed");
 
                 using (var requestStream = obj.Content)
-                using (var timeoutStream = requestStream.ObserveWriteTimeout(_timeouts.ReadWriteTimeout, false))
+                using (var timeoutStream = stream.ObserveWriteTimeout(_timeouts.ReadWriteTimeout, false))
                     await Utility.Utility.CopyStreamAsync(requestStream, timeoutStream, cancelToken).ConfigureAwait(false);
             }
             catch (Exception ex)

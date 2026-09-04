@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -23,8 +23,6 @@ using System.Security.Principal;
 using Duplicati.Library.Common.IO;
 using Duplicati.Library.Snapshots;
 using Duplicati.Library.Snapshots.Windows;
-using Duplicati.WebserverCore.Dto;
-using Duplicati.WebserverCore.Exceptions;
 
 namespace Duplicati.WebserverCore.Endpoints.V1.FilesystemPlugins;
 
@@ -33,18 +31,25 @@ public class MSSQL : IFilesystemPlugin
     private static readonly string LOGTAG = Duplicati.Library.Logging.Log.LogTagFromType<MSSQL>();
     public string RootName => "%MSSQL%";
 
+    private readonly IReadOnlyDictionary<string, string?> _options;
+
+    public MSSQL(IReadOnlyDictionary<string, string?> options)
+        => _options = options;
+
     public IEnumerable<Dto.TreeNodeDto> GetEntries(string[] pathSegments)
     {
         if (!OperatingSystem.IsWindows())
             return [];
 
-        var mssqlUtility = new MSSQLUtility();
-        if (!mssqlUtility.IsMSSQLInstalled || !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
-            return [];
-
         try
         {
-            mssqlUtility.QueryDBsInfo(WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_QUERY_PROVIDER);
+            var mssqlUtility = new MSSQLUtility();
+            if (!mssqlUtility.IsMSSQLInstalled || !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
+                return [];
+
+            mssqlUtility.QueryDBsInfo(Library.Utility.Utility.ParseEnumOption(_options, "snapshot-provider", WindowsSnapshot.DEFAULT_WINDOWS_SNAPSHOT_QUERY_PROVIDER));
+
+            // Tier 1: Root Node Selection (%MSSQL%)
             if (pathSegments.Length == 0)
             {
                 if (mssqlUtility.DBs.Count == 0)
@@ -70,13 +75,14 @@ public class MSSQL : IFilesystemPlugin
                 ];
             }
 
+            // Tier 2: Server/Instance Node Generation
             if (pathSegments.Length == 1)
             {
-                var serverNames = mssqlUtility.DBs.Select(x => x.ID.Replace(Path.DirectorySeparatorChar + x.Name, string.Empty)).Distinct();
+                var serverNames = mssqlUtility.DBs.Select(x => x.Server).Distinct();
 
                 var servers = serverNames.Select(x => new Dto.TreeNodeDto
                 {
-                    id = string.Join(Path.DirectorySeparatorChar, RootName, x) + Path.DirectorySeparatorChar,
+                    id = Util.AppendDirSeparator(string.Join(Path.DirectorySeparatorChar, RootName, x)),
                     text = x,
                     cls = "folder",
                     iconCls = "x-tree-icon-mssql",
@@ -92,24 +98,71 @@ public class MSSQL : IFilesystemPlugin
                 return servers;
             }
 
-            var serverToDatabases = mssqlUtility.DBs.ToLookup(db => db.ID.Replace(Path.DirectorySeparatorChar + db.Name, string.Empty), db => db);
-            var selectedServer = serverToDatabases[string.Join(Path.DirectorySeparatorChar, pathSegments.Skip(1))];
-            var databases = selectedServer.Select(x => new Dto.TreeNodeDto()
+            // Tier 4: Instance ids
+            if (pathSegments.Length == 3)
             {
-                text = x.Name,
-                id = string.Join(Path.DirectorySeparatorChar, pathSegments.Append(x.Name)),
-                cls = "file",
-                iconCls = "x-tree-icon-mssqldb",
-                check = false,
-                leaf = true,
-                hidden = false,
-                systemFile = false,
-                temporary = false,
-                symlink = false,
-                fileSize = -1,
-                resolvedpath = null
-            }).ToList();
-            return databases;
+                var instanceDbList = mssqlUtility.DBs.Where(x => x.Server == pathSegments[1] && x.InstanceId == pathSegments[2]);
+                return instanceDbList.Select(x => new Dto.TreeNodeDto
+                {
+                    text = x.Database,
+                    id = string.Join(Path.DirectorySeparatorChar, pathSegments.Append(x.Database)),
+                    cls = "file",
+                    iconCls = "x-tree-icon-mssqldb",
+                    check = false,
+                    leaf = true,
+                    hidden = false,
+                    systemFile = false,
+                    temporary = false,
+                    symlink = false,
+                    fileSize = -1,
+                    resolvedpath = null
+                });
+            }
+
+            // Tier 3: Server Instance + Database Leaf Node Generation
+            var serverToDatabases = mssqlUtility.DBs.ToLookup(x => x.Server, db => db, StringComparer.OrdinalIgnoreCase);
+            var targetServerKey = string.Join(Path.DirectorySeparatorChar, pathSegments.Skip(1));
+            var selectedServer = serverToDatabases[targetServerKey];
+
+            var databases = selectedServer
+                .Where(x => string.IsNullOrWhiteSpace(x.InstanceId))
+                .Select(x => new Dto.TreeNodeDto()
+                {
+                    text = x.Database,
+                    id = string.Join(Path.DirectorySeparatorChar, pathSegments.Append(x.Database)),
+                    cls = "file",
+                    iconCls = "x-tree-icon-mssqldb",
+                    check = false,
+                    leaf = true,
+                    hidden = false,
+                    systemFile = false,
+                    temporary = false,
+                    symlink = false,
+                    fileSize = -1,
+                    resolvedpath = null
+                });
+
+            var instances = selectedServer
+                .Where(x => !string.IsNullOrWhiteSpace(x.InstanceId))
+                .Select(x => x.InstanceId)
+                .Distinct()
+                .Select(x => new Dto.TreeNodeDto()
+                {
+                    text = x,
+                    id = Util.AppendDirSeparator(string.Join(Path.DirectorySeparatorChar, pathSegments.Append(x))),
+                    cls = "folder",
+                    iconCls = "x-tree-icon-mssqldb",
+                    check = false,
+                    leaf = false,
+                    hidden = false,
+                    systemFile = false,
+                    temporary = false,
+                    symlink = false,
+                    fileSize = -1,
+                    resolvedpath = null
+                });
+
+            return instances.Concat(databases);
         }
         catch (Exception ex)
         {

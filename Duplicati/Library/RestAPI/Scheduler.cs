@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -100,7 +100,6 @@ namespace Duplicati.Server
             m_updateTasks = new Dictionary<Runner.IRunnerData, Tuple<ISchedule, DateTime, DateTime>>();
             m_thread.IsBackground = true;
             m_thread.Name = "TaskScheduler";
-            m_thread.Start();
         }
 
         public IList<Tuple<string, DateTime>> GetProposedSchedule()
@@ -121,6 +120,8 @@ namespace Duplicati.Server
         /// </summary>
         public void Reschedule()
         {
+            if (!m_thread.IsAlive && !m_terminate)
+                m_thread.Start();
             m_event.Set();
         }
 
@@ -214,7 +215,7 @@ namespace Duplicati.Server
             return res;
         }
 
-        private Task OnCompleted(Runner.IRunnerData task)
+        private Task OnCompletedAsync(Runner.IRunnerData task)
         {
             Tuple<ISchedule, DateTime, DateTime>? t = null;
             lock (m_lock)
@@ -233,7 +234,7 @@ namespace Duplicati.Server
             return Task.CompletedTask;
         }
 
-        private Task OnStartingWork(Runner.IRunnerData task)
+        private Task OnStartingWorkAsync(Runner.IRunnerData task)
         {
             if (task is null)
                 return Task.CompletedTask;
@@ -252,11 +253,30 @@ namespace Duplicati.Server
         }
 
         /// <summary>
+        /// Returns a fingerprint of the schedule fields that determine the next run time.
+        /// The cached next-run computed by <see cref="Runner"/> is invalidated when this
+        /// changes, so that editing the time, the repetition interval or the allowed
+        /// weekdays all cause the next run to be recomputed.
+        /// </summary>
+        /// <param name="schedule">The schedule to compute the fingerprint for</param>
+        /// <returns>The fingerprint of the schedule</returns>
+        public static string GetScheduleFingerprint(ISchedule schedule)
+        {
+            // Fold the days into a bitmask so ordering and duplicates do not matter
+            var daysMask = 0;
+            if (schedule.AllowedDays != null)
+                foreach (var d in schedule.AllowedDays)
+                    daysMask |= 1 << (int)d;
+
+            return FormattableString.Invariant($"{schedule.Time.Ticks}:{daysMask}:{schedule.Repeat}");
+        }
+
+        /// <summary>
         /// The actual scheduling procedure
         /// </summary>
         private void Runner()
         {
-            var scheduled = new Dictionary<long, KeyValuePair<long, DateTime>>();
+            var scheduled = new Dictionary<long, KeyValuePair<string, DateTime>>();
             while (!m_terminate)
             {
                 //TODO: As this is executed repeatedly we should cache it
@@ -269,16 +289,18 @@ namespace Duplicati.Server
                 {
                     if (!string.IsNullOrEmpty(sc.Repeat))
                     {
-                        KeyValuePair<long, DateTime> startkey;
+                        KeyValuePair<string, DateTime> startkey;
 
-                        DateTime last = new DateTime(0, DateTimeKind.Utc);
+                        // The last run is applied on both paths so the timedrift recovery
+                        // below also works on a cached entry; a last run in the future
+                        // would otherwise keep the stale cached time until a restart
+                        DateTime last = sc.LastRun;
                         DateTime start;
-                        var scticks = sc.Time.Ticks;
+                        var scfingerprint = GetScheduleFingerprint(sc);
 
-                        if (!scheduled.TryGetValue(sc.ID, out startkey) || startkey.Key != scticks)
+                        if (!scheduled.TryGetValue(sc.ID, out startkey) || startkey.Key != scfingerprint)
                         {
-                            start = new DateTime(scticks, DateTimeKind.Utc);
-                            last = sc.LastRun;
+                            start = new DateTime(sc.Time.Ticks, DateTimeKind.Utc);
                         }
                         else
                         {
@@ -312,11 +334,11 @@ namespace Duplicati.Server
                             {
                                 //See if it is already queued
                                 var tmplst = from n in m_queueRunnerService.GetCurrentTasks()
-                                             where n.Operation == Serialization.DuplicatiOperation.Backup
+                                             where n.Operation == Serialization.DuplicatiOperation.BackupOrSync
                                              select n.BackupID;
                                 var tastTemp = m_queueRunnerService.GetCurrentTask();
                                 if (tastTemp != null && tastTemp.Operation ==
-                                    Serialization.DuplicatiOperation.Backup)
+                                    Serialization.DuplicatiOperation.BackupOrSync)
                                     tmplst = tmplst.Union(new[] { tastTemp.BackupID });
 
                                 //If it is not already in queue, put it there
@@ -326,7 +348,7 @@ namespace Duplicati.Server
                                     if (entry != null)
                                     {
                                         var options = Server.Runner.GetCommonOptions(m_dataConnection);
-                                        Server.Runner.ApplyOptions(m_dataConnection, entry, options);
+                                        Server.Runner.ApplyOptions(m_dataConnection, entry, options, out var _);
                                         if (new Library.Main.Options(options).DisableOnBattery &&
                                             (Library.Utility.Power.PowerSupply.GetSource() ==
                                              Library.Utility.Power.PowerSupply.Source.Battery))
@@ -352,9 +374,9 @@ namespace Duplicati.Server
                                             {
                                             }
 
-                                            var job = Server.Runner.CreateTask(Serialization.DuplicatiOperation.Backup, entry, taskOptions);
-                                            job.OnStarting = () => OnStartingWork(job);
-                                            job.OnFinished = (_) => OnCompleted(job);
+                                            var job = Server.Runner.CreateTask(Serialization.DuplicatiOperation.BackupOrSync, entry, taskOptions);
+                                            job.OnStarting = () => OnStartingWorkAsync(job);
+                                            job.OnFinished = (_) => OnCompletedAsync(job);
                                             collectedJobs.Add((start, job));
                                         }
                                     }
@@ -401,7 +423,7 @@ namespace Duplicati.Server
                             }
                         }
 
-                        scheduled[sc.ID] = new KeyValuePair<long, DateTime>(scticks, start);
+                        scheduled[sc.ID] = new KeyValuePair<string, DateTime>(scfingerprint, start);
                     }
                 }
 

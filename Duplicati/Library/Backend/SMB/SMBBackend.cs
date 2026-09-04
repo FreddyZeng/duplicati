@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -29,12 +29,14 @@ using Duplicati.Library.Common.IO;
 using Duplicati.Library.Utility.Options;
 using Duplicati.Library.Utility;
 
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
+
 namespace Duplicati.Library.Backend;
 
 /// <summary>
 /// Native CIFS/SMB Backend implementation
 /// </summary>
-public class SMBBackend : IStreamingBackend, IFolderEnabledBackend
+public class SMBBackend : IStreamingBackend, IFolderEnabledBackend, IRenameEnabledBackend
 {
     /// <inheritdoc/>
     public virtual string ProtocolKey => "smb";
@@ -118,6 +120,50 @@ public class SMBBackend : IStreamingBackend, IFolderEnabledBackend
     }
 
     /// <summary>
+    /// The parts of an smb url that the backend configures itself from.
+    /// </summary>
+    /// <param name="Host">The server to connect to. An IPv6 literal keeps its brackets.</param>
+    /// <param name="ShareName">The share, which is the first segment of the url path.</param>
+    /// <param name="Path">The path inside the share, without a trailing slash.</param>
+    /// <param name="Username">The user from the url, or null when it has none.</param>
+    /// <param name="Password">The password from the url, or null when it has none.</param>
+    internal readonly record struct SmbUrl(string Host, string ShareName, string Path, string? Username, string? Password);
+
+    /// <summary>
+    /// Splits an smb url into the parts the backend needs.
+    /// </summary>
+    /// <param name="url">The url to split.</param>
+    /// <returns>The parts the backend needs.</returns>
+    internal static SmbUrl ParseSmbUrl(string url)
+    {
+        var uri = new Uri(url);
+        uri.RequireHost(url);
+        uri.RequireNoFragment(url);
+
+        // The path arrives escaped and with its leading separator, where the previous
+        // parser handed it over decoded and without one. Decoding first keeps an
+        // encoded separator in the place it used to land in.
+        var path = Uri.UnescapeDataString(uri.AbsolutePath);
+        if (path.StartsWith("/", StringComparison.Ordinal))
+            path = path.Substring(1);
+
+        // The user info is not decoded, so it is decoded here.
+        var userinfo = uri.UserInfo.Split(new[] { ':' }, 2);
+        var username = userinfo.Length > 0 && userinfo[0].Length > 0 ? Uri.UnescapeDataString(userinfo[0]) : null;
+        var password = userinfo.Length > 1 ? Uri.UnescapeDataString(userinfo[1]) : null;
+
+        var input = path.TrimEnd('/');
+        var slashIndex = input.IndexOf('/');  // Find first slash to separate share and path if present.
+
+        return new SmbUrl(
+            uri.Host,
+            slashIndex >= 0 ? input[..slashIndex] : input,
+            slashIndex >= 0 ? input[(slashIndex + 1)..] : "",
+            username,
+            password);
+    }
+
+    /// <summary>
     /// Actual constructor for the backend that accepts the url and options
     /// </summary>
     /// <param name="url">URL in Duplicati Uri format</param>
@@ -129,14 +175,10 @@ public class SMBBackend : IStreamingBackend, IFolderEnabledBackend
         if (options == null)
             throw new ArgumentNullException(nameof(options));
 
-        var uri = new Utility.Uri(url);
-        uri.RequireHost();
-        _DnsName = uri.Host ?? "";
+        var uri = ParseSmbUrl(url);
+        _DnsName = uri.Host;
 
-        var input = uri.Path.TrimEnd('/');
-        var slashIndex = input.IndexOf('/');  // Find first slash to separate server and share if present.
-
-        var auth = AuthOptionsHelper.Parse(options, uri);
+        var auth = AuthOptionsHelper.Parse(options, uri.Username, uri.Password);
         var authDomain = options.GetValueOrDefault(AUTH_DOMAIN_OPTION);
         var transport = options.GetValueOrDefault(TRANSPORT_OPTION);
 
@@ -164,8 +206,8 @@ public class SMBBackend : IStreamingBackend, IFolderEnabledBackend
         _connectionParameters = new SMBConnectionParameters(
             _DnsName,
             transportType,
-            slashIndex >= 0 ? input[..slashIndex] : input,
-            slashIndex >= 0 ? input[(slashIndex + 1)..] : "",
+            uri.ShareName,
+            uri.Path,
             authDomain,
             auth.Username,
             auth.Password,
@@ -284,8 +326,8 @@ public class SMBBackend : IStreamingBackend, IFolderEnabledBackend
     /// </summary>
     /// <param name="cancellationToken">The cancellation token (not used)</param>
     /// <exception cref="FolderMissingException">Thrown when configured path does not exist</exception>
-    public Task TestAsync(CancellationToken cancellationToken)
-        => this.TestReadWritePermissionsAsync(cancellationToken);
+    public Task TestAsync(bool alsoWrite, CancellationToken cancellationToken)
+        => this.TestBackendAsync(alsoWrite, cancellationToken);
 
     /// <summary>
     /// Creates the configured remote folder path if it doesn't exist
@@ -345,6 +387,20 @@ public class SMBBackend : IStreamingBackend, IFolderEnabledBackend
     }
 
     /// <inheritdoc/>
-    public Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken)
-        => Task.FromResult<IFileEntry?>(null);
+    public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+    {
+        var con = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await con.RenameAsync(oldname, newname, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken)
+    {
+        var sourcePath = _connectionParameters.Path;
+        if (!string.IsNullOrWhiteSpace(sourcePath))
+            sourcePath = Util.AppendDirSeparator(sourcePath, "/");
+
+        var con = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await con.GetEntryAsync(sourcePath + BackendSourceFileEntry.NormalizePathTo(path, '/'), cancellationToken).ConfigureAwait(false);
+    }
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -30,11 +30,12 @@ using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
 using Exception = System.Exception;
-using Uri = Duplicati.Library.Utility.Uri;
+
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
 
 namespace Duplicati.Library.Backend.OpenStack;
 
-public class OpenStackStorage : IStreamingBackend
+public class OpenStackStorage : IStreamingBackend, IRenameEnabledBackend
 {
     private const string DOMAINNAME_OPTION = "openstack-domain-name";
     private const string TENANTNAME_OPTION = "openstack-tenant-name";
@@ -108,7 +109,7 @@ public class OpenStackStorage : IStreamingBackend
 
     public OpenStackStorage(string url, Dictionary<string, string?> options)
     {
-        var uri = new Uri(url);
+        var uri = new RelaxedUri(url);
 
         m_container = uri.Host ?? "";
         m_prefix = Util.AppendDirSeparator("/" + uri.Path, "/");
@@ -118,7 +119,7 @@ public class OpenStackStorage : IStreamingBackend
         if (m_prefix.StartsWith("/", StringComparison.Ordinal))
             m_prefix = m_prefix.Substring(1);
 
-        var auth = AuthOptionsHelper.Parse(options, uri);
+        var auth = AuthOptionsHelper.Parse(options, uri.Username, uri.Password);
 
         options.TryGetValue(DOMAINNAME_OPTION, out m_domainName);
         options.TryGetValue(TENANTNAME_OPTION, out m_tenantName);
@@ -162,6 +163,20 @@ public class OpenStackStorage : IStreamingBackend
 
         m_httpClient = HttpClientHelper.CreateClient();
         m_httpClient.Timeout = Timeout.InfiniteTimeSpan;
+        m_helper = new OpenStackWebHelper(this, m_httpClient);
+    }
+
+    /// <summary>
+    /// Builds a backend that talks to the given transport, so the responses of the
+    /// object store can be decided by a test.
+    /// </summary>
+    /// <param name="url">The backend url</param>
+    /// <param name="options">The options to use</param>
+    /// <param name="handler">The transport to send requests through</param>
+    internal OpenStackStorage(string url, Dictionary<string, string?> options, HttpMessageHandler handler)
+        : this(url, options)
+    {
+        m_httpClient = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         m_helper = new OpenStackWebHelper(this, m_httpClient);
     }
 
@@ -330,7 +345,7 @@ public class OpenStackStorage : IStreamingBackend
     /// <inheritdoc />
     public async Task PutAsync(string remotename, Stream stream, CancellationToken cancelToken)
     {
-        var url = JoinUrls(await GetSimpleStorageEndPoint(cancelToken).ConfigureAwait(false), m_container, Uri.UrlPathEncode(m_prefix + remotename));
+        var url = JoinUrls(await GetSimpleStorageEndPoint(cancelToken).ConfigureAwait(false), m_container, UrlEncoding.UrlPathEncode(m_prefix + remotename));
         using var req = m_helper.CreateRequest(url, "PUT");
         await using var ts = stream.ObserveReadTimeout(_timeouts.ReadWriteTimeout, false);
 
@@ -344,7 +359,7 @@ public class OpenStackStorage : IStreamingBackend
     /// <inheritdoc />
     public async Task GetAsync(string remotename, Stream stream, CancellationToken cancelToken)
     {
-        var url = JoinUrls(await GetSimpleStorageEndPoint(cancelToken).ConfigureAwait(false), m_container, Uri.UrlPathEncode(m_prefix + remotename));
+        var url = JoinUrls(await GetSimpleStorageEndPoint(cancelToken).ConfigureAwait(false), m_container, UrlEncoding.UrlPathEncode(m_prefix + remotename));
 
         try
         {
@@ -387,7 +402,7 @@ public class OpenStackStorage : IStreamingBackend
     {
         var plainurl = JoinUrls(await GetSimpleStorageEndPoint(cancelToken).ConfigureAwait(false), m_container) + string.Format("?format=json&delimiter=/&limit={0}", PAGE_LIMIT);
         if (!string.IsNullOrEmpty(m_prefix))
-            plainurl += "&prefix=" + Uri.UrlEncode(m_prefix);
+            plainurl += "&prefix=" + UrlEncoding.UrlEncode(m_prefix);
 
         var url = plainurl;
 
@@ -418,7 +433,7 @@ public class OpenStackStorage : IStreamingBackend
                 yield break;
 
             // Prepare next listing entry
-            url = plainurl + $"&marker={Uri.UrlEncode(items.Last().name ?? "")}";
+            url = plainurl + $"&marker={UrlEncoding.UrlEncode(items.Last().name ?? "")}";
         }
     }
 
@@ -439,15 +454,28 @@ public class OpenStackStorage : IStreamingBackend
     /// <inheritdoc />
     public async Task DeleteAsync(string remotename, CancellationToken cancelToken)
     {
-        var url = JoinUrls(await GetSimpleStorageEndPoint(cancelToken).ConfigureAwait(false), m_container, Uri.UrlPathEncode(m_prefix + remotename));
-        using var req = m_helper.CreateRequest(url, "DELETE");
-        using var response = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken, ct => m_helper.GetResponseAsync(req, HttpCompletionOption.ResponseContentRead, ct)).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        var url = JoinUrls(await GetSimpleStorageEndPoint(cancelToken).ConfigureAwait(false), m_container, UrlEncoding.UrlPathEncode(m_prefix + remotename));
+
+        try
+        {
+            using var req = m_helper.CreateRequest(url, "DELETE");
+            using var response = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken, ct => m_helper.GetResponseAsync(req, HttpCompletionOption.ResponseContentRead, ct)).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+        }
+        catch (HttpRequestException wex)
+        {
+            // The API answers the delete of an object that is not there with 404,
+            // and the callers look for FileMissingException to tell that apart from
+            // a destination that does not work. GetAsync already reports it that way.
+            if (wex.StatusCode == HttpStatusCode.NotFound)
+                throw new FileMissingException();
+            throw;
+        }
     }
 
     /// <inheritdoc />
-    public Task TestAsync(CancellationToken cancelToken)
-        => this.TestReadWritePermissionsAsync(cancelToken);
+    public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+        => this.TestBackendAsync(alsoWrite, cancelToken);
 
     /// <inheritdoc />
     public async Task CreateFolderAsync(CancellationToken cancelToken)
@@ -504,5 +532,17 @@ public class OpenStackStorage : IStreamingBackend
 
     public void Dispose()
     {
+    }
+
+    public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+    {
+        var url = JoinUrls(await GetSimpleStorageEndPoint(cancellationToken).ConfigureAwait(false), m_container, UrlEncoding.UrlPathEncode(m_prefix + oldname));
+        using var req = m_helper.CreateRequest(url, "COPY");
+        req.Headers.Add("Destination", "/" + m_container + "/" + UrlEncoding.UrlPathEncode(m_prefix + newname));
+
+        using var response = await m_httpClient.SendAsync(req, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        await DeleteAsync(oldname, cancellationToken).ConfigureAwait(false);
     }
 }

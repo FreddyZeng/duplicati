@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -45,56 +45,15 @@ namespace Duplicati.Library.Main.Operation.Restore
     internal class DeadlockTimer
     {
         /// <summary>
-        /// The log tag for this class.
+        /// Initial threshold (in milliseconds) for detecting deadlocks.
         /// </summary>
-        private static readonly string LOGTAG =
-            Logging.Log.LogTagFromType<DeadlockTimer>();
-        /// <summary>
-        /// Five minutes in milliseconds.
-        /// </summary>
-        private static readonly int five_minutes_ms = (int)TimeSpan.FromMinutes(5).TotalMilliseconds;
-        /// <summary>
-        /// Cancellation token for stopping the deadlock timer.
-        /// </summary>
-        public static CancellationTokenSource Token = new();
+        public static int initial_threshold =
+            (int)TimeSpan.FromMinutes(5).TotalMilliseconds;
+
         /// <summary>
         /// Maximum processing time (in milliseconds) recorded for any block
         /// request.
         /// </summary>
-        public static int MaxProcessingTime = five_minutes_ms;
-
-        /// <summary>
-        /// Runs the deadlock timer process. It runs every second and updates
-        /// the maximum processing time based on the maximum processing times
-        /// of the active VolumeDownloaders, VolumeDecryptors and
-        /// VolumeDecompressors.
-        /// </summary>
-        /// <remarks>It will keep running until the cancellation token
-        /// `DeadlockTimer.token` is cancelled.</remarks>
-        /// <returns>An awaitable task.</returns>
-        public static async Task Run()
-        {
-            try
-            {
-                while (!Token.IsCancellationRequested)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(1), Token.Token)
-                        .ConfigureAwait(false);
-
-                    int download = VolumeDownloader.MaxProcessingTimes.Max();
-                    int decrypt = VolumeDecryptor.MaxProcessingTimes.Max();
-                    int decompress = VolumeDecompressor.MaxProcessingTimes.Max();
-
-                    MaxProcessingTime = Math.Max(
-                        five_minutes_ms,
-                        (download + decrypt + decompress) * 2
-                    );
-                }
-            }
-            catch (TaskCanceledException)
-            {
-                // Ignore
-            }
-        }
+        public static int MaxProcessingTime = initial_threshold;
     }
 }

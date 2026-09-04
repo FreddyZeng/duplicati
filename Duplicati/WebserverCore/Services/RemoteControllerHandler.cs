@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -43,14 +43,28 @@ public class RemoteControllerHandler(Connection connection, IHttpClientFactory h
     private static readonly string LOGTAG = Log.LogTagFromType<RemoteControllerHandler>();
 
     /// <inheritdoc/>
-    public Task<Dictionary<string, string?>> OnConnect(Dictionary<string, string?> metadata)
+    public Task<Dictionary<string, string?>> OnConnectAsync(Dictionary<string, string?> metadata)
     {
         metadata["feature:additional-report-url"] = connection.ApplicationSettings.AdditionalReportUrl;
+        metadata["feature:additional-activity-url"] = connection.ApplicationSettings.AdditionalActivityUrl;
+        if (connection.Settings != null)
+        {
+            var lookup = connection.Settings
+                .GroupBy(k => k.Name.StartsWith("--", StringComparison.Ordinal) ? k.Name.Substring(2) : k.Name, k => k.Value)
+                .ToDictionary(x => x.Key, x => x.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+
+            var machineId = lookup.GetValueOrDefault("machine-id");
+            var machineName = lookup.GetValueOrDefault("machine-name");
+            if (!string.IsNullOrWhiteSpace(machineId))
+                metadata["machine-id"] = machineId;
+            if (!string.IsNullOrWhiteSpace(machineName))
+                metadata["machine-name"] = machineName;
+        }
         return Task.FromResult(metadata);
     }
 
     /// <inheritdoc/>
-    public Task ReKey(ClaimedClientData data)
+    public Task ReKeyAsync(ClaimedClientData data)
     {
         var oldCerts = connection.ApplicationSettings.RemoteControlConfig == null
             ? null
@@ -75,12 +89,13 @@ public class RemoteControllerHandler(Connection connection, IHttpClientFactory h
     }
 
     /// <inheritdoc/>
-    public async Task OnControl(KeepRemoteConnection.ControlMessage message)
+    public async Task OnControlAsync(KeepRemoteConnection.ControlMessage message)
     {
         // Make method async
         await Task.CompletedTask;
 
         Dictionary<string, string?>? result = null;
+        var refreshSettingsBy = DateTimeOffset.MinValue;
 
         Log.WriteMessage(LogMessageType.Verbose, LOGTAG, "OnControl", "Received control message: {0}", message);
         try
@@ -93,6 +108,20 @@ public class RemoteControllerHandler(Connection connection, IHttpClientFactory h
                 };
 
                 connection.ApplicationSettings.AdditionalReportUrl = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.ReportUrlKey);
+                connection.ApplicationSettings.AdditionalActivityUrl = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.ActivityUrlKey);
+                connection.ApplicationSettings.RemoteControlDashboardUrl = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.DashboardUrlKey);
+                connection.ApplicationSettings.RemoteControlStorageApiId = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.StorageApiIdKey);
+                connection.ApplicationSettings.RemoteControlStorageApiKey = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.StorageApiKeyKey);
+                connection.ApplicationSettings.RemoteControlStorageEndpointUrl = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.StorageEndpointUrlKey);
+
+                var newLicenseKey = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.ClientLicenseKeyKey);
+                var currentLicenseKey = connection.ApplicationSettings.ClientLicenseKey;
+
+                if (newLicenseKey != currentLicenseKey)
+                {
+                    connection.ApplicationSettings.ClientLicenseKey = newLicenseKey;
+                    Duplicati.Proprietary.LicenseChecker.LicenseHelper.SetRemoteClientLicenseKey(newLicenseKey);
+                }
 
                 var backupConfigs = message.ControlRequestMessage.Parameters
                     .Where(kv => kv.Key.StartsWith(ControlRequestMessage.BackupConfigKeyPrefix, StringComparison.OrdinalIgnoreCase))
@@ -128,6 +157,36 @@ public class RemoteControllerHandler(Connection connection, IHttpClientFactory h
 
                     connection.AddOrUpdateBackupAndSchedule(importData.Backup, importData.Schedule);
                 }
+
+                try
+                {
+                    // Check if we need to delay the next reconnection
+                    var refreshSettingsByValue = message.ControlRequestMessage.Parameters.GetValueOrDefault(ControlRequestMessage.RefreshSettingsByKey);
+                    if (!string.IsNullOrWhiteSpace(refreshSettingsByValue) && long.TryParse(refreshSettingsByValue, out var refreshSettingsByLong) && refreshSettingsByLong > 0)
+                    {
+                        var target = DateTimeOffset.FromUnixTimeSeconds(refreshSettingsByLong);
+                        if (target > DateTimeOffset.UtcNow)
+                            refreshSettingsBy = target;
+
+                        // Agent keeps its own config, and does not support connection delays
+                        if (applicationSettings.Origin != "Agent")
+                        {
+                            var connstr = connection.ApplicationSettings.RemoteControlConfig;
+                            if (!string.IsNullOrWhiteSpace(connstr))
+                            {
+                                var prevCfg = JsonConvert.DeserializeObject<RemoteControlConfig>(connstr);
+                                if (prevCfg != null)
+                                    connection.ApplicationSettings.RemoteControlConfig = JsonConvert.SerializeObject(
+                                        prevCfg with { RefreshSettingsBy = target }
+                                    );
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.WriteMessage(LogMessageType.Error, LOGTAG, "OnControl", ex, "Failed to update refreshSettingsBy");
+                }
             }
         }
         catch (Exception ex)
@@ -137,13 +196,26 @@ public class RemoteControllerHandler(Connection connection, IHttpClientFactory h
             return;
         }
 
+        // Respond first, then disconnect if needed
         message.Respond(new ControlResponseMessage(true, result, null));
+
+        if (refreshSettingsBy > DateTimeOffset.UtcNow)
+        {
+            Log.WriteMessage(LogMessageType.Information, LOGTAG, "OnControl", "Requesting disconnect after responding to control message");
+            message.RequestDisconnect(refreshSettingsBy);
+        }
     }
 
 
     /// <inheritdoc/>
-    public async Task OnMessage(KeepRemoteConnection.CommandMessage commandMessage)
+    public async Task OnMessageAsync(KeepRemoteConnection.CommandMessage commandMessage)
     {
+        if (connection.ApplicationSettings.DisableConsoleControl)
+        {
+            commandMessage.Respond(new CommandResponseMessage(501, "Remote control is disabled.", null));
+            return;
+        }
+
         using var httpClient = httpClientFactory.CreateClient();
         var token = jwtTokenProvider.CreateAccessToken("remote-control", jwtTokenProvider.TemporaryFamilyId, TimeSpan.FromMinutes(2));
 
@@ -154,6 +226,6 @@ public class RemoteControllerHandler(Connection connection, IHttpClientFactory h
         if (!string.IsNullOrWhiteSpace(psk))
             httpClient.DefaultRequestHeaders.Add(Middlewares.PreSharedKeyFilter.HeaderName, psk);
 
-        await commandMessage.Handle(httpClient);
+        await commandMessage.HandleAsync(httpClient);
     }
 }

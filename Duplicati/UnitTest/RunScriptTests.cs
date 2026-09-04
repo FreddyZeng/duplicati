@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,6 +26,7 @@ using System.Linq;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Main;
 using NUnit.Framework;
+using System.Threading.Tasks;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace Duplicati.UnitTest
@@ -41,20 +42,20 @@ namespace Duplicati.UnitTest
         [TestCase(4)]
         [TestCase(5)]
         [TestCase(6)]
-        public void RunScriptAfter(int exitCode)
+        public async Task RunScriptAfterAsync(int exitCode)
         {
             const string expectedMessage = "Hello";
-            string expectedFile = Path.Combine(this.RESTOREFOLDER, "hello.txt");
-            List<string> customCommands = new List<string>
+            var expectedFile = Path.Combine(this.RESTOREFOLDER, "hello.txt");
+            var customCommands = new List<string>
             {
                 $"echo {expectedMessage}>\"{expectedFile}\""
             };
 
-            Dictionary<string, string> options = this.TestOptions;
+            var options = new Dictionary<string, string>(this.TestOptions);
             options["run-script-after"] = CreateScript(exitCode, null, null, 0, customCommands);
-            using (Controller c = new Controller("file://" + this.TARGETFOLDER, options, null))
+            using (var c = new Controller("file://" + this.TARGETFOLDER, options, null))
             {
-                IBackupResults backupResults = c.Backup(new[] { this.DATAFOLDER });
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
 
                 switch (exitCode)
                 {
@@ -88,120 +89,139 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Border")]
-        public void RunScriptBefore()
+        public async Task RunScriptBeforeAsync()
         {
             var blocksize = 10 * 1024;
-            var options = TestOptions;
+            var options = new Dictionary<string, string>(TestOptions);
             options["blocksize"] = blocksize.ToString() + "b";
             options["run-script-timeout"] = "5s";
-
-            // We need a small delay as we run very small backups back-to-back
-            var PAUSE_TIME = TimeSpan.FromSeconds(3);
 
             BorderTests.WriteTestFilesToFolder(DATAFOLDER, blocksize, 0);
 
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
             {
-                var res = c.Backup(new string[] { DATAFOLDER });
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 Assert.AreEqual(0, res.Errors.Count());
                 Assert.AreEqual(0, res.Warnings.Count());
                 if (res.ParsedResult != ParsedResultType.Success)
                     throw new Exception("Unexpected result from base backup");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(0);
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(0);
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Success)
                     throw new Exception("Unexpected result from backup with return code 0");
                 if (res.ExaminedFiles <= 0)
                     throw new Exception("Backup did not examine any files for code 0?");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(1);
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(1);
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Success)
                     throw new Exception("Unexpected result from backup with return code 1");
                 if (res.ExaminedFiles > 0)
                     throw new Exception("Backup did examine files for code 1?");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(2);
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(2);
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Warning)
                     throw new Exception("Unexpected result from backup with return code 2");
                 if (res.ExaminedFiles <= 0)
                     throw new Exception("Backup did not examine any files for code 2?");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(3);
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(3);
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Warning)
                     throw new Exception("Unexpected result from backup with return code 3");
                 if (res.ExaminedFiles > 0)
                     throw new Exception("Backup did examine files for code 3?");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(4);
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(4);
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Error)
                     throw new Exception("Unexpected result from backup with return code 4");
                 if (res.ExaminedFiles <= 0)
                     throw new Exception("Backup did not examine any files for code 4?");
+            }
 
-                foreach (int exitCode in new[] { 5, 6, 10, 99 })
+            foreach (int exitCode in new[] { 5, 6, 10, 99 })
+            {
+                options["run-script-before"] = CreateScript(exitCode);
+                using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
                 {
-                    System.Threading.Thread.Sleep(PAUSE_TIME);
-                    options["run-script-before"] = CreateScript(exitCode);
-                    res = c.Backup(new string[] { DATAFOLDER });
+                    var res = await c.BackupAsync(new string[] { DATAFOLDER });
                     if (res.ParsedResult != ParsedResultType.Error)
                         throw new Exception($"Unexpected result from backup with return code {exitCode}");
                     if (res.ExaminedFiles > 0)
                         throw new Exception($"Backup did examine files for code {exitCode}?");
                 }
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(2, "TEST WARNING MESSAGE");
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(2, "TEST WARNING MESSAGE");
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Warning)
                     throw new Exception("Unexpected result from backup with return code 2");
                 if (res.ExaminedFiles <= 0)
                     throw new Exception("Backup did examine files for code 2?");
                 if (!res.Warnings.Any(x => x.IndexOf("TEST WARNING MESSAGE", StringComparison.Ordinal) >= 0))
                     throw new Exception("Found no warning message in output for code 2");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(3, "TEST WARNING MESSAGE");
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(3, "TEST WARNING MESSAGE");
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Warning)
                     throw new Exception("Unexpected result from backup with return code 3");
                 if (res.ExaminedFiles > 0)
                     throw new Exception("Backup did examine files for code 3?");
                 if (!res.Warnings.Any(x => x.IndexOf("TEST WARNING MESSAGE", StringComparison.Ordinal) >= 0))
                     throw new Exception("Found no warning message in output for code 3");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(4, "TEST ERROR MESSAGE");
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(4, "TEST ERROR MESSAGE");
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Error)
                     throw new Exception("Unexpected result from backup with return code 4");
                 if (res.ExaminedFiles <= 0)
                     throw new Exception("Backup did examine files for code 4?");
                 if (!res.Errors.Any(x => x.IndexOf("TEST ERROR MESSAGE", StringComparison.Ordinal) >= 0))
                     throw new Exception("Found no error message in output for code 4");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(5, "TEST ERROR MESSAGE");
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(5, "TEST ERROR MESSAGE");
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Error)
                     throw new Exception("Unexpected result from backup with return code 5");
                 if (res.ExaminedFiles > 0)
                     throw new Exception("Backup did examine files for code 5?");
                 if (!res.Errors.Any(x => x.IndexOf("TEST ERROR MESSAGE", StringComparison.Ordinal) >= 0))
                     throw new Exception("Found no error message in output for code 5");
+            }
 
-                System.Threading.Thread.Sleep(PAUSE_TIME);
-                options["run-script-before"] = CreateScript(0, sleeptime: 10);
-                res = c.Backup(new string[] { DATAFOLDER });
+            options["run-script-before"] = CreateScript(0, sleeptime: 10);
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, options, null))
+            {
+                var res = await c.BackupAsync(new string[] { DATAFOLDER });
                 if (res.ParsedResult != ParsedResultType.Warning)
                     throw new Exception("Unexpected result from backup with timeout script");
                 if (res.ExaminedFiles <= 0)
@@ -220,6 +240,32 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Border")]
+        public async Task RunScriptReportsRunningPhaseAsync()
+        {
+            var options = new Dictionary<string, string>(this.TestOptions);
+            options["run-script-before"] = CreateScript(0);
+            options["run-script-post-backup"] = CreateScript(0);
+            options["run-script-after"] = CreateScript(0);
+
+            var observedPhases = new List<OperationPhase>();
+            using (var c = new Controller("file://" + this.TARGETFOLDER, options, null))
+            {
+                c.OnOperationStarted += results =>
+                {
+                    if (results is BasicResults basicResults)
+                        basicResults.OperationProgressUpdater.PhaseChanged += (phase, _) => observedPhases.Add(phase);
+                };
+
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
+                Assert.AreEqual(0, backupResults.Errors.Count());
+            }
+
+            Assert.AreEqual(3, observedPhases.Count(phase => phase == OperationPhase.RunScript_Running),
+                "Expected each configured run-script callback to report that a script is running.");
+        }
+
+        [Test]
+        [Category("Border")]
         [TestCase(0)]
         [TestCase(1)]
         [TestCase(2)]
@@ -227,10 +273,10 @@ namespace Duplicati.UnitTest
         [TestCase(4)]
         [TestCase(5)]
         [TestCase(6)]
-        public void RunScriptParsedResult(int exitCode)
+        public async Task RunScriptParsedResultAsync(int exitCode)
         {
-            string parsedResultFile = Path.Combine(this.RESTOREFOLDER, "result.txt");
-            List<string> customCommands = new List<string>();
+            var parsedResultFile = Path.Combine(this.RESTOREFOLDER, "result.txt");
+            var customCommands = new List<string>();
             if (OperatingSystem.IsWindows())
             {
                 customCommands.Add($"echo %DUPLICATI__PARSED_RESULT%>\"{parsedResultFile}\"");
@@ -240,12 +286,12 @@ namespace Duplicati.UnitTest
                 customCommands.Add($"echo $DUPLICATI__PARSED_RESULT>\"{parsedResultFile}\"");
             }
 
-            Dictionary<string, string> options = this.TestOptions;
+            var options = new Dictionary<string, string>(this.TestOptions);
             options["run-script-before"] = this.CreateScript(exitCode);
             options["run-script-after"] = this.CreateScript(0, null, null, 0, customCommands);
             using (var c = new Controller("file://" + this.TARGETFOLDER, options, null))
             {
-                var backupResults = c.Backup(new[] { this.DATAFOLDER });
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
 
                 bool expectBackup;
                 string expectedParsedResult;
@@ -300,7 +346,7 @@ namespace Duplicati.UnitTest
                         break;
                 }
 
-                IEnumerable<string> targetEntries = Directory.EnumerateFileSystemEntries(this.TARGETFOLDER);
+                var targetEntries = Directory.EnumerateFileSystemEntries(this.TARGETFOLDER);
                 if (expectBackup)
                 {
                     // We expect a dblock, dlist, and dindex file.
@@ -311,7 +357,7 @@ namespace Duplicati.UnitTest
                     Assert.AreEqual(0, targetEntries.Count());
                 }
 
-                string[] lines = File.ReadAllLines(parsedResultFile);
+                var lines = File.ReadAllLines(parsedResultFile);
                 Assert.AreEqual(1, lines.Length);
                 Assert.AreEqual(expectedParsedResult, lines[0]);
             }
@@ -319,21 +365,21 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Border")]
-        public void CustomRemoteURL()
+        public async Task CustomRemoteURLAsync()
         {
-            string customTargetFolder = Path.Combine(this.TARGETFOLDER, "destination");
+            var customTargetFolder = Path.Combine(this.TARGETFOLDER, "destination");
             Directory.CreateDirectory(customTargetFolder);
 
-            List<string> customCommands = new List<string>
+            var customCommands = new List<string>
             {
                 $"echo --remoteurl = \"{customTargetFolder}\""
             };
 
-            Dictionary<string, string> options = this.TestOptions;
+            var options = new Dictionary<string, string>(this.TestOptions);
             options["run-script-before"] = CreateScript(0, null, null, 0, customCommands);
-            using (Controller c = new Library.Main.Controller("file://" + this.TARGETFOLDER, options, null))
+            using (var c = new Library.Main.Controller("file://" + this.TARGETFOLDER, options, null))
             {
-                IBackupResults backupResults = c.Backup(new[] { this.DATAFOLDER });
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
                 Assert.AreEqual(0, backupResults.Errors.Count());
                 Assert.AreEqual(0, backupResults.Warnings.Count());
             }
@@ -345,6 +391,149 @@ namespace Duplicati.UnitTest
             // We expect a dblock, dlist, and dindex file.
             IEnumerable<string> customTargetEntries = Directory.EnumerateFileSystemEntries(customTargetFolder);
             Assert.AreEqual(3, customTargetEntries.Count());
+        }
+
+        [Test]
+        [Category("Border")]
+        public async Task CustomLocalPathAsync()
+        {
+            var customSourceFolder = Path.Combine(this.DATAFOLDER, "source2");
+            Directory.CreateDirectory(customSourceFolder);
+            var expectedFile = Path.Combine(customSourceFolder, "file2.txt");
+            File.WriteAllText(expectedFile, "some content");
+
+            var customCommands = new List<string>
+            {
+                $"echo --localpath=\"{customSourceFolder}\""
+            };
+
+            var options = new Dictionary<string, string>(this.TestOptions);
+            options["run-script-before"] = CreateScript(0, null, null, 0, customCommands);
+            using (var c = new Library.Main.Controller("file://" + this.TARGETFOLDER, options, null))
+            {
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
+                Assert.AreEqual(0, backupResults.Errors.Count());
+                Assert.AreEqual(0, backupResults.Warnings.Count());
+                Assert.AreEqual(1, backupResults.ExaminedFiles);
+            }
+
+            using (var c = new Library.Main.Controller("file://" + this.TARGETFOLDER, this.TestOptions, null))
+            {
+                // Restore to a specific folder so we don't mess up original, 
+                // or just restore exactly since it's a test environment.
+                var restoreOptions = new Dictionary<string, string>(this.TestOptions);
+                restoreOptions["restore-path"] = this.RESTOREFOLDER;
+                var c2 = new Library.Main.Controller("file://" + this.TARGETFOLDER, restoreOptions, null);
+                var restoreResults = await c2.RestoreAsync(new[] { expectedFile });
+                Assert.AreEqual(0, restoreResults.Errors.Count());
+                Assert.AreEqual(0, restoreResults.Warnings.Count());
+                Assert.AreEqual(1, restoreResults.RestoredFiles);
+            }
+        }
+
+        [Test]
+        [Category("Border")]
+        public async Task CustomFilterAsync()
+        {
+            var expectedFilter = ".*b.*";
+            var parsedResultFileAfter = Path.Combine(this.RESTOREFOLDER, "result_after.txt");
+            var parsedResultFilePostBackup = Path.Combine(this.RESTOREFOLDER, "result_post_backup.txt");
+
+            var customCommandsBefore = new List<string>
+            {
+                $"echo --filter=\"+{expectedFilter}\""
+            };
+
+            var customCommandsAfter = new List<string>();
+            if (OperatingSystem.IsWindows())
+            {
+                customCommandsAfter.Add($"echo %DUPLICATI__filter%>\"{parsedResultFileAfter}\"");
+            }
+            else
+            {
+                customCommandsAfter.Add($"echo \"$DUPLICATI__filter\">\"{parsedResultFileAfter}\"");
+            }
+
+            var customCommandsPostBackup = new List<string>();
+            if (OperatingSystem.IsWindows())
+            {
+                customCommandsPostBackup.Add($"echo %DUPLICATI__filter%>\"{parsedResultFilePostBackup}\"");
+            }
+            else
+            {
+                customCommandsPostBackup.Add($"echo \"$DUPLICATI__filter\">\"{parsedResultFilePostBackup}\"");
+            }
+
+            var options = new Dictionary<string, string>(this.TestOptions);
+            options["run-script-before"] = CreateScript(0, null, null, 0, customCommandsBefore);
+            options["run-script-after"] = CreateScript(0, null, null, 0, customCommandsAfter);
+            options["run-script-post-backup"] = CreateScript(0, null, null, 0, customCommandsPostBackup);
+
+            using (var c = new Library.Main.Controller("file://" + this.TARGETFOLDER, options, null))
+            {
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
+                Assert.AreEqual(0, backupResults.Errors.Count());
+                Assert.AreEqual(0, backupResults.Warnings.Count());
+            }
+
+            var linesAfter = File.ReadAllLines(parsedResultFileAfter);
+            Assert.AreEqual(1, linesAfter.Length);
+            Assert.IsTrue(linesAfter[0].Contains(expectedFilter, StringComparison.OrdinalIgnoreCase),
+                $"Expected the after-script filter output to contain '{expectedFilter}', but got: '{linesAfter[0]}'");
+
+            var linesPostBackup = File.ReadAllLines(parsedResultFilePostBackup);
+            Assert.AreEqual(1, linesPostBackup.Length);
+            Assert.IsTrue(linesPostBackup[0].Contains(expectedFilter, StringComparison.OrdinalIgnoreCase),
+                $"Expected the post-backup-script filter output to contain '{expectedFilter}', but got: '{linesPostBackup[0]}'");
+        }
+
+        [Test]
+        [Category("Border")]
+        public async Task CommandLineFilterSeenByScriptsAsync()
+        {
+            var expectedFilter = "+*b*";
+            var parsedResultFileAfter = Path.Combine(this.RESTOREFOLDER, "result_after_cmdline.txt");
+            var parsedResultFilePostBackup = Path.Combine(this.RESTOREFOLDER, "result_post_backup_cmdline.txt");
+
+            var customCommandsAfter = new List<string>();
+            if (OperatingSystem.IsWindows())
+            {
+                customCommandsAfter.Add($"echo %DUPLICATI__filter%>\"{parsedResultFileAfter}\"");
+            }
+            else
+            {
+                customCommandsAfter.Add($"echo \"$DUPLICATI__filter\">\"{parsedResultFileAfter}\"");
+            }
+
+            var customCommandsPostBackup = new List<string>();
+            if (OperatingSystem.IsWindows())
+            {
+                customCommandsPostBackup.Add($"echo %DUPLICATI__filter%>\"{parsedResultFilePostBackup}\"");
+            }
+            else
+            {
+                customCommandsPostBackup.Add($"echo \"$DUPLICATI__filter\">\"{parsedResultFilePostBackup}\"");
+            }
+
+            var options = new Dictionary<string, string>(this.TestOptions);
+            options["run-script-after"] = CreateScript(0, null, null, 0, customCommandsAfter);
+            options["run-script-post-backup"] = CreateScript(0, null, null, 0, customCommandsPostBackup);
+
+            using (var c = new Library.Main.Controller("file://" + this.TARGETFOLDER, options, null))
+            {
+                var filter = new Library.Utility.FilterExpression("*b*", true);
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER }, filter);
+                Assert.AreEqual(0, backupResults.Errors.Count());
+                Assert.AreEqual(0, backupResults.Warnings.Count());
+            }
+
+            var linesAfter = File.ReadAllLines(parsedResultFileAfter);
+            Assert.AreEqual(1, linesAfter.Length);
+            Assert.IsTrue(linesAfter[0].Contains(expectedFilter, StringComparison.OrdinalIgnoreCase));
+
+            var linesPostBackup = File.ReadAllLines(parsedResultFilePostBackup);
+            Assert.AreEqual(1, linesPostBackup.Length);
+            Assert.IsTrue(linesPostBackup[0].Contains(expectedFilter, StringComparison.OrdinalIgnoreCase));
         }
 
         private string CreateScript(int exitcode, string stderr = null, string stdout = null, int sleeptime = 0, List<string> customCommands = null)
@@ -369,13 +558,10 @@ namespace Duplicati.UnitTest
             }
             else
             {
-                var commands = new List<string>();
-                commands.Add("#!/bin/sh");
+                var commands = new List<string>() { "#!/bin/sh" };
 
                 if (customCommands != null)
-                {
                     commands.AddRange(customCommands);
-                }
 
                 if (!string.IsNullOrWhiteSpace(stdout))
                     commands.Add($@"echo {stdout}");

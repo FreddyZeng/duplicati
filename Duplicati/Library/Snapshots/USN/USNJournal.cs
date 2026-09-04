@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -555,7 +555,12 @@ namespace Duplicati.Library.Snapshots.USN
                 FlushRecords(tempRecords, result);
             }
 
-            return result.Values;
+            // We rely on the USN record order,
+            // specifically for rename where the old name
+            // is emitted before the new name
+            var sorted = result.Values.ToList();
+            sorted.Sort((a, b) => a.UsnRecord.Usn.CompareTo(b.UsnRecord.Usn));
+            return sorted;
         }
 
         private static void FlushRecords(List<Record> tempRecords, Dictionary<string, Record> resultRecords)

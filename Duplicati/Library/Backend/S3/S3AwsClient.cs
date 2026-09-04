@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 
@@ -85,6 +85,11 @@ namespace Duplicati.Library.Backend
         private readonly IReadOnlySet<S3StorageClass> m_archiveClasses;
 
         /// <summary>
+        /// The lock mode to use for object locking
+        /// </summary>
+        private readonly string m_lockMode;
+
+        /// <summary>
         /// The option to specify the archive classes
         /// </summary>
         public const string S3_ARCHIVE_CLASSES_OPTION = "s3-archive-classes";
@@ -97,11 +102,16 @@ namespace Duplicati.Library.Backend
         ]);
 
         public S3AwsClient(string awsID, string awsKey, string? locationConstraint, string servername,
-            string? storageClass, bool useSSL, bool disableChunkEncoding, bool disablePayloadSigning, TimeoutOptionsHelper.Timeouts timeouts, Dictionary<string, string?> options)
+            string? storageClass, bool useSSL, bool disableChunkEncoding, bool disablePayloadSigning, TimeoutOptionsHelper.Timeouts timeouts, Dictionary<string, string?> options, string lockMode, string? authenticationRegion)
         {
             var cfg = GetDefaultAmazonS3Config();
             cfg.UseHttp = !useSSL;
             cfg.ServiceURL = (useSSL ? "https://" : "http://") + servername;
+            var authRegion = !string.IsNullOrWhiteSpace(authenticationRegion)
+                ? authenticationRegion
+                : locationConstraint;
+            if (!string.IsNullOrWhiteSpace(authRegion))
+                cfg.AuthenticationRegion = authRegion;
 
             CommandLineArgumentMapper.ApplyArguments(cfg, options, EXT_OPTION_PREFIX);
 
@@ -115,6 +125,7 @@ namespace Duplicati.Library.Backend
             m_useChunkEncoding = !disableChunkEncoding;
             m_disablePayloadSigning = disablePayloadSigning;
             m_archiveClasses = ParseStorageClasses(options.GetValueOrDefault(S3_ARCHIVE_CLASSES_OPTION));
+            m_lockMode = lockMode;
         }
 
         /// <summary>
@@ -131,7 +142,7 @@ namespace Duplicati.Library.Backend
         }
 
         /// <inheritdoc/>
-        public Task AddBucketAsync(string bucketName, CancellationToken cancelToken)
+        public async Task AddBucketAsync(string bucketName, CancellationToken cancelToken)
         {
             var request = new PutBucketRequest
             {
@@ -141,7 +152,15 @@ namespace Duplicati.Library.Backend
             if (!string.IsNullOrEmpty(m_locationConstraint))
                 request.BucketRegionName = m_locationConstraint;
 
-            return Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancelToken, ct => m_client.PutBucketAsync(request, ct));
+            try
+            {
+                await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancelToken, ct => m_client.PutBucketAsync(request, ct)).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception s3ex)
+            {
+                TranslateException(s3ex, bucketName);
+                throw;
+            }
         }
 
         /// <summary>
@@ -208,8 +227,8 @@ namespace Duplicati.Library.Backend
             }
             catch (AmazonS3Exception s3Ex)
             {
-                if (s3Ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-                    throw new FileMissingException(string.Format("File {0} not found", keyName), s3Ex);
+                TranslateException(s3Ex, keyName);
+                throw;
             }
 
         }
@@ -229,6 +248,22 @@ namespace Duplicati.Library.Backend
             var md5 = Convert.ToBase64String(Utility.Utility.HexStringAsByteArray(hashes[0]));
             var sha256 = Convert.ToBase64String(Utility.Utility.HexStringAsByteArray(hashes[1]));
 
+            await AddFileStreamAsync(bucketName, keyName, source, md5, sha256, source.Length, cancelToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Adds a file stream to the bucket with the specified hashes and content length
+        /// </summary>
+        /// <param name="bucketName">The name of the bucket</param>
+        /// <param name="keyName">The name of the object to create</param>
+        /// <param name="source">The source stream to upload</param>
+        /// <param name="md5">The MD5 hash of the content as a hex string</param>
+        /// <param name="sha256">The SHA256 hash of the content as a hex string</param>
+        /// <param name="contentLength">The content length of the stream</param>
+        /// <param name="cancelToken">The cancellation token</param>
+        /// <returns>>A task representing the asynchronous operation</returns>
+        public virtual async Task AddFileStreamAsync(string bucketName, string keyName, Stream source, string md5, string sha256, long contentLength, CancellationToken cancelToken)
+        {
             using var ts = source.ObserveReadTimeout(m_timeouts.ReadWriteTimeout, false);
             var objectAddRequest = new PutObjectRequest
             {
@@ -241,6 +276,8 @@ namespace Duplicati.Library.Backend
                 ChecksumSHA256 = sha256,
                 DisablePayloadSigning = m_disablePayloadSigning
             };
+            objectAddRequest.Headers["Content-Length"] = contentLength.ToString();
+
             if (!string.IsNullOrWhiteSpace(m_storageClass))
                 objectAddRequest.StorageClass = new S3StorageClass(m_storageClass);
 
@@ -248,24 +285,20 @@ namespace Duplicati.Library.Backend
             // - If chunked streaming is ON, the SDK uses the streaming literal.
             // - If payload signing is disabled, the SDK uses the UNSIGNED-PAYLOAD literal.
             if (!m_useChunkEncoding && !m_disablePayloadSigning)
-                objectAddRequest.Headers["x-amz-content-sha256"] = hashes[1].ToLowerInvariant();
+                objectAddRequest.Headers["x-amz-content-sha256"] = sha256.ToLowerInvariant();
 
             try
             {
                 await m_client.PutObjectAsync(objectAddRequest, cancelToken);
             }
-            catch (AmazonS3Exception e)
+            catch (AmazonS3Exception s3Ex)
             {
-                //Catch "non-existing" buckets
-                if (e.StatusCode == System.Net.HttpStatusCode.NotFound ||
-                    "NoSuchBucket".Equals(e.ErrorCode))
-                    throw new FolderMissingException(e);
-
+                TranslateException(s3Ex, keyName);
                 throw;
             }
         }
 
-        public Task DeleteObjectAsync(string bucketName, string keyName, CancellationToken cancellationToken)
+        public async Task DeleteObjectAsync(string bucketName, string keyName, CancellationToken cancellationToken)
         {
             var objectDeleteRequest = new DeleteObjectRequest
             {
@@ -273,7 +306,69 @@ namespace Duplicati.Library.Backend
                 Key = keyName
             };
 
-            return Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken, ct => m_client.DeleteObjectAsync(objectDeleteRequest, ct));
+            try
+            {
+                await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken, ct => m_client.DeleteObjectAsync(objectDeleteRequest, ct)).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception s3Ex)
+            {
+                TranslateException(s3Ex, keyName);
+                throw;
+            }
+        }
+
+        public async Task<DateTime?> GetObjectLockUntilAsync(string bucketName, string keyName, CancellationToken cancelToken)
+        {
+            var request = new GetObjectRetentionRequest
+            {
+                BucketName = bucketName,
+                Key = keyName
+            };
+
+            try
+            {
+                var response = await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancelToken, ct => m_client.GetObjectRetentionAsync(request, ct)).ConfigureAwait(false);
+                return response.Retention?.RetainUntilDate?.ToUniversalTime();
+            }
+            catch (AmazonS3Exception s3Ex)
+            {
+                if ("NoSuchObjectLockConfiguration".Equals(s3Ex.ErrorCode, StringComparison.OrdinalIgnoreCase))
+                    return null;
+
+                TranslateException(s3Ex, keyName);
+                throw;
+            }
+        }
+
+        public async Task SetObjectLockUntilAsync(string bucketName, string keyName, DateTime lockUntilUtc, CancellationToken cancelToken)
+        {
+            var lockMode = typeof(ObjectLockRetentionMode)
+                .GetProperties(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)
+                .FirstOrDefault(x => x.Name.Equals(m_lockMode, StringComparison.OrdinalIgnoreCase))?
+                .GetValue(null) as ObjectLockRetentionMode
+                    ?? new ObjectLockRetentionMode(m_lockMode);
+
+            var request = new PutObjectRetentionRequest
+            {
+                BucketName = bucketName,
+                Key = keyName,
+                Retention = new ObjectLockRetention
+                {
+                    Mode = lockMode,
+                    RetainUntilDate = lockUntilUtc.ToUniversalTime(),
+                }
+            };
+
+            try
+            {
+                await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancelToken, ct =>
+                    m_client.PutObjectRetentionAsync(request, ct)).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception s3Ex)
+            {
+                TranslateException(s3Ex, keyName);
+                throw;
+            }
         }
 
         /// <summary>
@@ -338,14 +433,9 @@ namespace Duplicati.Library.Backend
                         };
                     }
                 }
-                catch (AmazonS3Exception e)
+                catch (AmazonS3Exception s3ex)
                 {
-                    if (e.StatusCode == System.Net.HttpStatusCode.NotFound ||
-                        "NoSuchBucket".Equals(e.ErrorCode))
-                    {
-                        throw new FolderMissingException(e);
-                    }
-
+                    TranslateException(s3ex, prefix ?? "");
                     throw;
                 }
 
@@ -398,8 +488,49 @@ namespace Duplicati.Library.Backend
                 DestinationKey = target
             };
 
-            await Utility.Utility.WithTimeout(m_timeouts.ListTimeout, cancelToken, ct => m_client.CopyObjectAsync(copyObjectRequest, ct)).ConfigureAwait(false);
-            await DeleteObjectAsync(bucketName, source, cancelToken).ConfigureAwait(false);
+            try
+            {
+                await Utility.Utility.WithTimeout(m_timeouts.ListTimeout, cancelToken, ct => m_client.CopyObjectAsync(copyObjectRequest, ct)).ConfigureAwait(false);
+                await DeleteObjectAsync(bucketName, source, cancelToken).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception s3Ex)
+            {
+                TranslateException(s3Ex, source);
+                throw;
+            }
+        }
+
+        private static void TranslateException(AmazonS3Exception s3Ex, string keyName)
+        {
+            if ("NoSuchKey".Equals(s3Ex.ErrorCode, StringComparison.OrdinalIgnoreCase))
+                throw new FileMissingException(string.Format("File {0} not found", keyName), s3Ex);
+
+            if ("NoSuchBucket".Equals(s3Ex.ErrorCode, StringComparison.OrdinalIgnoreCase))
+                throw new FolderMissingException(s3Ex);
+
+            // Fallback for non-AWS servers
+            if (s3Ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                throw new FileMissingException(string.Format("File {0} not found", keyName), s3Ex);
+        }
+
+        public async Task<IFileEntry?> GetFileEntryAsync(string bucketName, string keyName, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var request = new GetObjectMetadataRequest { BucketName = bucketName, Key = keyName };
+                var response = await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken, ct => m_client.GetObjectMetadataAsync(request, ct)).ConfigureAwait(false);
+
+                return new FileEntry(keyName, response.ContentLength, response.LastModified ?? default, response.LastModified ?? default)
+                {
+                    IsFolder = keyName.EndsWith("/")
+                };
+            }
+            catch (AmazonS3Exception ex)
+            {
+                if (ex.StatusCode == System.Net.HttpStatusCode.NotFound || "NoSuchKey".Equals(ex.ErrorCode, StringComparison.OrdinalIgnoreCase))
+                    return null;
+                throw;
+            }
         }
 
         #region IDisposable Members

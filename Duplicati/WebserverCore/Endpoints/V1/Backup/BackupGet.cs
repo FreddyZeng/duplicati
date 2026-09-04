@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -42,19 +42,19 @@ public class BackupGet : IEndpointV1
             .RequireAuthorization();
 
         group.MapGet("/backup/{id}/files", ([FromServices] Connection connection, [FromServices] IQueueRunnerService queueRunnerService, [FromRoute] string id, [FromQuery] string? filter, [FromQuery] string? time, [FromQuery(Name = "all-versions")] bool? allVersions, [FromQuery(Name = "prefix-only")] bool? prefixOnly, [FromQuery(Name = "folder-contents")] bool? folderContents)
-            => ExecuteGetFiles(queueRunnerService, GetBackup(connection, id), filter, time, allVersions ?? false, prefixOnly ?? false, folderContents ?? false, new Dictionary<string, string>()))
+            => ExecuteGetFilesAsync(queueRunnerService, GetBackup(connection, id), filter, time, allVersions ?? false, prefixOnly ?? false, folderContents ?? false, new Dictionary<string, string>()))
             .RequireAuthorization();
 
-        group.MapGet("/backup/{id}/log", ([FromServices] Connection connection, [FromRoute] string id, [FromQuery] long? offset, [FromQuery] long? pagesize)
-            => ExecuteGetLog(connection, GetBackup(connection, id), offset, pagesize ?? 100))
+        group.MapGet("/backup/{id}/log", ([FromServices] Connection connection, [FromServices] IDatabaseLockTracker databaseLockTracker, [FromRoute] string id, [FromQuery] long? offset, [FromQuery] long? pagesize)
+            => ExecuteGetLog(connection, databaseLockTracker, GetBackup(connection, id), offset, pagesize ?? 100))
             .RequireAuthorization();
 
-        group.MapGet("/backup/{id}/remotelog", ([FromServices] Connection connection, [FromRoute] string id, [FromQuery] long? offset, [FromQuery] long? pagesize)
-            => ExecuteGetRemotelog(connection, GetBackup(connection, id), offset, pagesize ?? 100))
+        group.MapGet("/backup/{id}/remotelog", ([FromServices] Connection connection, [FromServices] IDatabaseLockTracker databaseLockTracker, [FromRoute] string id, [FromQuery] long? offset, [FromQuery] long? pagesize)
+            => ExecuteGetRemotelog(connection, databaseLockTracker, GetBackup(connection, id), offset, pagesize ?? 100))
             .RequireAuthorization();
 
         group.MapGet("/backup/{id}/filesets", ([FromServices] Connection connection, [FromServices] IQueueRunnerService queueRunnerService, [FromRoute] string id, [FromQuery(Name = "include-metadata")] bool? includeMetadata, [FromQuery(Name = "from-remote-only")] bool? fromRemoteOnly)
-            => ExecuteGetFilesets(queueRunnerService, GetBackup(connection, id), includeMetadata ?? false, fromRemoteOnly ?? false))
+            => ExecuteGetFilesetsAsync(queueRunnerService, GetBackup(connection, id), includeMetadata ?? false, fromRemoteOnly ?? false))
             .RequireAuthorization();
 
         group.MapGet("/backup/{id}/export-argsonly", ([FromServices] Connection connection, [FromRoute] string id, [FromQuery(Name = "export-passwords")] bool? exportPasswords, [FromQuery] string? passphrase)
@@ -65,7 +65,7 @@ public class BackupGet : IEndpointV1
             => ExecuteGetExportCmdline(connection, GetBackup(connection, id), exportPasswords ?? false))
             .RequireAuthorization();
 
-        group.MapGet("/backup/{id}/export", ([FromServices] Connection connection, [FromServices] IHttpContextAccessor httpContextAccessor, [FromServices] IJWTTokenProvider jWTTokenProvider, [FromRoute] string id, [FromQuery(Name = "export-passwords")] bool? exportPasswords, [FromQuery] string? passphrase, [FromQuery] string token, CancellationToken ct) =>
+        group.MapGet("/backup/{id}/export", async ([FromServices] Connection connection, [FromServices] IHttpContextAccessor httpContextAccessor, [FromServices] IJWTTokenProvider jWTTokenProvider, [FromRoute] string id, [FromQuery(Name = "export-passwords")] bool? exportPasswords, [FromQuery] string? passphrase, [FromQuery] string token, CancellationToken ct) =>
         {
             // Custom authorization check
             var singleOperationToken = jWTTokenProvider.ReadSingleOperationToken(token);
@@ -78,7 +78,7 @@ public class BackupGet : IEndpointV1
             resp.ContentLength = data.Length;
             resp.ContentType = "application/octet-stream";
             resp.Headers.Append("Content-Disposition", $"attachment; filename={filename}");
-            resp.Body.WriteAsync(data, ct);
+            await resp.Body.WriteAsync(data, ct).ConfigureAwait(false);
         });
 
         group.MapGet("/backup/{id}/isdbusedelsewhere", ([FromServices] Connection connection, [FromRoute] string id)
@@ -97,8 +97,8 @@ public class BackupGet : IEndpointV1
     {
         var scheduleId = connection.GetScheduleIDsFromTags(new string[] { "ID=" + bk.ID });
         var schedule = scheduleId.Any() ? connection.GetSchedule(scheduleId.First()) : null;
-        var sourcenames = SpecialFolders.GetSourceNames(bk);
         bk.MaskSensitiveInformation();
+        var sourcenames = SpecialFolders.GetSourceNames(bk);
 
         return new GetBackupResultDto(
             schedule == null ? null : new Dto.ScheduleDto()
@@ -134,16 +134,27 @@ public class BackupGet : IEndpointV1
                 Description = bk.Description,
                 Tags = bk.Tags,
                 TargetURL = bk.TargetURL,
+                ConnectionStringID = bk.ConnectionStringID,
+                OperationType = bk.OperationType,
                 DBPath = bk.DBPath,
                 DBPathExists = File.Exists(bk.DBPath),
                 IsTemporary = bk.IsTemporary,
                 IsUnencryptedOrPassphraseStored = false,
+                AdditionalTargetURLs = bk.AdditionalTargetURLs?.Select(x => new Dto.TargetUrlDto
+                {
+                    UrlKey = x.TargetUrlKey,
+                    TargetUrl = x.TargetUrl,
+                    Mode = x.Mode,
+                    Interval = x.Interval,
+                    ConnectionStringID = x.ConnectionStringID,
+                    Options = x.Options,
+                }).ToArray() ?? Array.Empty<Dto.TargetUrlDto>(),
             },
             sourcenames
         );
     }
 
-    private static Dictionary<string, object> SearchFiles(IQueueRunnerService queueRunnerService, IBackup backup, string? filter, string? timestring, bool allVersions, bool prefixOnly, bool folderContents, Dictionary<string, string> extraValues)
+    private static async Task<Dictionary<string, object>> SearchFilesAsync(IQueueRunnerService queueRunnerService, IBackup backup, string? filter, string? timestring, bool allVersions, bool prefixOnly, bool folderContents, Dictionary<string, string> extraValues)
     {
         if (string.IsNullOrWhiteSpace(timestring) && !allVersions)
             throw new BadRequestException("Invalid or missing time");
@@ -152,7 +163,7 @@ public class BackupGet : IEndpointV1
         if (!allVersions)
             time = Library.Utility.Timeparser.ParseTimeInterval(timestring, DateTime.Now);
 
-        var r = queueRunnerService.RunImmediately(Runner.CreateListTask(backup, filter == null ? null : [filter], prefixOnly, allVersions, folderContents, time)) as IListResults;
+        var r = await queueRunnerService.RunImmediatelyAsync(Runner.CreateListTask(backup, filter == null ? null : [filter], prefixOnly, allVersions, folderContents, time)).ConfigureAwait(false) as IListResults;
         if (r == null)
             throw new ServerErrorException("No result from list operation");
 
@@ -171,39 +182,63 @@ public class BackupGet : IEndpointV1
         return result;
     }
 
-    private static Dictionary<string, object> ExecuteGetFiles(IQueueRunnerService queueRunnerService, IBackup bk, string? filter, string? timestring, bool allVersions, bool prefixOnly, bool folderContents, Dictionary<string, string> extraValues)
-        => SearchFiles(queueRunnerService, bk, filter, timestring, allVersions, prefixOnly, folderContents, extraValues);
+    private static async Task<Dictionary<string, object>> ExecuteGetFilesAsync(IQueueRunnerService queueRunnerService, IBackup bk, string? filter, string? timestring, bool allVersions, bool prefixOnly, bool folderContents, Dictionary<string, string> extraValues)
+        => await SearchFilesAsync(queueRunnerService, bk, filter, timestring, allVersions, prefixOnly, folderContents, extraValues).ConfigureAwait(false);
 
-    private static List<Dictionary<string, object>> ExecuteGetLog(Connection connection, IBackup bk, long? offset, long pagesize)
+    private static async Task<List<Dictionary<string, object>>> ExecuteGetLog(Connection connection, IDatabaseLockTracker databaseLockTracker, IBackup bk, long? offset, long pagesize)
     {
-        if (!File.Exists(bk.DBPath))
+        // Use the effective database path (honoring a "--dbpath" advanced option) so that the log is
+        // read from the same database the backup actually uses (see issue #1698).
+        var dbpath = Runner.GetEffectiveDBPath(bk);
+        if (!File.Exists(dbpath))
             return new List<Dictionary<string, object>>();
 
-        using (var con = Library.SQLiteHelper.SQLiteLoader.LoadConnection(bk.DBPath))
-        using (var cmd = con.CreateCommand())
-            return LogData.DumpTable(cmd, "LogData", "ID", offset, pagesize);
-    }
+        var dbLock = databaseLockTracker.TryAcquire(dbpath)
+            ?? throw new DatabaseLockedException(dbpath);
 
-    private static List<Dictionary<string, object>> ExecuteGetRemotelog(Connection connection, IBackup bk, long? offset, long pagesize)
-    {
-        if (!File.Exists(bk.DBPath))
-            return new List<Dictionary<string, object>>();
-
-        using (var con = Library.SQLiteHelper.SQLiteLoader.LoadConnection(bk.DBPath))
-        using (var cmd = con.CreateCommand())
+        try
         {
-            var dt = LogData.DumpTable(cmd, "RemoteOperation", "ID", offset, pagesize);
-
-            // Unwrap raw data to a string
-            foreach (var n in dt)
-                try { n["Data"] = System.Text.Encoding.UTF8.GetString((byte[])n["Data"]); }
-                catch { }
-
-            return dt;
+            using (var con = Library.SQLiteHelper.SQLiteLoader.LoadConnection(dbpath))
+            using (var cmd = con.CreateCommand())
+                return LogData.DumpTable(cmd, "LogData", "ID", offset, pagesize);
+        }
+        finally
+        {
+            await dbLock.DisposeAsync().ConfigureAwait(false);
         }
     }
 
-    private static IEnumerable<IListResultFileset> ExecuteGetFilesets(IQueueRunnerService queueRunnerService, IBackup bk, bool includeMetadata, bool fromRemoteOnly)
+    private static async Task<List<Dictionary<string, object>>> ExecuteGetRemotelog(Connection connection, IDatabaseLockTracker databaseLockTracker, IBackup bk, long? offset, long pagesize)
+    {
+        var dbpath = Runner.GetEffectiveDBPath(bk);
+        if (!File.Exists(dbpath))
+            return new List<Dictionary<string, object>>();
+
+        var dbLock = databaseLockTracker.TryAcquire(dbpath)
+            ?? throw new DatabaseLockedException(dbpath);
+
+        try
+        {
+            using (var con = Library.SQLiteHelper.SQLiteLoader.LoadConnection(dbpath))
+            using (var cmd = con.CreateCommand())
+            {
+                var dt = LogData.DumpTable(cmd, "RemoteOperation", "ID", offset, pagesize);
+
+                // Unwrap raw data to a string
+                foreach (var n in dt)
+                    try { n["Data"] = System.Text.Encoding.UTF8.GetString((byte[])n["Data"]); }
+                    catch { }
+
+                return dt;
+            }
+        }
+        finally
+        {
+            await dbLock.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<IEnumerable<IListResultFileset>> ExecuteGetFilesetsAsync(IQueueRunnerService queueRunnerService, IBackup bk, bool includeMetadata, bool fromRemoteOnly)
     {
         var extra = new Dictionary<string, string?>
         {
@@ -219,7 +254,7 @@ public class BackupGet : IEndpointV1
 
         try
         {
-            var r = queueRunnerService.RunImmediately(Runner.CreateTask(DuplicatiOperation.List, bk, extra)) as IListResults;
+            var r = await queueRunnerService.RunImmediatelyAsync(Runner.CreateTask(DuplicatiOperation.List, bk, extra)).ConfigureAwait(false) as IListResults;
             if (r == null)
                 throw new ServerErrorException("No result from list operation");
 
@@ -244,7 +279,7 @@ public class BackupGet : IEndpointV1
         if (!exportPasswords)
             RemovePasswords(backup);
 
-        return new Dto.ExportCommandlineDto(Runner.GetCommandLine(connection, Runner.CreateTask(DuplicatiOperation.Backup, backup)));
+        return new Dto.ExportCommandlineDto(Runner.GetCommandLine(connection, Runner.CreateTask(DuplicatiOperation.BackupOrSync, backup)));
     }
 
     private static Dto.ExportArgsOnlyDto ExecuteGetExportArgsOnly(Connection connection, IBackup backup, bool exportPasswords)
@@ -252,7 +287,7 @@ public class BackupGet : IEndpointV1
         if (!exportPasswords)
             RemovePasswords(backup);
 
-        var parts = Runner.GetCommandLineParts(connection, Runner.CreateTask(DuplicatiOperation.Backup, backup));
+        var parts = Runner.GetCommandLineParts(connection, Runner.CreateTask(DuplicatiOperation.BackupOrSync, backup));
         return new Dto.ExportArgsOnlyDto(
             parts.First(),
             parts.Skip(1).Where(x => !x.StartsWith("--", StringComparison.Ordinal)),

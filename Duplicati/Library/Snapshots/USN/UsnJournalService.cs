@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -155,8 +155,8 @@ namespace Duplicati.Library.Snapshots.USN
                     if (prevData.ConfigHash != nextData.ConfigHash)
                         throw new UsnJournalSoftFailureException(Strings.USNHelper.ConfigHashChanged);
 
-                    var changedFiles = new HashSet<string>(Utility.Utility.ClientFilenameStringComparer);
-                    var changedFolders = new HashSet<string>(Utility.Utility.ClientFilenameStringComparer);
+                    var changedFiles = new Dictionary<string, string>(Utility.Utility.ClientFilenameStringComparer);
+                    var changedFolders = new Dictionary<string, string>(Utility.Utility.ClientFilenameStringComparer);
 
                     // obtain changed files and folders, per volume
                     foreach (var source in volumeSources)
@@ -169,11 +169,13 @@ namespace Duplicati.Library.Snapshots.USN
 
                             if (entry.Item2.HasFlag(USNJournal.EntryType.File))
                             {
-                                changedFiles.Add(entry.Item1);
+                                // Retain the new path, but overwrite previous path (case-preserving)
+                                changedFiles[entry.Item1] = entry.Item1;
                             }
                             else
                             {
-                                changedFolders.Add(Util.AppendDirSeparator(entry.Item1));
+                                var folder = Util.AppendDirSeparator(entry.Item1);
+                                changedFolders[folder] = folder;
                             }
                         }
                     }
@@ -186,13 +188,13 @@ namespace Duplicati.Library.Snapshots.USN
                     //
                     // 1. Simplify the folder list, such that it only contains the parent-most entries 
                     //     (e.g. { "C:\A\B\", "C:\A\B\C\", "C:\A\B\D\E\" } => { "C:\A\B\" }
-                    volumeData.Folders = Utility.Utility.SimplifyFolderList(changedFolders).ToList();
+                    volumeData.Folders = Utility.Utility.SimplifyFolderList(changedFolders.Values).ToList();
 
                     // 2. Our list of files may contain entries inside one of the simplified folders (from step 1., above).
                     //    Since that folder is going to be fully scanned, those files can be removed.
                     //    Note: it would be wrong to use the result from step 2. as the folder list! The entries removed
                     //          between 1. and 2. are *excluded* folders, and files below them are to be *excluded*, too.
-                    volumeData.Files = [.. Utility.Utility.GetFilesNotInFolders(changedFiles, volumeData.Folders)];
+                    volumeData.Files = new HashSet<string>(Utility.Utility.GetFilesNotInFolders(changedFiles.Values, volumeData.Folders), Utility.Utility.ClientFilenameStringComparer);
 
                     // Record success for volume
                     volumeData.IsFullScan = false;
@@ -203,7 +205,7 @@ namespace Duplicati.Library.Snapshots.USN
                     volumeData.Exception = e;
                     volumeData.IsFullScan = true;
                     volumeData.Folders = new List<string>();
-                    volumeData.Files = new HashSet<string>();
+                    volumeData.Files = new HashSet<string>(Utility.Utility.ClientFilenameStringComparer);
 
                     // use original sources
                     foreach (var path in volumeSources)
@@ -426,7 +428,7 @@ namespace Duplicati.Library.Snapshots.USN
         /// <summary>
         /// Tests if specified folder, or any of its ancestors, is excluded by the filter
         /// </summary>
-        /// <param name="folder">Folder to test</param>
+        /// <param name="inputFolder">Folder to test</param>
         /// <param name="filter">Filter</param>
         /// <param name="cache">Cache of excluded folders (optional)</param>
         /// <returns>True if excluded, false otherwise</returns>

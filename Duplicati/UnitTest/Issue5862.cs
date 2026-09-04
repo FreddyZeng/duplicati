@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -75,13 +75,13 @@ namespace Duplicati.UnitTest
             public Task PutAsync(string remotename, string filename, CancellationToken cancellationToken)
                 => throw new DeterministicErrorBackend.DeterministicErrorBackendException("Prevent");
 
-            public Task TestAsync(CancellationToken cancellationToken)
-                => backend.TestAsync(cancellationToken);
+            public Task TestAsync(bool alsoWrite, CancellationToken cancellationToken)
+                => backend.TestAsync(alsoWrite, cancellationToken);
         }
 
         [Test]
         [Category("Targeted")]
-        public void TestUploadFailureWithResume()
+        public async Task TestUploadFailureWithResumeAsync()
         {
             var testopts = TestOptions.Expand(new
             {
@@ -95,11 +95,11 @@ namespace Duplicati.UnitTest
 
             // Make a failing backup
             using (var c = new Library.Main.Controller(PreventingBackend.Key + "://" + TARGETFOLDER, testopts, null))
-                Assert.Throws<DeterministicErrorBackend.DeterministicErrorBackendException>(() => c.Backup(new string[] { DATAFOLDER }));
+                Assert.ThrowsAsync<DeterministicErrorBackend.DeterministicErrorBackendException>(async () => await c.BackupAsync(new string[] { DATAFOLDER }));
 
             // Make a working backup, should not give any errors
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-                TestUtils.AssertResults(c.Backup(new string[] { DATAFOLDER }));
+                TestUtils.AssertResults(await c.BackupAsync(new string[] { DATAFOLDER }));
         }
     }
 }

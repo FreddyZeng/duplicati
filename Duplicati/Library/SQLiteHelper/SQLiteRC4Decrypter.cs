@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -76,7 +76,7 @@ public static class SQLiteRC4Decrypter
         using (var probefs = new FileStream(databasePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
         {
             var probebuf = new byte[MAGIC_HEADER.Length];
-            probefs.Read(probebuf, 0, probebuf.Length);
+            var len = probefs.Read(probebuf, 0, probebuf.Length);
             return !MAGIC_HEADER.SequenceEqual(probebuf);
         }
     }
@@ -86,8 +86,6 @@ public static class SQLiteRC4Decrypter
     /// </summary>
     /// <param name="databasePath">The path to the database file</param>
     /// <param name="password">The password to use for decryption</param>
-    /// <param name="errorMessage">The error message if decryption failed</param>
-    /// <returns><c>true</c> if the decryption was successful or the database was not encrypted; <c>false</c> otherwise</returns>
     public static void DecryptSQLiteFile(string databasePath, string password)
     {
         databasePath = Path.GetFullPath(databasePath);

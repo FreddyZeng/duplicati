@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -69,7 +69,7 @@ namespace Duplicati.Library.DynamicLoader
             /// <returns>The instanciated SourceProvider or null if the url is not supported</returns>
             public ISourceProviderModule GetSourceProvider(string url, string mountPoint, Dictionary<string, string> options)
             {
-                var uri = new Utility.Uri(url);
+                var uri = new Utility.RelaxedUri(url);
 
                 LoadInterfaces();
 
@@ -107,7 +107,7 @@ namespace Duplicati.Library.DynamicLoader
             /// <returns>The supported commands or null if the url scheme was not supported</returns>
             public IReadOnlyList<ICommandLineArgument> GetSupportedCommands(string url)
             {
-                var uri = new Utility.Uri(url);
+                var uri = new Utility.RelaxedUri(url);
 
                 LoadInterfaces();
 
@@ -117,7 +117,7 @@ namespace Duplicati.Library.DynamicLoader
                     ISourceProviderModule b;
                     if (m_interfaces.TryGetValue(uri.Scheme, out b) && b != null)
                         return GetSupportedCommandsCached(b).ToList();
-                    else if (uri.Scheme.EndsWith("s", StringComparison.Ordinal))
+                    else if (uri.Scheme.EndsWith("s", StringComparison.OrdinalIgnoreCase))
                     {
                         var tmpscheme = uri.Scheme.Substring(0, uri.Scheme.Length - 1);
                         if (m_interfaces.TryGetValue(tmpscheme, out b) && b != null)
@@ -139,7 +139,7 @@ namespace Duplicati.Library.DynamicLoader
         /// <summary>
         /// Gets a list of loaded SourceProviders, the instances can be used to extract interface information, not used to interact with the SourceProvider.
         /// </summary>
-        public static ISourceProviderModule[] SourceProviders { get { return _SourceProviderLoader.Interfaces; } }
+        public static ISourceProviderModule[] Modules { get { return _SourceProviderLoader.Interfaces; } }
 
         /// <summary>
         /// Gets a list of keys supported
@@ -169,14 +169,13 @@ namespace Duplicati.Library.DynamicLoader
         }
 
         /// <summary>
-        /// Instanciates a specific SourceProvider, given the url and options
+        /// Creates a specific SourceProvider without initializing it, given the url and options
         /// </summary>
         /// <param name="url">The url to create the instance for</param>
         /// <param name="mountPoint">The mount point to use</param>
         /// <param name="options">The options to pass to the instance constructor</param>
-        /// <param name="cancellationToken">The cancellation token</param>
-        /// <returns>The instanciated SourceProvider or null if the url is not supported</returns>
-        public static async Task<ISourceProviderModule> GetSourceProvider(string url, string mountPoint, Dictionary<string, string> options, CancellationToken cancellationToken)
+        /// <returns>The created SourceProvider or null if the url is not supported</returns>
+        public static ISourceProviderModule CreateSourceProvider(string url, string mountPoint, Dictionary<string, string> options)
         {
             // Source providers are preferred over backends
             var provider = _SourceProviderLoader.GetSourceProvider(url, mountPoint, options);
@@ -190,12 +189,27 @@ namespace Duplicati.Library.DynamicLoader
                     backend?.Dispose();
             }
 
+            return provider;
+        }
+
+        /// <summary>
+        /// Instanciates a specific SourceProvider, given the url and options
+        /// </summary>
+        /// <param name="url">The url to create the instance for</param>
+        /// <param name="mountPoint">The mount point to use</param>
+        /// <param name="options">The options to pass to the instance constructor</param>
+        /// <param name="cancellationToken">The cancellation token</param>
+        /// <returns>The instanciated SourceProvider or null if the url is not supported</returns>
+        public static async Task<ISourceProviderModule> GetSourceProvider(string url, string mountPoint, Dictionary<string, string> options, CancellationToken cancellationToken)
+        {
+            var provider = CreateSourceProvider(url, mountPoint, options);
+
             if (provider == null)
                 return null;
 
             try
             {
-                await provider.Initialize(cancellationToken).ConfigureAwait(false);
+                await provider.InitializeAsync(cancellationToken).ConfigureAwait(false);
                 return provider;
             }
             catch

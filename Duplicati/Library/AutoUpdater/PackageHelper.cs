@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -101,6 +101,14 @@ namespace Duplicati.Library.AutoUpdater
             /// The database tool
             /// </summary>
             DatabaseTool,
+            /// <summary>
+            /// The configure tool
+            /// </summary>
+            ConfigureTool,
+            /// <summary>
+            /// The auto tune tool
+            /// </summary>
+            AutoTuneTool
         }
 
         /// <summary>
@@ -129,6 +137,8 @@ namespace Duplicati.Library.AutoUpdater
                 NamedExecutable.SyncTool => OperatingSystem.IsWindows() ? "Duplicati.CommandLine.SyncTool.exe" : "duplicati-sync-tool",
                 NamedExecutable.SourceTool => OperatingSystem.IsWindows() ? "Duplicati.CommandLine.Sourcetool.exe" : "duplicati-source-tool",
                 NamedExecutable.DatabaseTool => OperatingSystem.IsWindows() ? "Duplicati.CommandLine.DatabaseTool.exe" : "duplicati-database-tool",
+                NamedExecutable.ConfigureTool => OperatingSystem.IsWindows() ? "Duplicati.CommandLine.ConfigureTool.exe" : "duplicati-configure",
+                NamedExecutable.AutoTuneTool => OperatingSystem.IsWindows() ? "Duplicati.CommandLine.AutoTuneTool.exe" : "duplicati-autotune-tool",
                 _ => throw new ArgumentException($"Named executable not known: {exe}", nameof(exe))
             };
 

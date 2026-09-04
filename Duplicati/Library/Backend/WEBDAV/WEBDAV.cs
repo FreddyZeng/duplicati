@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,9 +26,11 @@ using Duplicati.Library.Utility.Options;
 using System.Net;
 using System.Runtime.CompilerServices;
 
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
+
 namespace Duplicati.Library.Backend
 {
-    public class WEBDAV : IStreamingBackend
+    public class WEBDAV : IStreamingBackend, IRenameEnabledBackend
     {
         /// <summary>
         /// The integrated authentication option name
@@ -157,12 +159,84 @@ namespace Duplicati.Library.Backend
             m_propfindPathPrefixes = null!;
         }
 
+        /// <summary>
+        /// Turns the escaped path of the destination url into the one the responses are compared
+        /// against: rooted, ending in a separator, and decoded exactly once.
+        /// </summary>
+        /// <remarks>
+        /// This decodes with <see cref="Utility.UrlEncoding.UrlPathDecode"/>, which is what the
+        /// five places that read a path out of a PROPFIND response use. The configured path and
+        /// the names taken from the responses are compared with StartsWith, so they have to come
+        /// out of the same decoder or the comparison stops matching.
+        /// </remarks>
+        /// <param name="path">The escaped path, as <see cref="System.Uri.AbsolutePath"/> gives it</param>
+        /// <returns>The path to compare the responses against</returns>
+        internal static string NormalizePath(string path)
+        {
+            if (!path.StartsWith("/", StringComparison.Ordinal))
+                path = "/" + path;
+
+            return Utility.UrlEncoding.UrlPathDecode(Util.AppendDirSeparator(path, "/"));
+        }
+
+        /// <summary>
+        /// The parts of a webdav url that the backend configures itself from.
+        /// </summary>
+        /// <param name="Host">The server to connect to. An IPv6 literal keeps its brackets.</param>
+        /// <param name="Port">The port, or -1 when the url does not name one.</param>
+        /// <param name="Path">The path, decoded, rooted and ending in a separator. Compared against the responses.</param>
+        /// <param name="EscapedPath">The same path still escaped, rooted and ending in a separator. Used to build the requests.</param>
+        /// <param name="Username">The user from the url, or null when it has none.</param>
+        /// <param name="Password">The password from the url, or null when it has none.</param>
+        /// <remarks>
+        /// The two paths are separate on purpose. Reading a path out of a url that had already been
+        /// decoded is what turned a folder named "My+Folder" into "My Folder": a "+" means a space
+        /// in a query string and nowhere else, and decoding twice also lost a literal percent sign.
+        /// Reported as issue #4880.
+        /// </remarks>
+        internal readonly record struct WebDavUrl(string Host, int Port, string Path, string EscapedPath, string? Username, string? Password);
+
+        /// <summary>
+        /// Splits a webdav url into the parts the backend needs.
+        /// </summary>
+        /// <param name="url">The url to split.</param>
+        /// <returns>The parts the backend needs.</returns>
+        internal static WebDavUrl ParseWebDavUrl(string url)
+        {
+            var uri = new System.Uri(url);
+            uri.RequireHost(url);
+            uri.RequireNoFragment(url);
+
+            // AbsolutePath is still escaped, which is what the requests need. The previous parser
+            // handed the path over already decoded, so decoding it again lost anything that was
+            // spelled with a percent sign.
+            var escaped = Util.AppendDirSeparator(uri.AbsolutePath, "/");
+
+            // The user info is not decoded, so it is decoded here.
+            var userinfo = uri.UserInfo.Split(new[] { ':' }, 2);
+            var username = userinfo.Length > 0 && userinfo[0].Length > 0 ? System.Uri.UnescapeDataString(userinfo[0]) : null;
+            var password = userinfo.Length > 1 ? System.Uri.UnescapeDataString(userinfo[1]) : null;
+
+            // webdav is not a scheme with a registered default port, so an url without one answers
+            // -1 here, the same way the previous parser did.
+            return new WebDavUrl(uri.Host, uri.Port, NormalizePath(escaped), escaped, username, password);
+        }
+
+        /// <summary>
+        /// Constructor used by the tests, so the requests can be observed without a server.
+        /// </summary>
+        /// <param name="url">The destination url</param>
+        /// <param name="options">The options to use</param>
+        /// <param name="handler">The handler that answers the requests</param>
+        internal WEBDAV(string url, Dictionary<string, string?> options, HttpMessageHandler handler)
+            : this(url, options)
+            => m_httpClient = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+
         public WEBDAV(string url, Dictionary<string, string?> options)
         {
-            var u = new Utility.Uri(url);
-            u.RequireHost();
-            m_dnsName = u.Host ?? "";
-            var auth = AuthOptionsHelper.Parse(options, u);
+            var u = ParseWebDavUrl(url);
+            m_dnsName = u.Host;
+            var auth = AuthOptionsHelper.Parse(options, u.Username, u.Password);
             if (auth.HasUsername)
             {
                 m_userInfo = new NetworkCredential() { Domain = "" };
@@ -182,24 +256,25 @@ namespace Duplicati.Library.Backend
             if (m_forceDigestAuthentication && m_userInfo == null)
                 throw new UserInformationException(Strings.WEBDAV.UsernameRequired, "UsernameRequired");
 
-            m_url = u.SetScheme(m_certificateOptions.UseSSL ? "https" : "http").SetCredentials(null, null).SetQuery(null).ToString();
-            m_url = Util.AppendDirSeparator(m_url, "/");
+            // The escaped path goes into the url the requests are sent to, so a folder named
+            // "My+Folder" is asked for by that name rather than by "My Folder".
+            m_url = m_certificateOptions.UseSSL ? "https" : "http";
+            m_url += "://" + u.Host + (u.Port >= 0 ? ":" + u.Port.ToString() : "") + u.EscapedPath;
 
             m_path = u.Path;
-            if (!m_path.StartsWith("/", StringComparison.Ordinal))
-                m_path = "/" + m_path;
-            m_path = Util.AppendDirSeparator(m_path, "/");
 
-            m_path = Utility.Uri.UrlDecode(m_path);
-            m_rawurl = new Utility.Uri(m_certificateOptions.UseSSL ? "https" : "http", u.Host, m_path).ToString();
+            // The four urls below are only ever used as candidate prefixes for the paths a server
+            // puts in a PROPFIND response, and the shapes they happen to have are what makes that
+            // matching tolerant. They keep the previous builder so the candidates stay the same.
+            m_rawurl = new Utility.RelaxedUri(m_certificateOptions.UseSSL ? "https" : "http", u.Host, m_path).ToString();
 
             int port = u.Port;
             if (port <= 0)
                 port = m_certificateOptions.UseSSL ? 443 : 80;
 
-            m_rawurlPort = new Utility.Uri(m_certificateOptions.UseSSL ? "https" : "http", u.Host, m_path, null, null, null, port).ToString();
-            m_sanitizedUrl = new Utility.Uri(m_certificateOptions.UseSSL ? "https" : "http", u.Host, m_path).ToString();
-            m_reverseProtocolUrl = new Utility.Uri(m_certificateOptions.UseSSL ? "http" : "https", u.Host, m_path).ToString();
+            m_rawurlPort = new Utility.RelaxedUri(m_certificateOptions.UseSSL ? "https" : "http", u.Host, m_path, null, null, null, port).ToString();
+            m_sanitizedUrl = new Utility.RelaxedUri(m_certificateOptions.UseSSL ? "https" : "http", u.Host, m_path).ToString();
+            m_reverseProtocolUrl = new Utility.RelaxedUri(m_certificateOptions.UseSSL ? "http" : "https", u.Host, m_path).ToString();
             m_timeouts = TimeoutOptionsHelper.Parse(options);
 
             m_baseUri = new System.Uri(m_url, System.UriKind.Absolute);
@@ -238,7 +313,7 @@ namespace Duplicati.Library.Backend
             if (path == null)
                 return;
 
-            var normalized = Utility.Uri.UrlDecode(path.Replace("+", "%2B"));
+            var normalized = Utility.UrlEncoding.UrlPathDecode(path);
 
             if (!normalized.StartsWith("/", StringComparison.Ordinal))
                 normalized = "/" + normalized;
@@ -264,17 +339,17 @@ namespace Duplicati.Library.Backend
                 }
                 else
                 {
-                    var decodedValue = Utility.Uri.UrlDecode(trimmed.Replace("+", "%2B"));
+                    var decodedValue = Utility.UrlEncoding.UrlPathDecode(trimmed);
                     return ExtractRelativeFromDecodedPath(decodedValue);
                 }
             }
 
-            var decodedPath = Utility.Uri.UrlDecode(hrefUri.AbsolutePath.Replace("+", "%2B"));
+            var decodedPath = Utility.UrlEncoding.UrlPathDecode(hrefUri.AbsolutePath);
             var name = ExtractRelativeFromDecodedPath(decodedPath);
             if (!string.IsNullOrEmpty(name))
                 return name;
 
-            var decodedHref = Utility.Uri.UrlDecode(trimmed.Replace("+", "%2B"));
+            var decodedHref = Utility.UrlEncoding.UrlPathDecode(trimmed);
             return ExtractRelativeFromDecodedPath(decodedHref);
         }
 
@@ -329,7 +404,7 @@ namespace Duplicati.Library.Backend
             if (string.IsNullOrWhiteSpace(hrefValue))
                 return null;
 
-            string name = Utility.Uri.UrlDecode(hrefValue.Replace("+", "%2B"));
+            string name = Utility.UrlEncoding.UrlPathDecode(hrefValue);
 
             string cmp_path;
 
@@ -364,7 +439,9 @@ namespace Duplicati.Library.Backend
         {
             if (m_httpClient == null)
             {
-                var httpHandler = m_certificateOptions.CreateHandler();
+                var httpHandler = new HttpClientHandler();
+                HttpClientHelper.ConfigureHandlerCertificateValidator(httpHandler, m_certificateOptions.AcceptAllCertificates, m_certificateOptions.AcceptSpecificCertificateHashes, m_certificateOptions.IgnoreRevocationFailure);
+
                 if (m_useIntegratedAuthentication)
                 {
                     httpHandler.UseDefaultCredentials = true;
@@ -439,6 +516,14 @@ namespace Duplicati.Library.Backend
             }
             catch (HttpRequestException wex)
             {
+                var inner = wex.InnerException;
+                while (inner != null)
+                {
+                    if (inner is SslCertificateValidator.InvalidCertificateException)
+                        throw inner;
+                    inner = inner.InnerException;
+                }
+
                 if (wex.StatusCode == HttpStatusCode.NotFound || wex.StatusCode == HttpStatusCode.Conflict)
                     throw new FolderMissingException(Strings.WEBDAV.MissingFolderError(m_path, wex.Message), wex);
 
@@ -574,8 +659,8 @@ namespace Duplicati.Library.Backend
         public Task<string[]> GetDNSNamesAsync(CancellationToken cancelToken) => Task.FromResult(new[] { m_dnsName });
 
         ///<inheritdoc/>
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         ///<inheritdoc/>
         public async Task CreateFolderAsync(CancellationToken cancelToken)
@@ -601,7 +686,7 @@ namespace Duplicati.Library.Backend
 
         private HttpRequestMessage CreateRequest(string remotename, HttpMethod? method = null)
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, $"{m_url}{Utility.Uri.UrlEncode(remotename).Replace("+", "%20")}");
+            var request = new HttpRequestMessage(HttpMethod.Get, $"{m_url}{Utility.UrlEncoding.UrlEncode(remotename).Replace("+", "%20")}");
             request.Headers.Add(HttpRequestHeader.UserAgent.ToString(), "Duplicati WEBDAV Client v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version);
 
             request.Headers.ConnectionClose = !m_useIntegratedAuthentication; // ConnectionClose is incompatible with integrated authentication
@@ -667,6 +752,25 @@ namespace Duplicati.Library.Backend
                 if (wex.StatusCode == HttpStatusCode.NotFound)
                     throw new FileMissingException(wex);
 
+                throw;
+            }
+        }
+
+        public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var request = CreateRequest(oldname, new HttpMethod("MOVE"));
+                request.Headers.Add("Destination", $"{m_url}{Utility.UrlEncoding.UrlEncode(newname).Replace("+", "%20")}");
+                request.Headers.Add("Overwrite", "T");
+
+                using var response = await GetHttpClient().SendAsync(request, cancellationToken).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+            }
+            catch (HttpRequestException wex)
+            {
+                if (wex.StatusCode == HttpStatusCode.NotFound)
+                    throw new FileMissingException(wex);
                 throw;
             }
         }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -23,7 +23,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Threading;
 using CoCoL;
@@ -35,7 +34,6 @@ using Duplicati.Server;
 using Duplicati.Server.Database;
 using Duplicati.WebserverCore.Services;
 using Microsoft.Extensions.DependencyInjection;
-using Uri = System.Uri;
 
 namespace Duplicati.GUI.TrayIcon
 {
@@ -60,12 +58,21 @@ namespace Duplicati.GUI.TrayIcon
             SuppliedPassword
         }
 
+        /// <summary>
+        /// The connection to the server
+        /// </summary>
         public static HttpServerConnection Connection;
+
+        /// <summary>
+        /// The default secret provider
+        /// </summary>
+        public static PasswordStorageHelper PasswordStorage;
 
         private const string HOSTURL_OPTION = "hosturl";
         private const string NOHOSTEDSERVER_OPTION = "no-hosted-server";
         private const string READCONFIGFROMDB_OPTION = "read-config-from-db";
         private const string ACCEPTED_SSL_CERTIFICATE = "host-cert-hash";
+        private const string IGNORE_REVOCATION_FAILURE = "ignore-revocation-failure";
 
         private const string DETACHED_PROCESS = "detached-process";
         private const string BROWSER_COMMAND_OPTION = "browser-command";
@@ -83,7 +90,6 @@ namespace Duplicati.GUI.TrayIcon
         private static string _browser_command = null;
         private static bool disableTrayIconLogin = false;
         private static bool openui = false;
-        private static Uri serverURL = new(DEFAULT_HOSTURL);
         public static string BrowserCommand { get { return _browser_command; } }
         public static Server.Database.Connection databaseConnection = null;
 
@@ -93,12 +99,28 @@ namespace Duplicati.GUI.TrayIcon
         [STAThread]
         public static int Main(string[] _args)
         {
+            try
+            {
+                return RunMain(_args);
+            }
+            catch (Exception ex)
+            {
+                Library.Crashlog.CrashlogHelper.LogCrashException(ex);
+                ErrorDialog.ShowErrorDialog(ex);
+
+                Environment.Exit(1);
+                return 1;
+            }
+        }
+
+        private static int RunMain(string[] _args)
+        {
             PreloadSettingsLoader.ConfigurePreloadSettings(ref _args, PackageHelper.NamedExecutable.TrayIcon);
             var args = new List<string>(_args);
             var options = CommandLineParser.ExtractOptions(args);
 
             if (OperatingSystem.IsWindows() && !Utility.ParseBoolOption(options, DETACHED_PROCESS))
-                Win32.AttachConsole(Win32.ATTACH_PARENT_PROCESS);
+                Utility.AttachWindowsConsole();
 
             if (HelpOptionExtensions.IsArgumentAnyHelpString(_args))
             {
@@ -128,6 +150,7 @@ namespace Duplicati.GUI.TrayIcon
             string password = null;
             var passwordSource = PasswordSource.SuppliedPassword;
             var acceptedHostCertificate = options.GetValueOrDefault(ACCEPTED_SSL_CERTIFICATE, null);
+            var ignoreRevocationFailure = Utility.ParseBoolOption(options, IGNORE_REVOCATION_FAILURE);
             var detached = Utility.ParseBoolOption(options, NOHOSTEDSERVER_OPTION);
 
             var supportedCommands = BasicSupportedCommands.AsEnumerable();
@@ -144,6 +167,8 @@ namespace Duplicati.GUI.TrayIcon
             // Validate options, and log to console
             using (var logger = new ConsoleOutput(Console.Out, options))
                 CommandLineArgumentValidator.ValidateArguments(supportedCommands, options, Server.Program.KnownDuplicateOptions, new HashSet<string>());
+
+            Uri serverURL = new Uri(DEFAULT_HOSTURL);
 
             if (!detached)
             {
@@ -217,29 +242,29 @@ namespace Duplicati.GUI.TrayIcon
                 password = pwd;
 
             // Let the user specify the port, if they are not providing a hosturl
+            var customUrl = false;
             if (!options.ContainsKey(HOSTURL_OPTION) && options.TryGetValue(WebServerLoader.OPTION_PORT, out var portString) && int.TryParse(portString, out var port))
-                serverURL = new UriBuilder(serverURL) { Port = port }.Uri;
-
-            if (options.TryGetValue(HOSTURL_OPTION, out var url))
-                serverURL = new Uri(url);
-
-            if (string.IsNullOrWhiteSpace(password) && passwordSource == PasswordSource.SuppliedPassword)
             {
-                Console.WriteLine($@"
-When running the TrayIcon without a hosted server, you must provide the server password via the option --{WebServerLoader.OPTION_WEBSERVICE_PASSWORD}=<password>.
-If the TrayIcon instance has read access to the server database, you can also or use the option --{READCONFIGFROMDB_OPTION}, possibly with --server-datafolder=<path>.
-
-No password provided, unable to connect to server, exiting");
-                return 1;
+                serverURL = new UriBuilder(serverURL) { Port = port }.Uri;
+                customUrl = true;
             }
 
-            StartTray(_args, options, hosted, passwordSource, password, acceptedHostCertificate);
+            if (options.TryGetValue(HOSTURL_OPTION, out var url))
+            {
+                serverURL = new Uri(url);
+                customUrl = true;
+            }
+
+            StartTray(_args, options, hosted, passwordSource, password, serverURL, customUrl, acceptedHostCertificate, ignoreRevocationFailure);
 
             return 0;
         }
 
-        private static void StartTray(string[] _args, Dictionary<string, string> options, HostedInstanceKeeper hosted, PasswordSource passwordSource, string password, string acceptedHostCertificate)
+        private static void StartTray(string[] _args, Dictionary<string, string> options, HostedInstanceKeeper hosted, PasswordSource passwordSource, string password, Uri serverURL, bool customUrl, string acceptedHostCertificate, bool ignoreRevocationFailure)
         {
+            PasswordStorage = PasswordStorageHelper.CreateAsync(serverURL.ToString(), customUrl, password, passwordSource, options)
+                .Await();
+
             using (hosted)
             {
                 var reSpawn = 0;
@@ -251,13 +276,10 @@ No password provided, unable to connect to server, exiting");
 
                     try
                     {
-                        ServicePointManager.SecurityProtocol = SecurityProtocolType.SystemDefault;
-
-                        using (Connection = new HttpServerConnection(hosted?.applicationSettings, serverURL, password, passwordSource, disableTrayIconLogin, acceptedHostCertificate, options))
+                        using (Connection = new HttpServerConnection(hosted?.applicationSettings, passwordSource, disableTrayIconLogin, acceptedHostCertificate, ignoreRevocationFailure, options, PasswordStorage))
                         {
                             // Make sure we have the latest status, but don't care if it fails
-                            Connection.UpdateStatus().FireAndForget();
-
+                            Connection.UpdateStatusAsync().FireAndForget();
                             using (var tk = RunTrayIcon())
                             {
                                 if (Server.Program.ApplicationInstance != null)
@@ -344,6 +366,7 @@ No password provided, unable to connect to server, exiting");
             new CommandLineArgument(HOSTURL_OPTION, CommandLineArgument.ArgumentType.String, "Selects the url to connect to", "Supply the url that the TrayIcon will connect to and show status for", DEFAULT_HOSTURL),
             new CommandLineArgument(BROWSER_COMMAND_OPTION, CommandLineArgument.ArgumentType.String, "Sets the browser command", "Set this option to override the default browser detection"),
             new CommandLineArgument(ACCEPTED_SSL_CERTIFICATE, CommandLineArgument.ArgumentType.String, "Accepts a specific SSL certificate", "Set this option to accept a specific SSL certificate, the value should be the hash of the certificate in hexadecimal format. Use * to accept any certificate (dangerous)"),
+            new CommandLineArgument(IGNORE_REVOCATION_FAILURE, CommandLineArgument.ArgumentType.Boolean, "Ignore certificate revocation check failures", "Set this option to ignore certificate revocation check failures, such as when the revocation server is offline or the revocation status is unknown"),
             .. WindowsSupportedCommands
         ];
 

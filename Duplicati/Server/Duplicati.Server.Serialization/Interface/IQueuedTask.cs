@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -58,7 +58,7 @@ public interface IQueuedTask
     /// </summary>
     /// <param name="uploadSpeed">The upload speed to set.</param>
     /// <param name="downloadSpeed">The download speed to set.</param>
-    void UpdateThrottleSpeeds(string? uploadSpeed, string? downloadSpeed);
+    Task UpdateThrottleSpeedsAsync(string? uploadSpeed, string? downloadSpeed);
     /// <summary>
     /// The time when the task was starting to execute.
     /// </summary>
@@ -70,18 +70,18 @@ public interface IQueuedTask
     /// <summary>
     /// Stops the task.
     /// </summary>
-    void Stop();
+    Task StopAsync();
     /// <summary>
     /// Aborts the task.
     /// </summary>
-    void Abort();
+    Task AbortAsync();
     /// <summary>
     /// Pauses the task.
     /// </summary>
     /// <param name="alsoTransfers">If true, also pauses transfers.</param>
-    void Pause(bool alsoTransfers);
+    Task PauseAsync(bool alsoTransfers);
     /// <summary>
     /// Resumes the task.
     /// </summary>
-    void Resume();
+    Task ResumeAsync();
 }

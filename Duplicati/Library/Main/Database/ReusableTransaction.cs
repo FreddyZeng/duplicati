@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -24,6 +24,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Utility;
 using Microsoft.Data.Sqlite;
+using Duplicati.Library.Main.Database.Local;
 
 #nullable enable
 
@@ -35,7 +36,7 @@ namespace Duplicati.Library.Main.Database;
 /// <remarks>
 /// Creates a new reusable transaction.
 /// </remarks>
-/// <param name="db">The database to use.</param>
+/// <param name="con">The connection to use.</param>
 /// <param name="transaction">The transaction to use. If null, a new transaction is created.</param>
 internal class ReusableTransaction(SqliteConnection con, SqliteTransaction? transaction = null) : IDisposable, IAsyncDisposable
 {
@@ -72,7 +73,7 @@ internal class ReusableTransaction(SqliteConnection con, SqliteTransaction? tran
     /// <summary>
     /// Commits the transaction and restarts it.
     /// </summary>
-    /// <param name="token">A cancellation token to cancel the operation.</param>
+    /// <param name="token">A cancellation token (currently not observed by this operation).</param>
     /// <returns>A task that completes when the commit is done and a new transaction has been started.</returns>
     public async Task CommitAsync(CancellationToken token)
     {
@@ -80,10 +81,11 @@ internal class ReusableTransaction(SqliteConnection con, SqliteTransaction? tran
     }
 
     /// <summary>
-    /// Async version of Commit: <inheritdoc cref="Commit(string?, bool)"/>
+    /// Commits the transaction asynchronously, optionally logging a timed message and restarting the transaction.
     /// </summary>
     /// <param name="message">The log message to use.</param>
     /// <param name="restart">True if the transaction should be restarted.</param>
+    /// <param name="token">A cancellation token (currently not observed by this operation).</param>
     /// <returns>A task that completes when the commit is done and (potentially) a new transaction has been started.</returns>
     /// <exception cref="InvalidOperationException">If the transaction is already Disposed.</exception>
     public async Task CommitAsync(string? message = null, bool restart = true, CancellationToken token = default)
@@ -120,21 +122,44 @@ internal class ReusableTransaction(SqliteConnection con, SqliteTransaction? tran
             }
             catch (Exception ex)
             {
-                Logging.Log.WriteErrorMessage(LOGTAG, "ReusableTransaction dispose", ex, "Transaction disposed with error: {0}", ex.Message);
-                throw;
+                if (!IsInactiveTransactionException(ex))
+                {
+                    Logging.Log.WriteErrorMessage(LOGTAG, "ReusableTransaction dispose", ex, "Transaction disposed with error: {0}", ex.Message);
+                    throw;
+                }
+
+                Logging.Log.WriteWarningMessage(LOGTAG, "ReusableTransactionAlreadyCompleted", ex, "Transaction was already completed during dispose: {0}", ex.Message);
             }
             finally
             {
                 m_disposed = true;
-                await m_transaction.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    await m_transaction.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    if (!IsInactiveTransactionException(ex))
+                        throw;
+
+                    Logging.Log.WriteWarningMessage(LOGTAG, "ReusableTransactionAlreadyDisposed", ex, "Transaction was already completed before dispose: {0}", ex.Message);
+                }
             }
         }
     }
 
+    // Microsoft.Data.Sqlite throws InvalidOperationException ("This SqliteTransaction has completed;
+    // it is no longer usable.") when a transaction is rolled back or disposed after it has already
+    // been completed. Unfortunately there is nothing specific that can be used to differentiate it
+    // from other exceptions that might occur during disposal, so we rely on the exception type, source and message.
+    private static bool IsInactiveTransactionException(Exception ex)
+        => ex is InvalidOperationException
+            && ex.Message.StartsWith("This SqliteTransaction has completed", StringComparison.Ordinal);
+
     /// <summary>
     /// Rolls back the transaction and restarts it.
     /// </summary>
-    /// <param name="token">A cancellation token to cancel the operation.</param>
+    /// <param name="token">A cancellation token (currently not observed by this operation).</param>
     /// <returns>A task that completes when the rollback is done and a new transaction has been started.</returns>
     public async Task RollBackAsync(CancellationToken token)
     {
@@ -146,7 +171,7 @@ internal class ReusableTransaction(SqliteConnection con, SqliteTransaction? tran
     /// </summary>
     /// <param name="message">Message to log.</param>
     /// <param name="restart">Whether to restart the transaction after rolling back.</param>
-    /// <param name="token">A cancellation token to cancel the operation.</param>
+    /// <param name="token">A cancellation token (currently not observed by this operation).</param>
     /// <returns>A task that completes when the rollback is done and (potentially) a new transaction has been started.</returns>
     /// <exception cref="InvalidOperationException">If the transaction has already been disposed.</exception>
     public async Task RollBackAsync(string? message = null, bool restart = true, CancellationToken token = default)

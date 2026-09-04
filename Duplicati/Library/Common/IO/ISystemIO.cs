@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -83,15 +83,58 @@ namespace Duplicati.Library.Common.IO
         void SetMetadata(string path, Dictionary<string, string> metdata, bool restorePermissions);
         Dictionary<string, string> GetMetadata(string path, bool isSymlink, bool followSymlink);
         /// <summary>
-        /// Sets the permission to read-write only for the current user.
+        /// Restricts access to the file so only the current user and privileged system principals retain access
+        /// (on Windows: full control for the current user, SYSTEM and Administrators with inheritance disabled;
+        /// on POSIX: owner-only 0600 permissions).
         /// </summary>
         /// <param name="path">The file to set permissions on.</param>
         void FileSetPermissionUserRWOnly(string path);
         /// <summary>
-        /// Sets the permission to read-write only for the current user.
+        /// Restricts access to the directory so only the current user and privileged system principals retain access
+        /// (on Windows: full control for the current user, SYSTEM and Administrators with inheritance disabled;
+        /// on POSIX: owner-only 0700 permissions).
         /// </summary>
         /// <param name="path">The directory to set permissions on.</param>
-        void DirectorySetPermissionUserRWOnly(string path);
+        /// <param name="excludeCurrentUser">Do not accept the current user as part of the security check</param>
+        void DirectorySetPermissionUserRWOnly(string path, bool excludeCurrentUser);
+
+        /// <summary>
+        /// Checks whether the directory has the restricted permissions for the current user,
+        /// i.e. the same permissions that <see cref="DirectorySetPermissionUserRWOnly"/> would apply.
+        /// </summary>
+        /// <param name="path">The directory to check permissions on.</param>
+        /// <param name="excludeCurrentUser">Do not accept the current user as part of the security check</param>
+        /// <param name="detail">A human-readable description of why the check failed, if it did; otherwise <see cref="string.Empty"/>.</param>
+        /// <returns><c>true</c> if the directory has the expected permissions; otherwise <c>false</c>.</returns>
+        bool DirectoryHasPermissionUserRWOnly(string path, bool excludeCurrentUser, out string detail);
+
+        /// <summary>
+        /// Gets a value indicating whether the operating system supports alternate data streams.
+        /// </summary>
+        bool SupportsAlternateDataStreams { get; }
+
+        /// <summary>
+        /// Enumerates the alternate data streams for a file (Windows-only).
+        /// </summary>
+        /// <param name="path">The path to the file.</param>
+        /// <returns>An enumerable of stream names (e.g., ":streamname").</returns>
+        IEnumerable<string> EnumerateAlternateDataStreams(string path);
+
+        /// <summary>
+        /// Determines whether the specified path is an alternate data stream.
+        /// </summary>
+        /// <param name="path">The path to check.</param>
+        /// <returns>True if the path is an alternate data stream; otherwise, false.</returns>
+        bool IsAlternateDataStream(string path);
+
+        /// <summary>
+        /// Returns the parent file or folder path of an alternate data stream path.
+        /// For a path such as <c>C:\file.txt:stream</c> this returns <c>C:\file.txt</c>.
+        /// If the path is not an alternate data stream, the path is returned unchanged.
+        /// </summary>
+        /// <param name="path">The alternate data stream path.</param>
+        /// <returns>The parent file or folder path.</returns>
+        string GetAlternateDataStreamParent(string path);
     }
 
 }

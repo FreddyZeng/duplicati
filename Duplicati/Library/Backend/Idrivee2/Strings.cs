@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -31,5 +31,7 @@ namespace Duplicati.Library.Backend.Strings
         public static string KeyIDDescriptionShort => LC.L(@"Access Key ID");
         public static string NoKeySecretError => LC.L(@"No Access Key Secret given");
         public static string NoKeyIdError => LC.L(@"No Access Key ID given");
+        public static string DescriptionLockModeShort => LC.L(@"Specify the S3 object lock mode");
+        public static string DescriptionLockModeLong => LC.L(@"Use this option to specify the S3 object lock mode. Governance mode allows users with special permissions to bypass the lock, while Compliance mode enforces strict immutability.");
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -44,6 +44,10 @@ namespace Duplicati.CommandLine
         {
             PreloadSettingsLoader.ConfigurePreloadSettings(ref args, PackageHelper.NamedExecutable.CommandLine);
 
+            // Check for controller server mode
+            if (args.IndexOf("controller-server") == 0)
+                return ControllerProcessEntry.Run(args);
+
             Library.UsageReporter.Reporter.Initialize();
             FROM_COMMANDLINE = true;
             try
@@ -72,7 +76,7 @@ namespace Duplicati.CommandLine
                         ["help"] = Commands.Help,
                         ["example"] = Commands.Examples,
                         ["examples"] = Commands.Examples,
-                        ["find"] = Commands.List,
+                        ["find"] = Commands.Find,
                         ["list"] = Commands.List,
                         ["list-filesets"] = Commands.ListFilesets,
                         ["list-folder-content"] = Commands.ListFolderContent,
@@ -97,9 +101,16 @@ namespace Duplicati.CommandLine
                         ["test-filter"] = Commands.TestFilters,
                         ["affected"] = Commands.Affected,
                         ["vacuum"] = Commands.Vacuum,
+                        ["set-locks"] = Commands.SetLocks,
+                        ["setlocks"] = Commands.SetLocks,
+                        ["set-version-label"] = Commands.SetVersionLabel,
+                        ["setversionlabel"] = Commands.SetVersionLabel,
+                        ["read-lock-info"] = Commands.ReadLockInfo,
+                        ["readlockinfo"] = Commands.ReadLockInfo,
                         ["system-info"] = Commands.SystemInfo,
                         ["systeminfo"] = Commands.SystemInfo,
-                        ["send-mail"] = Commands.SendMail
+                        ["send-mail"] = Commands.SendMail,
+                        ["sync"] = Commands.Sync
                     };
 
                 return knownCommands;
@@ -384,15 +395,25 @@ namespace Duplicati.CommandLine
                 foreach (KeyValuePair<String, String> keyvalue in opt)
                     options[keyvalue.Key] = keyvalue.Value;
 
+                var command = cargs.Count >= 1 ? cargs[0] : string.Empty;
+                var isBackup = command.Equals("backup", StringComparison.OrdinalIgnoreCase);
+                var isTestFilters = command.Equals("test-filters", StringComparison.OrdinalIgnoreCase)
+                                 || command.Equals("test-filter", StringComparison.OrdinalIgnoreCase);
+
                 if (!string.IsNullOrEmpty(newtarget))
                 {
-                    if (cargs.Count <= 1)
+                    // test-filters takes source paths as positional arguments and has no target, so a
+                    // --target from the parameters file must not become a bogus positional source (#4812).
+                    if (isTestFilters)
+                        Library.Logging.Log.WriteVerboseMessage(LOGTAG, "NotUsingTarget", Strings.Program.SkippingTargetArgumentOnTestFilters);
+                    else if (cargs.Count <= 1)
                         cargs.Add(newtarget);
                     else
                         cargs[1] = newtarget;
                 }
 
-                if (cargs.Count >= 1 && cargs[0].Equals("backup", StringComparison.OrdinalIgnoreCase))
+                // backup and test-filters take source paths as positional arguments.
+                if (isBackup || isTestFilters)
                     cargs.AddRange(newsource);
                 else if (newsource.Count > 0)
                     Library.Logging.Log.WriteVerboseMessage(LOGTAG, "NotUsingBackupSources", Strings.Program.SkippingSourceArgumentsOnNonBackupOperation);

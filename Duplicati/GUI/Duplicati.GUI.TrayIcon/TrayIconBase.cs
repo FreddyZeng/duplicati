@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -24,6 +24,7 @@ using Duplicati.Server.Serialization;
 using Duplicati.Server.Serialization.Interface;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using CoCoL;
 
 namespace Duplicati.GUI.TrayIcon
 {
@@ -34,6 +35,8 @@ namespace Duplicati.GUI.TrayIcon
         Quit,
         Pause,
         Resume,
+        Reconnect,
+        ChangePassword
     }
 
     public enum TrayIcons
@@ -73,6 +76,7 @@ namespace Duplicati.GUI.TrayIcon
     public abstract class TrayIconBase : IDisposable
     {
         protected IMenuItem m_reconnectMenu;
+        protected IMenuItem m_changePasswordMenu;
         protected IMenuItem m_openMenu;
         protected IMenuItem m_pauseMenu;
         protected IMenuItem m_quitMenu;
@@ -88,7 +92,8 @@ namespace Duplicati.GUI.TrayIcon
             RegisterNotificationCallback();
             m_onDoubleClick = ShowStatusWindow;
             m_onNotificationClick = ShowStatusWindow;
-            OnStatusUpdated(Program.Connection.Status);
+            OnStatusUpdatedAsync(Program.Connection.Status)
+                .FireAndForget();
             Run(args);
         }
 
@@ -96,14 +101,14 @@ namespace Duplicati.GUI.TrayIcon
 
         public void InvokeExit()
         {
-            UpdateUIState(() =>
+            UpdateUIStateAsync(() =>
             {
                 Program.Connection?.Close();
                 this.Exit();
             });
         }
 
-        protected virtual Task UpdateUIState(Action action)
+        protected virtual Task UpdateUIStateAsync(Action action)
         {
             action();
             return Task.CompletedTask;
@@ -121,7 +126,7 @@ namespace Duplicati.GUI.TrayIcon
 
         protected virtual void RegisterStatusUpdateCallback()
         {
-            Program.Connection.OnStatusUpdated = OnStatusUpdated;
+            Program.Connection.OnStatusUpdated = OnStatusUpdatedAsync;
         }
 
         protected virtual void RegisterNotificationCallback()
@@ -145,7 +150,7 @@ namespace Duplicati.GUI.TrayIcon
                     break;
             }
 
-            UpdateUIState(() =>
+            UpdateUIStateAsync(() =>
             {
                 NotifyUser(notification.Title, notification.Message, type);
             });
@@ -161,21 +166,31 @@ namespace Duplicati.GUI.TrayIcon
 
         protected IEnumerable<IMenuItem> BuildMenu()
         {
-            m_reconnectMenu = CreateMenuItem("Reconnect", MenuIcons.Resume, Reconnect, null);
+            m_reconnectMenu = CreateMenuItem("Reconnect", MenuIcons.Reconnect, Reconnect, null);
             m_reconnectMenu.SetHidden(true);
+            m_changePasswordMenu = CreateMenuItem("Change Password", MenuIcons.ChangePassword, OnChangePasswordClicked, null);
+            m_changePasswordMenu.SetHidden(true);
             m_openMenu = CreateMenuItem("Open", MenuIcons.Status, OnStatusClicked, null);
             m_openMenu.SetDefault(true);
             return [
                 m_reconnectMenu,
+                m_changePasswordMenu,
                 m_openMenu,
                 m_pauseMenu = CreateMenuItem("Pause", MenuIcons.Pause, OnPauseClicked, null ),
                 m_quitMenu = CreateMenuItem("Quit", MenuIcons.Quit, OnQuitClicked, null),
             ];
         }
 
+        private async void OnChangePasswordClicked()
+        {
+            var res = await PasswordPrompt.ShowPasswordDialogAsync(isChangePassword: true);
+            if (res)
+                await OnStatusUpdatedAsync(Program.Connection.Status);
+        }
+
         private void Reconnect()
         {
-            Program.Connection.UpdateStatus().ContinueWith(t =>
+            Program.Connection.UpdateStatusAsync().ContinueWith(t =>
             {
                 if (t.IsFaulted)
                 {
@@ -224,8 +239,19 @@ namespace Duplicati.GUI.TrayIcon
                 Program.Connection.Pause();
         }
 
-        protected Task OnStatusUpdated(IServerStatus status)
-            => this.UpdateUIState(() =>
+        /// <summary>
+        /// A delay to allow the GUI to startup properly on Linux before updating the tray icon.
+        /// </summary>
+        private readonly Task m_startupDelay =
+            OperatingSystem.IsLinux()
+            ? Task.Delay(1000)
+            : Task.CompletedTask;
+
+        protected async Task OnStatusUpdatedAsync(IServerStatus status)
+        {
+            await m_startupDelay;
+            await this.UpdateUIStateAsync(()
+            =>
             {
                 switch (status.SuggestedStatusIcon)
                 {
@@ -269,8 +295,10 @@ namespace Duplicati.GUI.TrayIcon
 
                 m_openMenu.SetHidden(status.SuggestedStatusIcon == SuggestedStatusIcon.Disconnected);
                 m_pauseMenu.SetHidden(status.SuggestedStatusIcon == SuggestedStatusIcon.Disconnected);
-                m_reconnectMenu.SetHidden(status.SuggestedStatusIcon != SuggestedStatusIcon.Disconnected);
-            });
+                m_reconnectMenu.SetHidden(status.SuggestedStatusIcon != SuggestedStatusIcon.Disconnected || PasswordPrompt.IsShowingDialog);
+                m_changePasswordMenu.SetHidden(status.SuggestedStatusIcon != SuggestedStatusIcon.Disconnected || Program.Connection?.PasswordSource != Program.PasswordSource.SuppliedPassword || PasswordPrompt.IsShowingDialog);
+            }).ConfigureAwait(false);
+        }
 
         #region IDisposable implementation
         public abstract void Dispose();

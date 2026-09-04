@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,25 +20,56 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.CommandLine;
-using System.CommandLine.NamingConventionBinder;
 
 namespace Duplicati.CommandLine.ServerUtil.Commands;
 
 public static class Import
 {
-    public static Command Create() =>
-        new Command("import", "Import a backup configuration")
+    public static Command Create()
+    {
+        var fileArgument = new Argument<FileInfo>("file")
         {
-            new Argument<FileInfo>("file", "The file to import, may be encrypted") {
-                Arity = ArgumentArity.ExactlyOne
-            },
-            new Argument<string>("passphrase", "The passphrase to use for decryption") {
-                Arity = ArgumentArity.ZeroOrOne
-            },
-            new Option<bool>(name: "--import-metadata", description: "Import metadata from the backup", getDefaultValue: () => false)
-        }
-        .WithHandler(CommandHandler.Create<Settings, OutputInterceptor, FileInfo, string, bool>(async (settings, output, file, passphrase, importMetadata) =>
+            Description = "The file to import, may be encrypted",
+            Arity = ArgumentArity.ExactlyOne
+        };
+        var passphraseArgument = new Argument<string?>("passphrase")
         {
+            Description = "The passphrase to use for decryption of the configuration file, if encrypted",
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        var importMetadataOption = new Option<bool>("--import-metadata")
+        {
+            Description = "Import metadata from the backup"
+        };
+        var backupPassphraseOption = new Option<string>("--backup-passphrase")
+        {
+            Description = "The passphrase to inject into the backup configuration after import. Use this option if the configuration was exported without secrets.",
+            DefaultValueFactory = _ => string.Empty
+        };
+        var backupUrlOption = new Option<string>("--backup-url")
+        {
+            Description = "The url to inject into the backup configuration after import. Use this option to replace the storage URL.",
+            DefaultValueFactory = _ => string.Empty
+        };
+
+        var cmd = new Command("import", "Import a backup configuration")
+        {
+            fileArgument,
+            passphraseArgument,
+            importMetadataOption,
+            backupPassphraseOption,
+            backupUrlOption
+        };
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var settings = SettingsBinder.GetSettings(parseResult);
+            var output = OutputInterceptorBinder.GetConsoleInterceptor(parseResult);
+            var file = parseResult.GetValue(fileArgument)!;
+            var passphrase = parseResult.GetValue(passphraseArgument);
+            var importMetadata = parseResult.GetValue(importMetadataOption);
+            var backupPassphrase = parseResult.GetValue(backupPassphraseOption)!;
+            var backupUrl = parseResult.GetValue(backupUrlOption)!;
+
             if (!file.Exists)
                 throw new UserReportedException($"File {file.FullName} does not exist");
 
@@ -47,9 +78,9 @@ public static class Import
             {
                 if (output.JsonOutputMode)
                     throw new UserReportedException("No password provided with json mode.");
-                
+
                 if (string.IsNullOrWhiteSpace(passphrase))
-                    passphrase = HelperMethods.ReadPasswordFromConsole("The file is encrypted. Please provide the encryption password: ");
+                    passphrase = Library.Utility.Utility.ReadSecretFromConsole("The file is encrypted. Please provide the encryption password: ");
 
                 if (string.IsNullOrWhiteSpace(passphrase))
                     throw new UserReportedException("No password provided");
@@ -57,18 +88,26 @@ public static class Import
                 if (settings.SecretProvider != null)
                 {
                     var opts = new Dictionary<string, string?> { { "password", passphrase } };
-                    await settings.ReplaceSecrets(opts).ConfigureAwait(false);
+                    await settings.ReplaceSecretsAsync(opts).ConfigureAwait(false);
                     passphrase = opts["password"]!;
                 }
             }
 
-            var connection = await settings.GetConnection(output);
-            var result = await connection.ImportBackup(file.FullName, passphrase, importMetadata);
+            var extraSettings = new Dictionary<string, string>();
+            if (!string.IsNullOrWhiteSpace(backupPassphrase))
+                extraSettings.Add("settings.passphrase", backupPassphrase);
+            if (!string.IsNullOrWhiteSpace(backupUrl))
+                extraSettings.Add("targeturl", backupUrl);
+
+            var connection = await settings.GetConnectionAsync(output);
+            var result = await connection.ImportBackupAsync(file.FullName, passphrase, importMetadata, extraSettings);
 
             output.AppendConsoleMessage($"Imported \"{result.Name}\" with ID {result.ID}");
-            output.AppendCustomObject( "Imported",new {Id = result.ID, Name = result.Name});
+            output.AppendCustomObject("Imported", new { Id = result.ID, Name = result.Name });
             output.SetResult(true);
-        }));
+        });
+        return cmd;
+    }
 
     private static bool IsEncrypted(FileInfo file)
     {
@@ -78,5 +117,4 @@ public static class Import
             return false;
         return header.SequenceEqual("AES"u8);
     }
-
 }

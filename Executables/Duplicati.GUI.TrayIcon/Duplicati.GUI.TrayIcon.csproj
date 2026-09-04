@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>The Duplicati Tray implementation</Description>
+    <ApplicationIcon>..\..\Duplicati\GUI\Duplicati.GUI.TrayIcon\Duplicati.ico</ApplicationIcon>
+    <Copyright>Copyright © 2026 Team Duplicati, MIT license</Copyright>
+  </PropertyGroup>
+
+  <!-- Copy in WindowsModules for easier debug, or if we are targeting Windows -->
+  <Import Project="..\..\Duplicati\Library\WindowsModules\WindowsModules.Runtime.targets" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Duplicati\GUI\Duplicati.GUI.TrayIcon\Duplicati.GUI.TrayIcon.csproj" />
+    <ProjectReference Include="..\..\Duplicati\Library\Crashlog\Duplicati.Library.Crashlog.csproj" />
+  </ItemGroup>
+
+</Project>

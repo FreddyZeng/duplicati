@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -20,9 +20,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.CommandLine;
-using System.CommandLine.Builder;
-using System.CommandLine.NamingConventionBinder;
-using System.CommandLine.Parsing;
 using System.Security.Cryptography;
 using Duplicati.Library.AutoUpdater;
 using Duplicati.Library.Encryption;
@@ -46,17 +43,24 @@ public static class Program
     private static readonly string LogTag = Log.LogTagFromType(typeof(Program));
 
     /// <summary>
+    /// The cancellation token that signals the agent is shutting down.
+    /// Used by the remote-control callbacks to stop waiting for the local webserver.
+    /// </summary>
+    private static CancellationToken s_shutdownToken;
+
+    /// <summary>
     /// Commandline arguments for the agent
     /// </summary>
     /// <param name="AgentRegistrationUrl">The server URL to connect to</param>
     /// <param name="AgentSettingsFile">The file to use for the agent settings</param>
     /// <param name="AgentSettingsFilePassphrase">The passphrase for the agent settings file</param>
-    /// <param name="WebserviceListenInterface">The interface to listen on for the webserver</param>
+    /// <param name="WebserviceInterface">The interface to listen on for the webserver</param>
     /// <param name="WebservicePort">The port to listen on for the webserver</param>
     /// <param name="WebservicePassword">The password for the webserver, random if none supplied</param>
     /// <param name="SettingsEncryptionKey">The encryption key for the database settings</param>
     /// <param name="WindowsEventLog">The Windows event log to write to</param>
     /// <param name="DisableDbEncryption">Disable database encryption</param>
+    /// <param name="DisableDefaultSecretProvider">Disable default secret provider</param>
     /// <param name="WebserviceResetJwtConfig">Reset the JWT configuration</param>
     /// <param name="WebserviceAllowedHostnames">The allowed hostnames for the webserver</param>
     /// <param name="WebserviceApiOnly">Only allow API access to the webserver</param>
@@ -67,17 +71,19 @@ public static class Program
     /// <param name="SecretProvider">The secret provider to use</param>
     /// <param name="SecretProviderCache">The secret provider cache level</param>
     /// <param name="SecretProviderPattern">The secret provider pattern</param>
+    /// <param name="AllowInsecureDatafolder">Allow the data folder to be in a shared location without restricted permissions</param>
     private sealed record CommandLineArguments(
         string AgentRegistrationUrl,
         FileInfo AgentSettingsFile,
         string? AgentSettingsFilePassphrase,
         bool AgentRegisterOnly,
-        string WebserviceListenInterface,
+        string WebserviceInterface,
         string WebservicePort,
         string WebservicePassword,
         string? SettingsEncryptionKey,
         string WindowsEventLog,
         bool DisableDbEncryption,
+        bool DisableDefaultSecretProvider,
         bool WebserviceResetJwtConfig,
         string WebserviceAllowedHostnames,
         bool WebserviceApiOnly,
@@ -87,56 +93,131 @@ public static class Program
         bool KeepWebservicePassword,
         string? SecretProvider,
         SecretProviderHelper.CachingLevel SecretProviderCache,
-        string SecretProviderPattern
+        string SecretProviderPattern,
+        bool AllowInsecureDatafolder
     );
 
+    private static string GetDefaultRegistrationUrl()
+    {
+        // Also support the standard Server URL environment variable for the registration URL
+        // so the same preload or ENV works regardless of if the agent or server is being run
+        var servervar = Environment.GetEnvironmentVariable("DUPLICATI__REGISTER_REMOTE_CONTROL");
+        if (!string.IsNullOrEmpty(servervar))
+            return servervar;
+
+        return RegisterForRemote.DefaultRegisterationUrl;
+    }
+
     [STAThread]
-    public static Task<int> Main(string[] args)
+    public static Task<int> MainAsync(string[] args)
     {
         Library.AutoUpdater.PreloadSettingsLoader.ConfigurePreloadSettings(ref args, Library.AutoUpdater.PackageHelper.NamedExecutable.Agent);
 
+        var runAgentRegistrationUrlOption = new Option<string>("--agent-registration-url") { Description = "The server URL to connect to", DefaultValueFactory = _ => GetDefaultRegistrationUrl() };
+        var runAgentSettingsFileOption = new Option<FileInfo>("--agent-settings-file") { Description = "The file to use for the agent settings", DefaultValueFactory = _ => new FileInfo(Settings.DefaultSettingsFile) };
+        var runAgentSettingsFilePassphraseOption = new Option<string?>("--agent-settings-file-passphrase") { Description = "The passphrase for the agent settings file", DefaultValueFactory = _ => null };
+        var runAgentRegisterOnlyOption = new Option<bool>("--agent-register-only") { Description = "Only register the agent, then exit", DefaultValueFactory = _ => false };
+        var runWebserviceInterfaceOption = new Option<string>("--webservice-interface") { Description = "The interface to listen on for the webserver", DefaultValueFactory = _ => "loopback" };
+        var runWebservicePortOption = new Option<string>("--webservice-port") { Description = "The port to listen on for the webserver", DefaultValueFactory = _ => "8210" };
+        var runWebservicePasswordOption = new Option<string?>("--webservice-password") { Description = "The password for the webserver, not set, or set to \"random\", a random value is used.", DefaultValueFactory = _ => null };
+        var runSettingsEncryptionKeyOption = new Option<string?>("--settings-encryption-key") { Description = "The encryption key for the database settings", DefaultValueFactory = _ => null };
+        var runWindowsEventlogOption = new Option<string>("--windows-eventlog") { Description = "The Windows event log to use as source.", DefaultValueFactory = _ => "" };
+        var runDisableDbEncryptionOption = new Option<bool>("--disable-db-encryption") { Description = "Disable database encryption", DefaultValueFactory = _ => false };
+        var runDisableDefaultSecretProviderOption = new Option<bool>("--disable-default-secret-provider") { Description = "Disable the default secret provider", DefaultValueFactory = _ => false };
+        var runWebserviceResetJwtConfigOption = new Option<bool>("--webservice-reset-jwt-config") { Description = "Reset the JWT configuration", DefaultValueFactory = _ => true };
+        var runWebserviceAllowedHostnamesOption = new Option<string>("--webservice-allowed-hostnames") { Description = "The allowed hostnames for the webserver", DefaultValueFactory = _ => "127.0.0.1" };
+        var runWebserviceApiOnlyOption = new Option<bool>("--webservice-api-only") { Description = "Only allow API access to the webserver", DefaultValueFactory = _ => true };
+        var runWebserviceDisableSigninTokensOption = new Option<bool>("--webservice-disable-signin-tokens") { Description = "Disable signin tokens for the webserver", DefaultValueFactory = _ => true };
+        var runPingPongKeepaliveOption = new Option<bool>("--ping-pong-keepalive") { Description = "Enable ping-pong keepalive", DefaultValueFactory = _ => false };
+        var runDisablePreSharedKeyOption = new Option<bool>("--disable-pre-shared-key") { Description = "Disable the pre-shared key that prevents outside access to the webserver", DefaultValueFactory = _ => false };
+        var runKeepWebservicePasswordOption = new Option<bool>("--keep-webservice-password") { Description = "Disables the random password assigned to the webserver on startup if no password is provided", DefaultValueFactory = _ => false };
+        var runSecretProviderOption = new Option<string?>("--secret-provider") { Description = "The secret provider to use", DefaultValueFactory = _ => null };
+        var runSecretProviderCacheOption = new Option<SecretProviderHelper.CachingLevel>("--secret-provider-cache") { Description = "The secret provider cache level", DefaultValueFactory = _ => SecretProviderHelper.CachingLevel.None };
+        var runSecretProviderPatternOption = new Option<string>("--secret-provider-pattern") { Description = "The secret provider pattern", DefaultValueFactory = _ => SecretProviderHelper.DEFAULT_PATTERN };
+        var runPortableModeOption = new Option<bool>($"--{DataFolderManager.PORTABLE_MODE_OPTION}") { Description = "Use portable mode for locating the database and storing configuration", DefaultValueFactory = _ => DataFolderManager.PORTABLE_MODE };
+        var runServerDatafolderOption = new Option<DirectoryInfo?>($"--{DataFolderManager.SERVER_DATAFOLDER_OPTION}") { Description = "The datafolder to use for locating the database and storing configuration", DefaultValueFactory = _ => new DirectoryInfo(DataFolderManager.GetDataFolder(DataFolderManager.AccessMode.ProbeOnly)) };
+        var runAllowInsecureDatafolderOption = new Option<bool>($"--{DataFolderManager.ALLOW_INSECURE_DATAFOLDER_OPTION}") { Description = "Allow the data folder to be in a shared location (e.g. C:\\ProgramData) without restricted permissions", DefaultValueFactory = _ => false };
+
         var runcmd = new Command("run", "Runs the agent")
         {
-            new Option<string>("--agent-registration-url", description: "The server URL to connect to", getDefaultValue: () => RegisterForRemote.DefaultRegisterationUrl),
-            new Option<FileInfo>("--agent-settings-file", description: "The file to use for the agent settings", getDefaultValue: () => new FileInfo(Settings.DefaultSettingsFile)),
-            new Option<string?>("--agent-settings-file-passphrase", description: "The passphrase for the agent settings file", getDefaultValue: () => null),
-            new Option<bool>("--agent-register-only", description: "Only register the agent, then exit", getDefaultValue: () => false),
-            new Option<string>("--webservice-listen-interface", description: "The interface to listen on for the webserver", getDefaultValue: () => "loopback"),
-            new Option<string>("--webservice-port", description: "The port to listen on for the webserver", getDefaultValue: () => "8210"),
-            new Option<string?>("--webservice-password", description: "The password for the webserver, not set, or set to \"random\", a random value is used.", getDefaultValue: () => null),
-            new Option<string?>("--settings-encryption-key", description: "The encryption key for the database settings", getDefaultValue: () => null),
-            new Option<string>("--windows-eventlog", description: "The Windows event log to use as source.", getDefaultValue: () => ""),
-            new Option<bool>("--disable-db-encryption", description: "Disable database encryption", getDefaultValue: () => false),
-            new Option<bool>("--webservice-reset-jwt-config", description: "Reset the JWT configuration", getDefaultValue: () => true),
-            new Option<string>("--webservice-allowed-hostnames", description: "The allowed hostnames for the webserver", getDefaultValue: () => "127.0.0.1"),
-            new Option<bool>("--webservice-api-only", description: "Only allow API access to the webserver", getDefaultValue: () => true),
-            new Option<bool>("--webservice-disable-signin-tokens", description: "Disable signin tokens for the webserver", getDefaultValue: () => true),
-            new Option<bool>("--ping-pong-keepalive", description: "Enable ping-pong keepalive", getDefaultValue: () => false),
-            new Option<bool>("--disable-pre-shared-key", description: "Disable the pre-shared key that prevents outside access to the webserver", getDefaultValue: () => false),
-            new Option<bool>("--keep-webservice-password", description: "Disables the random password assigned to the webserver on startup if no password is provided", getDefaultValue: () => false),
-            new Option<string?>("--secret-provider", description: "The secret provider to use", getDefaultValue: () => null),
-            new Option<SecretProviderHelper.CachingLevel>("--secret-provider-cache", description: "The secret provider cache level", getDefaultValue: () => SecretProviderHelper.CachingLevel.None),
-            new Option<string>("--secret-provider-pattern", description: "The secret provider pattern", getDefaultValue: () => SecretProviderHelper.DEFAULT_PATTERN),
-            new Option<bool>($"--{DataFolderManager.PORTABLE_MODE_OPTION}", description: "Use portable mode for locating the database and storing configuration", getDefaultValue: () => DataFolderManager.PORTABLE_MODE),
-            new Option<DirectoryInfo?>($"--{DataFolderManager.SERVER_DATAFOLDER_OPTION}", description: "The datafolder to use for locating the database and storing configuration", getDefaultValue: () => new DirectoryInfo(DataFolderManager.GetDataFolder(DataFolderManager.AccessMode.ProbeOnly))),
+            runAgentRegistrationUrlOption,
+            runAgentSettingsFileOption,
+            runAgentSettingsFilePassphraseOption,
+            runAgentRegisterOnlyOption,
+            runWebserviceInterfaceOption,
+            runWebservicePortOption,
+            runWebservicePasswordOption,
+            runSettingsEncryptionKeyOption,
+            runWindowsEventlogOption,
+            runDisableDbEncryptionOption,
+            runDisableDefaultSecretProviderOption,
+            runWebserviceResetJwtConfigOption,
+            runWebserviceAllowedHostnamesOption,
+            runWebserviceApiOnlyOption,
+            runWebserviceDisableSigninTokensOption,
+            runPingPongKeepaliveOption,
+            runDisablePreSharedKeyOption,
+            runKeepWebservicePasswordOption,
+            runSecretProviderOption,
+            runSecretProviderCacheOption,
+            runSecretProviderPatternOption,
+            runPortableModeOption,
+            runServerDatafolderOption,
+            runAllowInsecureDatafolderOption,
         };
-        runcmd.Handler = CommandHandler.Create<CommandLineArguments>(RunAgent);
+        runcmd.SetAction((parseResult, cancellationToken) => RunAgentAsync(new CommandLineArguments(
+            AgentRegistrationUrl: parseResult.GetValue(runAgentRegistrationUrlOption)!,
+            AgentSettingsFile: parseResult.GetValue(runAgentSettingsFileOption)!,
+            AgentSettingsFilePassphrase: parseResult.GetValue(runAgentSettingsFilePassphraseOption),
+            AgentRegisterOnly: parseResult.GetValue(runAgentRegisterOnlyOption),
+            WebserviceInterface: parseResult.GetValue(runWebserviceInterfaceOption)!,
+            WebservicePort: parseResult.GetValue(runWebservicePortOption)!,
+            WebservicePassword: parseResult.GetValue(runWebservicePasswordOption)!,
+            SettingsEncryptionKey: parseResult.GetValue(runSettingsEncryptionKeyOption),
+            WindowsEventLog: parseResult.GetValue(runWindowsEventlogOption)!,
+            DisableDbEncryption: parseResult.GetValue(runDisableDbEncryptionOption),
+            DisableDefaultSecretProvider: parseResult.GetValue(runDisableDefaultSecretProviderOption),
+            WebserviceResetJwtConfig: parseResult.GetValue(runWebserviceResetJwtConfigOption),
+            WebserviceAllowedHostnames: parseResult.GetValue(runWebserviceAllowedHostnamesOption)!,
+            WebserviceApiOnly: parseResult.GetValue(runWebserviceApiOnlyOption),
+            WebserviceDisableSigninTokens: parseResult.GetValue(runWebserviceDisableSigninTokensOption),
+            PingPongKeepalive: parseResult.GetValue(runPingPongKeepaliveOption),
+            DisablePreSharedKey: parseResult.GetValue(runDisablePreSharedKeyOption),
+            KeepWebservicePassword: parseResult.GetValue(runKeepWebservicePasswordOption),
+            SecretProvider: parseResult.GetValue(runSecretProviderOption),
+            SecretProviderCache: parseResult.GetValue(runSecretProviderCacheOption),
+            SecretProviderPattern: parseResult.GetValue(runSecretProviderPatternOption)!,
+            AllowInsecureDatafolder: parseResult.GetValue(runAllowInsecureDatafolderOption)
+        )));
+
+        var clearAgentSettingsFileOption = new Option<FileInfo>("--agent-settings-file") { Description = "The file to use for the agent settings", DefaultValueFactory = _ => new FileInfo(Settings.DefaultSettingsFile) };
 
         var clearCommand = new Command("clear", "Clears the agent settings")
         {
-            new Option<FileInfo>("--agent-settings-file", description: "The file to use for the agent settings", getDefaultValue: () => new FileInfo(Settings.DefaultSettingsFile)),
+            clearAgentSettingsFileOption,
         };
-        clearCommand.Handler = CommandHandler.Create<FileInfo>(ClearAgentSettings);
+        clearCommand.SetAction((parseResult, cancellationToken) => ClearAgentSettingsAsync(parseResult.GetValue(clearAgentSettingsFileOption)!));
+
+        var registerAgentRegistrationUrlArgument = new Argument<string>("agent-registration-url") { Description = "The server URL to connect to", DefaultValueFactory = _ => RegisterForRemote.DefaultRegisterationUrl, Arity = ArgumentArity.ZeroOrOne };
+        var registerAgentSettingsFileOption = new Option<FileInfo>("--agent-settings-file") { Description = "The file to use for the agent settings", DefaultValueFactory = _ => new FileInfo(Settings.DefaultSettingsFile) };
+        var registerAgentSettingsFilePassphraseOption = new Option<string?>("--agent-settings-file-passphrase") { Description = "The passphrase for the agent settings file", DefaultValueFactory = _ => null };
+        var registerSecretProviderOption = new Option<string?>("--secret-provider") { Description = "The secret provider to use", DefaultValueFactory = _ => null };
+        var registerSecretProviderPatternOption = new Option<string>("--secret-provider-pattern") { Description = "The secret provider pattern", DefaultValueFactory = _ => SecretProviderHelper.DEFAULT_PATTERN };
 
         var registerCommand = new Command("register", "Registers the agent and exits")
         {
-            new Argument<string>("agent-registration-url", description: "The server URL to connect to", getDefaultValue: () => RegisterForRemote.DefaultRegisterationUrl) { Arity = ArgumentArity.ZeroOrOne },
-            new Option<FileInfo>("--agent-settings-file", description: "The file to use for the agent settings", getDefaultValue: () => new FileInfo(Settings.DefaultSettingsFile)),
-            new Option<string?>("--agent-settings-file-passphrase", description: "The passphrase for the agent settings file", getDefaultValue: () => null),
-            new Option<string?>("--secret-provider", description: "The secret provider to use", getDefaultValue: () => null),
-            new Option<string>("--secret-provider-pattern", description: "The secret provider pattern", getDefaultValue: () => SecretProviderHelper.DEFAULT_PATTERN),
+            registerAgentRegistrationUrlArgument,
+            registerAgentSettingsFileOption,
+            registerAgentSettingsFilePassphraseOption,
+            registerSecretProviderOption,
+            registerSecretProviderPatternOption,
         };
-        registerCommand.Handler = CommandHandler.Create<string, FileInfo, string?, string?, string>(RegisterAgent);
+        registerCommand.SetAction((parseResult, cancellationToken) => RegisterAgentAsync(
+            parseResult.GetValue(registerAgentRegistrationUrlArgument)!,
+            parseResult.GetValue(registerAgentSettingsFileOption)!,
+            parseResult.GetValue(registerAgentSettingsFilePassphraseOption),
+            parseResult.GetValue(registerSecretProviderOption),
+            parseResult.GetValue(registerSecretProviderPatternOption)!));
 
         var rootcmd = new RootCommand("Duplicati Agent")
         {
@@ -144,27 +225,34 @@ public static class Program
             clearCommand,
             registerCommand
         };
-        // rootcmd.Handler = CommandHandler.Create<CommandLineArguments>(RunAgent);
+        rootcmd.UseAdditionalHelpAliases();
 
-        return new CommandLineBuilder(rootcmd)
-            .UseDefaults()
-            .UseExceptionHandler((ex, context) =>
+        return InvokeWithExceptionHandlingAsync(rootcmd, args);
+    }
+
+    private static async Task<int> InvokeWithExceptionHandlingAsync(RootCommand rootcmd, string[] args)
+    {
+        try
+        {
+            return await rootcmd.Parse(args).InvokeAsync(new InvocationConfiguration
             {
-                if (ex is UserInformationException userInformationException)
-                {
-                    Console.WriteLine("ErrorID: {0}", userInformationException.HelpID);
-                    Console.WriteLine("Message: {0}", userInformationException.Message);
-                    context.ExitCode = 2;
-                }
-                else
-                {
-                    Console.WriteLine("Exception: " + ex);
-                    context.ExitCode = 1;
-                }
-            })
-            .UseAdditionalHelpAliases()
-            .Build()
-            .InvokeAsync(args);
+                EnableDefaultExceptionHandler = false
+            });
+        }
+        catch (Exception ex)
+        {
+            if (ex is UserInformationException userInformationException)
+            {
+                Console.WriteLine("ErrorID: {0}", userInformationException.HelpID);
+                Console.WriteLine("Message: {0}", userInformationException.Message);
+                return 2;
+            }
+            else
+            {
+                Console.WriteLine("Exception: " + ex);
+                return 1;
+            }
+        }
     }
 
     /// <summary>
@@ -172,7 +260,7 @@ public static class Program
     /// </summary>
     /// <param name="agentSettingsFile">The file to clear</param>
     /// <returns>The exit code</returns>
-    private static Task<int> ClearAgentSettings(FileInfo agentSettingsFile)
+    private static Task<int> ClearAgentSettingsAsync(FileInfo agentSettingsFile)
     {
         if (File.Exists(agentSettingsFile.FullName))
             File.Delete(agentSettingsFile.FullName);
@@ -188,20 +276,21 @@ public static class Program
     /// <param name="secretProvider">The secret provider to use</param>
     /// <param name="secretProviderPattern">The secret provider pattern</param>
     /// <returns></returns>
-    private static Task<int> RegisterAgent(string agentRegistrationUrl, FileInfo agentSettingsFile, string? agentSettingsFilePassphrase, string? secretProvider, string secretProviderPattern)
-        => RunAgent(new CommandLineArguments(
+    private static Task<int> RegisterAgentAsync(string agentRegistrationUrl, FileInfo agentSettingsFile, string? agentSettingsFilePassphrase, string? secretProvider, string secretProviderPattern)
+        => RunAgentAsync(new CommandLineArguments(
             AgentRegistrationUrl: string.IsNullOrWhiteSpace(agentRegistrationUrl)
-                ? RegisterForRemote.DefaultRegisterationUrl
+                ? GetDefaultRegistrationUrl()
                 : agentRegistrationUrl,
             AgentSettingsFile: agentSettingsFile,
             AgentSettingsFilePassphrase: agentSettingsFilePassphrase,
             AgentRegisterOnly: true,
-            WebserviceListenInterface: "loopback",
+            WebserviceInterface: "loopback",
             WebservicePort: "8210",
             WebservicePassword: null!,
             SettingsEncryptionKey: null,
             WindowsEventLog: "",
             DisableDbEncryption: false,
+            DisableDefaultSecretProvider: false,
             WebserviceResetJwtConfig: false,
             WebserviceAllowedHostnames: "",
             WebserviceApiOnly: true,
@@ -211,7 +300,8 @@ public static class Program
             KeepWebservicePassword: false,
             SecretProvider: secretProvider,
             SecretProviderCache: SecretProviderHelper.CachingLevel.None,
-            SecretProviderPattern: secretProviderPattern
+            SecretProviderPattern: secretProviderPattern,
+            AllowInsecureDatafolder: false
         ));
 
     /// <summary>
@@ -219,7 +309,7 @@ public static class Program
     /// </summary>
     /// <param name="agentConfig">The configuration from the commandline</param>
     /// <returns>The exit code</returns>
-    private static async Task<int> RunAgent(CommandLineArguments agentConfig)
+    private static async Task<int> RunAgentAsync(CommandLineArguments agentConfig)
     {
         // Read the environment variable for the encryption key
         if (string.IsNullOrWhiteSpace(agentConfig.SettingsEncryptionKey))
@@ -274,6 +364,7 @@ public static class Program
             WebserverCore.Middlewares.PreSharedKeyFilter.PreSharedKey = RandomNumberGenerator.GetHexString(128);
 
         using var cts = new CancellationTokenSource();
+        s_shutdownToken = cts.Token;
 
         var target = new ControllerMultiLogTarget(new ConsoleLogDestination(), LogMessageType.Information, null, null);
         using (Log.StartScope(target))
@@ -293,7 +384,7 @@ public static class Program
 
             Log.WriteMessage(LogMessageType.Information, LogTag, "AgentStarting", "Starting agent");
 
-            var settings = await Register(agentConfig.AgentRegistrationUrl, agentConfig.AgentSettingsFile.FullName, agentConfig.AgentSettingsFilePassphrase, cts.Token);
+            var settings = await RegisterAsync(agentConfig.AgentRegistrationUrl, agentConfig.AgentSettingsFile.FullName, agentConfig.AgentSettingsFilePassphrase, cts.Token);
 
             if (agentConfig.AgentRegisterOnly)
             {
@@ -302,17 +393,19 @@ public static class Program
             }
 
             var t = await Task.WhenAny(
-                Task.Run(() => StartLocalServer(agentConfig, applicationSettings, settings, cts.Token)),
-                KeepRemoteConnection.Start(
+                Task.Run(() => StartLocalServerAsync(agentConfig, applicationSettings, settings, cts.Token)),
+                KeepRemoteConnection.StartAsync(
                     settings.ServerUrl,
                     settings.JWT,
                     settings.CertificateUrl,
                     settings.ServerCertificates,
+                    refreshSettingsBy: null,
+                    forceConnect: true,
                     cts.Token,
-                    OnConnect,
-                    m => ReKey(applicationSettings, m, agentConfig),
-                    OnControl,
-                    OnMessage
+                    OnConnectAsync,
+                    m => ReKeyAsync(applicationSettings, m, agentConfig),
+                    OnControlAsync,
+                    OnMessageAsync
                 )
             );
 
@@ -322,17 +415,69 @@ public static class Program
         }
     }
 
-    private static Task<Dictionary<string, string?>> OnConnect(Dictionary<string, string?> metadata)
-        => Server.Program.DuplicatiWebserver.Provider.GetRequiredService<IRemoteControllerHandler>().OnConnect(metadata);
+    private static async Task<Duplicati.WebserverCore.DuplicatiWebserver?> WaitForServerAsync()
+    {
+        var cancellationToken = s_shutdownToken;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var server = Server.Program.DuplicatiWebserver;
+            if (server != null
+                && Server.Program.ServerStartedEvent.WaitOne(0, false)
+                && !server.TerminationTask.IsCompleted)
+            {
+                return server;
+            }
 
-    private static Task OnControl(KeepRemoteConnection.ControlMessage message)
-        => Server.Program.DuplicatiWebserver.Provider.GetRequiredService<IRemoteControllerHandler>().OnControl(message);
+            try
+            {
+                await Task.Delay(500, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
 
-    private static Task OnMessage(KeepRemoteConnection.CommandMessage message)
-        => Server.Program.DuplicatiWebserver.Provider.GetRequiredService<IRemoteControllerHandler>().OnMessage(message);
+        return null;
+    }
 
+    private static async Task<Dictionary<string, string?>> OnConnectAsync(Dictionary<string, string?> metadata)
+    {
+        var server = await WaitForServerAsync();
+        if (server == null)
+        {
+            Log.WriteMessage(LogMessageType.Warning, LogTag, "RemoteControlNoServer", null, "Local webserver not available, returning empty response to OnConnect");
+            return new Dictionary<string, string?>();
+        }
 
-    private static Task ReKey(IApplicationSettings applicationSettings, ClaimedClientData keydata, CommandLineArguments agentConfig)
+        return await server.Provider.GetRequiredService<IRemoteControllerHandler>().OnConnectAsync(metadata);
+    }
+
+    private static async Task OnControlAsync(KeepRemoteConnection.ControlMessage message)
+    {
+        var server = await WaitForServerAsync();
+        if (server == null)
+        {
+            Log.WriteMessage(LogMessageType.Warning, LogTag, "RemoteControlNoServer", null, "Local webserver not available, dropping control message");
+            return;
+        }
+
+        await server.Provider.GetRequiredService<IRemoteControllerHandler>().OnControlAsync(message);
+    }
+
+    private static async Task OnMessageAsync(KeepRemoteConnection.CommandMessage message)
+    {
+        var server = await WaitForServerAsync();
+        if (server == null)
+        {
+            Log.WriteMessage(LogMessageType.Warning, LogTag, "RemoteControlNoServer", null, "Local webserver not available, dropping command message");
+            return;
+        }
+
+        await server.Provider.GetRequiredService<IRemoteControllerHandler>().OnMessageAsync(message);
+    }
+
+    private static Task ReKeyAsync(IApplicationSettings applicationSettings, ClaimedClientData keydata, CommandLineArguments agentConfig)
     {
         // ReKey is handled here because we store the config outside of the database
         Log.WriteMessage(LogMessageType.Verbose, LogTag, "ReKey", "Rekeying the settings");
@@ -365,7 +510,7 @@ public static class Program
     /// <param name="args">The commandline arguments passed to the server</param>
     /// <param name="cancellationToken">The cancellation token to use for the process</param>
     /// <returns>An awaitable task</returns>
-    private static async Task RunServer(IApplicationSettings applicationSettings, string[] args, CancellationToken cancellationToken)
+    private static async Task RunServerAsync(IApplicationSettings applicationSettings, string[] args, CancellationToken cancellationToken)
     {
         cancellationToken.Register(() =>
         {
@@ -404,15 +549,15 @@ public static class Program
     /// <param name="settingsPasshrase">The passphrase for the settings file</param>
     /// <param name="cancellationToken">The cancellation token to use for the process</param>
     /// <returns>The settings for the machine</returns>
-    private static async Task<Settings> Register(string registrationUrl, string settingsFile, string? settingsPasshrase, CancellationToken cancellationToken)
+    private static async Task<Settings> RegisterAsync(string registrationUrl, string settingsFile, string? settingsPasshrase, CancellationToken cancellationToken)
     {
         var settings = Settings.Load(settingsFile, settingsPasshrase);
         if (string.IsNullOrWhiteSpace(settings.JWT))
         {
             Log.WriteMessage(LogMessageType.Information, LogTag, "ClientNoJWT", "No JWT found in settings, starting in registration mode");
-            using (var registration = new RegisterForRemote(registrationUrl, null, cancellationToken))
+            using (var registration = new RegisterForRemote(registrationUrl, null, null, cancellationToken))
             {
-                var registerClientData = await registration.Register();
+                var registerClientData = await registration.RegisterAsync();
                 if (registerClientData.RegistrationData != null)
                 {
                     Log.WriteMessage(LogMessageType.Information, LogTag, "ClientRegistered", $"Machine registered, claim it by visiting: {registerClientData.RegistrationData.ClaimLink}");
@@ -426,7 +571,7 @@ public static class Program
                         Log.WriteMessage(LogMessageType.Warning, LogTag, "ClientClaimLink", ex, "Failed to open the claim link in system browser");
                     }
                 }
-                var claimedClientData = await registration.Claim();
+                var claimedClientData = await registration.ClaimAsync();
 
                 Log.WriteMessage(LogMessageType.Information, LogTag, "ClientClaimed", "Machine claimed, saving JWT");
                 settings = settings with
@@ -439,6 +584,10 @@ public static class Program
                 };
 
                 settings.Save();
+
+                // If settings are present in the claim data, apply them via the control handler
+                if (claimedClientData.Settings != null && claimedClientData.Settings.Count > 0)
+                    await OnControlAsync(KeepRemoteConnection.ControlMessage.CreateSettingsControlMessage(claimedClientData.Settings));
             }
         }
 
@@ -453,7 +602,7 @@ public static class Program
     /// <param name="settings">The settings for the agent</param>
     /// <param name="cancellationToken">The cancellation token that stops the server</param>
     /// <returns>An awaitable task</returns>
-    private static async Task StartLocalServer(CommandLineArguments agentConfig, IApplicationSettings applicationSettings, Settings settings, CancellationToken cancellationToken)
+    private static async Task StartLocalServerAsync(CommandLineArguments agentConfig, IApplicationSettings applicationSettings, Settings settings, CancellationToken cancellationToken)
     {
         // TODO: Look into pipes for Kestrel to prevent network access
 
@@ -482,7 +631,7 @@ public static class Program
         // Lock down the instance, reset tokens and password,
         // and forward relevant settings from agent to the webserver
         var args = new[] {
-            EncodeOption("--webservice-listen-interface", agentConfig.WebserviceListenInterface),
+            EncodeOption("--webservice-interface", agentConfig.WebserviceInterface),
             EncodeOption("--webservice-password", agentConfig.WebservicePassword),
             EncodeOption("--webservice-port", agentConfig.WebservicePort),
             EncodeOption("--webservice-reset-jwt-config", agentConfig.WebserviceResetJwtConfig.ToString()),
@@ -490,8 +639,10 @@ public static class Program
             EncodeOption("--webservice-api-only", agentConfig.WebserviceApiOnly.ToString()),
             EncodeOption("--webservice-disable-signin-tokens", agentConfig.WebserviceDisableSigninTokens.ToString()),
             EncodeOption("--disable-db-encryption", agentConfig.DisableDbEncryption.ToString()),
+            EncodeOption("--disable-default-secret-provider", agentConfig.DisableDefaultSecretProvider.ToString()),
             EncodeOption("--settings-encryption-key", settingsEncryptionKey),
-            EncodeOption("--webservice-disable-api-extensions", string.Join(",", disabledExtensions))
+            EncodeOption("--webservice-disable-api-extensions", string.Join(",", disabledExtensions)),
+            EncodeOption($"--{DataFolderManager.ALLOW_INSECURE_DATAFOLDER_OPTION}", agentConfig.AllowInsecureDatafolder.ToString())
             }
             .WhereNotNullOrWhiteSpace()
             .ToArray();
@@ -500,7 +651,7 @@ public static class Program
         applicationSettings.Origin = "Agent";
 
         // Start the server
-        await RunServer(applicationSettings, args, cancellationToken);
+        await RunServerAsync(applicationSettings, args, cancellationToken);
     }
 }
 

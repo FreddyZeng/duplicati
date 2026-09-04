@@ -1,31 +1,32 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using Duplicati.Library.Common;
 
 namespace Duplicati.Library.Modules.Builtin
 {
+    /// <summary>
+    /// Module for handling console-based password input.
+    /// </summary>
     public class ConsolePasswordInput : Duplicati.Library.Interface.IGenericModule
     {
         /// <summary>
@@ -41,15 +42,34 @@ namespace Duplicati.Library.Modules.Builtin
 
         #region IGenericModule Members
 
+        /// <summary>
+        /// Gets the key identifier for this module.
+        /// </summary>
         public string Key { get { return "console-password-input"; } }
+        /// <summary>
+        /// Gets the display name for this module.
+        /// </summary>
         public string DisplayName { get { return Strings.ConsolePasswordInput.Displayname; } }
+        /// <summary>
+        /// Gets the description of this module.
+        /// </summary>
         public string Description { get { return Strings.ConsolePasswordInput.Description; } }
+        /// <summary>
+        /// Gets whether this module should be loaded by default.
+        /// </summary>
         public bool LoadAsDefault { get { return true; } }
-        public IList<Duplicati.Library.Interface.ICommandLineArgument> SupportedCommands
-            => new Duplicati.Library.Interface.ICommandLineArgument[] {
-                    new Duplicati.Library.Interface.CommandLineArgument(FORCE_PASSPHRASE_FROM_STDIN_OPTION, Interface.CommandLineArgument.ArgumentType.Boolean, Strings.ConsolePasswordInput.ForcepassphrasefromstdinShort, Strings.ConsolePasswordInput.ForcepassphrasefromstdinLong)
-                };
+        /// <summary>
+        /// Gets the list of supported command line arguments.
+        /// </summary>
+        public IList<Interface.ICommandLineArgument> SupportedCommands
+            => [
+                new Interface.CommandLineArgument(FORCE_PASSPHRASE_FROM_STDIN_OPTION, Interface.CommandLineArgument.ArgumentType.Boolean, Strings.ConsolePasswordInput.ForcepassphrasefromstdinShort, Strings.ConsolePasswordInput.ForcepassphrasefromstdinLong)
+            ];
 
+        /// <summary>
+        /// Configures the module with the provided command line options.
+        /// </summary>
+        /// <param name="commandlineOptions">The command line options dictionary.</param>
         public void Configure(IDictionary<string, string> commandlineOptions)
         {
             //Ensure the setup is valid, could throw an exception
@@ -64,9 +84,6 @@ namespace Duplicati.Library.Modules.Builtin
             //See if a password is already present or encryption is disabled
             if (!commandlineOptions.ContainsKey("passphrase") && !Duplicati.Library.Utility.Utility.ParseBoolOption(commandlineOptions.AsReadOnly(), "no-encryption"))
             {
-                // Print a banner
-                Console.Write("\n" + Strings.ConsolePasswordInput.EnterPassphrasePrompt + ": ");
-
                 // Check if we need confirmation
                 var confirm = string.Equals(commandlineOptions["main-action"], "backup", StringComparison.OrdinalIgnoreCase);
 
@@ -96,7 +113,11 @@ namespace Duplicati.Library.Modules.Builtin
 
         #endregion
 
-
+        /// <summary>
+        /// Reads the passphrase from standard input.
+        /// </summary>
+        /// <param name="confirm">Whether to confirm the passphrase.</param>
+        /// <returns>The passphrase.</returns>
         private static string ReadPassphraseFromStdin(bool confirm)
         {
             var passphrase = Console.ReadLine();
@@ -116,62 +137,28 @@ namespace Duplicati.Library.Modules.Builtin
         }
 
         /// <summary>
-        /// Reads a passphrase from the console, masking the input
+        /// Reads the passphrase from the console.
         /// </summary>
-        /// <returns>The entered passphrase</returns>
-        private static string ReadPassphraseLine()
-        {
-            var passphrase = new StringBuilder();
-            while (true)
-            {
-                var k = Console.ReadKey(true);
-                if (k.Key == ConsoleKey.Enter)
-                    return passphrase.ToString();
-
-                if (k.Key == ConsoleKey.Escape)
-                    throw new Interface.CancelException("");
-
-                if (k.Key == ConsoleKey.Backspace)
-                {
-                    if (passphrase.Length > 0)
-                    {
-                        passphrase.Length -= 1;
-
-                        // Move the cursor back, overwrite the '*' with space, and move back again
-                        Console.Write("\b \b");
-                    }
-
-                    continue;
-                }
-
-                if (k.KeyChar != '\0' && !char.IsControl(k.KeyChar))
-                    passphrase.Append(k.KeyChar);
-
-                // Provide feedback to the user
-                Console.Write("*");
-            }
-        }
-
+        /// <param name="confirm">Whether to confirm the passphrase.</param>
+        /// <returns>The passphrase.</returns>
         private static string ReadPassphraseFromConsole(bool confirm)
         {
-            var passphrase = ReadPassphraseLine();
-            Console.WriteLine();
+            // First entry (includes prompt and masking)
+            var passphrase = Utility.Utility.ReadSecretFromConsole("\n" + Strings.ConsolePasswordInput.EnterPassphrasePrompt + ": ");
 
             if (confirm)
             {
-                Console.Write(Strings.ConsolePasswordInput.ConfirmPassphrasePrompt + ": ");
+                // Confirmation entry
+                var password2 = Utility.Utility.ReadSecretFromConsole(Strings.ConsolePasswordInput.ConfirmPassphrasePrompt + ": ");
 
-                var password2 = ReadPassphraseLine();
-                Console.WriteLine();
-
-                if (passphrase.ToString() != password2.ToString())
+                if (!string.Equals(passphrase, password2, StringComparison.Ordinal))
                     throw new Interface.UserInformationException(Strings.ConsolePasswordInput.PassphraseMismatchError, "PassphraseMismatch");
             }
 
-            if (string.IsNullOrWhiteSpace(passphrase.ToString()))
+            if (string.IsNullOrWhiteSpace(passphrase))
                 throw new Interface.UserInformationException(Strings.ConsolePasswordInput.EmptyPassphraseError, "EmptyPassphrase");
 
-            return passphrase.ToString();
+            return passphrase;
         }
     }
 }

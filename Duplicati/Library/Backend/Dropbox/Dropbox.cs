@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -24,11 +24,13 @@ using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
 using System.Runtime.CompilerServices;
 
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
+
 namespace Duplicati.Library.Backend
 {
     // ReSharper disable once UnusedMember.Global
     // This class is instantiated dynamically in the BackendLoader.
-    public class Dropbox : IBackend, IStreamingBackend
+    public class Dropbox : IBackend, IStreamingBackend, IRenameEnabledBackend, IFolderEnabledBackend
     {
         private static readonly string TOKEN_URL = AuthIdOptionsHelper.GetOAuthLoginUrl("dropbox", null);
         private readonly string m_path;
@@ -45,10 +47,25 @@ namespace Duplicati.Library.Backend
         // ReSharper disable once UnusedMember.Global
         // This constructor is needed by the BackendLoader.
         public Dropbox(string url, Dictionary<string, string?> options)
+            : this(url, options, null)
         {
-            var uri = new Utility.Uri(url);
+        }
 
-            m_path = Utility.Uri.UrlDecode(uri.HostAndPath);
+        /// <summary>
+        /// Creates a backend that uses the supplied <see cref="HttpClient"/>,
+        /// so the Dropbox API responses can be stubbed in tests
+        /// </summary>
+        /// <param name="url">The backend url</param>
+        /// <param name="options">The options to use</param>
+        /// <param name="httpClient">The client to use, or null to create one</param>
+        internal Dropbox(string url, Dictionary<string, string?> options, HttpClient? httpClient)
+        {
+            var uri = new Utility.RelaxedUri(url);
+
+            // RelaxedUri decodes both the host and the path as it parses, so HostAndPath is
+            // already decoded and decoding it again loses whatever was spelled with a percent
+            // sign: a folder named "a%20b", written as "a%2520b", arrived here as "a b".
+            m_path = uri.HostAndPath;
             if (m_path.Length != 0 && !m_path.StartsWith("/", StringComparison.Ordinal))
                 m_path = "/" + m_path;
 
@@ -58,7 +75,7 @@ namespace Duplicati.Library.Backend
             var authId = AuthIdOptionsHelper.Parse(options);
             authId.RequireCredentials(TOKEN_URL);
 
-            dbx = new DropboxHelper(authId, TimeoutOptionsHelper.Parse(options));
+            dbx = new DropboxHelper(authId, TimeoutOptionsHelper.Parse(options), httpClient);
         }
 
         /// <inheritdoc/>
@@ -78,7 +95,11 @@ namespace Duplicati.Library.Backend
 
         private IFileEntry ParseEntry(MetaData md)
         {
-            var ife = new FileEntry(md.name);
+            var name = md.name;
+            if (!md.IsFile && !string.IsNullOrEmpty(name) && !name.EndsWith("/"))
+                name += "/";
+
+            var ife = new FileEntry(name);
             if (md.IsFile)
             {
                 ife.IsFolder = false;
@@ -118,9 +139,31 @@ namespace Duplicati.Library.Backend
             }
         }
 
-        public async IAsyncEnumerable<IFileEntry> ListAsync([EnumeratorCancellation] CancellationToken cancelToken)
+        public IAsyncEnumerable<IFileEntry> ListAsync(CancellationToken cancelToken)
+            => ListAsync(null, cancelToken);
+
+
+        private string GetAbsolutePath(string? path)
         {
-            var lfr = await HandleListExceptions(() => dbx.ListFiles(m_path, cancelToken)).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(path))
+                return m_path;
+
+            var p = path.Replace(Path.DirectorySeparatorChar, '/').Trim('/');
+            if (string.IsNullOrWhiteSpace(m_path) || m_path == "/")
+                p = "/" + p;
+            else
+                p = Util.AppendDirSeparator(m_path, "/") + p;
+
+            if (p == "/")
+                p = "";
+
+            return p;
+        }
+
+        public async IAsyncEnumerable<IFileEntry> ListAsync(string? path, [EnumeratorCancellation] CancellationToken cancelToken)
+        {
+            var fullPath = GetAbsolutePath(path);
+            var lfr = await HandleListExceptions(() => dbx.ListFiles(fullPath, cancelToken)).ConfigureAwait(false);
 
             foreach (var md in lfr.entries ?? [])
                 yield return ParseEntry(md);
@@ -130,6 +173,25 @@ namespace Duplicati.Library.Backend
                 lfr = await HandleListExceptions(() => dbx.ListFilesContinue(lfr.cursor!, cancelToken)).ConfigureAwait(false);
                 foreach (var md in lfr.entries ?? [])
                     yield return ParseEntry(md);
+            }
+        }
+
+        public async Task<IFileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken)
+        {
+            var fullPath = GetAbsolutePath(path);
+            if (string.IsNullOrEmpty(fullPath))
+                return new FileEntry(string.Empty) { IsFolder = true };
+
+            try
+            {
+                var md = await dbx.GetMetadataAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                if (md == null)
+                    return null;
+                return ParseEntry(md);
+            }
+            catch (Exception ex) when (ex is FolderMissingException || ex is DropboxException)
+            {
+                return null;
             }
         }
 
@@ -169,8 +231,8 @@ namespace Duplicati.Library.Backend
 
         public Task<string[]> GetDNSNamesAsync(CancellationToken cancelToken) => Task.FromResult(WebApi.Dropbox.Hosts());
 
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         public async Task CreateFolderAsync(CancellationToken cancelToken)
         {
@@ -207,6 +269,21 @@ namespace Duplicati.Library.Backend
             {
                 string path = string.Format("{0}/{1}", m_path, remotename);
                 await dbx.DownloadFileAsync(path, stream, cancelToken).ConfigureAwait(false);
+            }
+            catch (DropboxException de)
+            {
+                ThrowFolderMissingException(de);
+                throw;
+            }
+        }
+
+        public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            try
+            {
+                string oldPath = $"{m_path}/{oldname}";
+                string newPath = $"{m_path}/{newname}";
+                await dbx.MoveAsync(oldPath, newPath, cancellationToken).ConfigureAwait(false);
             }
             catch (DropboxException de)
             {

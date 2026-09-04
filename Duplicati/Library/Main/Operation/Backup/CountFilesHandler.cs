@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -30,7 +30,7 @@ namespace Duplicati.Library.Main.Operation.Backup
 {
     internal static class CountFilesHandler
     {
-        public static async Task Run(
+        public static async Task RunAsync(
             ISourceProvider sources,
             UsnJournalService journalService,
             BackupResults result,
@@ -45,9 +45,9 @@ namespace Duplicati.Library.Main.Operation.Backup
             using (Logging.Log.StartIsolatingScope(true))
             {
                 Channels channels = new();
-                var enumeratorTask = FileEnumerationProcess.Run(
+                var enumeratorTask = FileEnumerationProcess.RunAsync(
                     channels, sources, journalService, options.FileAttributeFilter, filter,
-                    options.SymlinkPolicy, options.HardlinkPolicy,
+                    options.SymlinkPolicy, options.HardlinkPolicy, options.DisableBackupExclusionXattr,
                     options.ExcludeEmptyFolders, options.IgnoreFilenames,
                     blacklistPaths, options.ChangedFilelist, taskreader, null, token);
 
@@ -63,7 +63,7 @@ namespace Duplicati.Library.Main.Operation.Backup
 
                     try
                     {
-                        while (await taskreader.ProgressRendevouz() && !token.IsCancellationRequested)
+                        while (await taskreader.ProgressRendevouzAsync() && !token.IsCancellationRequested)
                         {
                             var entry = await self.Input.ReadAsync();
                             if (entry.IsFolder)
@@ -73,7 +73,9 @@ namespace Duplicati.Library.Main.Operation.Backup
 
                             try
                             {
-                                size += entry.Size;
+                                var entrySize = entry.Size;
+                                if (entrySize >= 0)
+                                    size += entrySize;
                             }
                             catch
                             {

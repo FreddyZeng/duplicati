@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -32,10 +32,10 @@ internal static class UploadRealFilelist
     /// </summary>
     private static readonly string LOGTAG = Logging.Log.LogTagFromType(typeof(UploadRealFilelist));
 
-    public static async Task Run(BackupResults result, BackupDatabase db, IBackendManager backendManager, Options options, FilesetVolumeWriter filesetvolume, long filesetid, Common.ITaskReader taskreader, bool lastWasPartial)
+    public static async Task<bool> RunAsync(BackupResults result, BackupDatabase db, IBackendManager backendManager, Options options, FilesetVolumeWriter filesetvolume, long filesetid, Common.ITaskReader taskreader, bool lastWasPartial)
     {
         // We ignore the stop signal, but not the pause and terminate
-        await taskreader.ProgressRendevouz().ConfigureAwait(false);
+        await taskreader.ProgressRendevouzAsync().ConfigureAwait(false);
 
         // Update the reported source and backend changes
         using (new Logging.Timer(LOGTAG, "UpdateChangeStatistics", "UpdateChangeStatistics"))
@@ -46,8 +46,10 @@ internal static class UploadRealFilelist
             result.AddedFolders + result.ModifiedFolders + result.DeletedFolders +
             result.AddedSymlinks + result.ModifiedSymlinks + result.DeletedSymlinks;
 
+        var doUpload = options.UploadUnchangedBackups || changeCount > 0 || lastWasPartial;
+
         //Changes in the filelist triggers a filelist upload
-        if (options.UploadUnchangedBackups || changeCount > 0 || lastWasPartial)
+        if (doUpload)
         {
             using (new Logging.Timer(LOGTAG, "UploadNewFileset", "Uploading a new fileset"))
             {
@@ -56,18 +58,32 @@ internal static class UploadRealFilelist
                         filesetvolume.AddControlFile(p, options.GetCompressionHintFromFilename(p));
 
                 // We ignore the stop signal, but not the pause and terminate
-                await taskreader.ProgressRendevouz().ConfigureAwait(false);
+                await taskreader.ProgressRendevouzAsync().ConfigureAwait(false);
 
                 await db.WriteFilesetAsync(filesetvolume, filesetid, taskreader.ProgressToken).ConfigureAwait(false);
+
+                // Best effort: store the current set of labels with the backup,
+                // so they can be recovered if the local database is recreated
+                var labels = await db.GetFilesetLabelsAsync(taskreader.ProgressToken).ConfigureAwait(false);
+                if (labels.Length > 0)
+                    filesetvolume.AddLabelsFile(labels);
+
                 filesetvolume.Close();
 
                 // We ignore the stop signal, but not the pause and terminate
-                await taskreader.ProgressRendevouz().ConfigureAwait(false);
+                await taskreader.ProgressRendevouzAsync().ConfigureAwait(false);
 
                 await db.UpdateRemoteVolumeAsync(filesetvolume.RemoteFilename, RemoteVolumeState.Uploading, -1, null, false, default, null, taskreader.ProgressToken).ConfigureAwait(false);
-                await db.CommitTransactionAsync("CommitUpdateRemoteVolume", true, taskreader.ProgressToken).ConfigureAwait(false);
 
-                await backendManager.PutAsync(filesetvolume, null, null, false, () => db.FlushBackendMessagesAndCommitAsync(backendManager, taskreader.ProgressToken), taskreader.ProgressToken).ConfigureAwait(false);
+                if (options.Dryrun)
+                {
+                    Logging.Log.WriteDryrunMessage(LOGTAG, "WouldUploadFile", "Would upload file: {0}", filesetvolume.RemoteFilename);
+                }
+                else
+                {
+                    await db.CommitTransactionAsync("CommitUpdateRemoteVolume", true, taskreader.ProgressToken).ConfigureAwait(false);
+                    await backendManager.PutAsync(filesetvolume, null, null, false, () => db.FlushBackendMessagesAndCommitAsync(backendManager, taskreader.ProgressToken), taskreader.ProgressToken).ConfigureAwait(false);
+                }
             }
         }
         else
@@ -83,6 +99,7 @@ internal static class UploadRealFilelist
         }
 
         await db.CommitTransactionAsync("CommitUpdateRemoteVolume", true, taskreader.ProgressToken).ConfigureAwait(false);
+        return doUpload;
     }
 }
 

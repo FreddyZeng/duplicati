@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -48,12 +48,12 @@ namespace Duplicati.Library.Main.Operation
         {
             var stopToken = m_result.TaskControl.ProgressToken;
 
-            using (var provider = await BackupHandler.GetSourceProvider(sources, m_options, stopToken).ConfigureAwait(false))
+            using (var provider = await Common.SourceProviderFactory.GetSourceProviderAsync(sources, m_options, stopToken).ConfigureAwait(false))
             {
                 Backup.Channels channels = new();
-                var source = Backup.FileEnumerationProcess.Run(channels, provider, null,
+                var source = Backup.FileEnumerationProcess.RunAsync(channels, provider, null,
                     m_options.FileAttributeFilter, filter, m_options.SymlinkPolicy,
-                    m_options.HardlinkPolicy, m_options.ExcludeEmptyFolders, m_options.IgnoreFilenames,
+                    m_options.HardlinkPolicy, m_options.DisableBackupExclusionXattr, m_options.ExcludeEmptyFolders, m_options.IgnoreFilenames,
                     BackupHandler.GetBlacklistedPaths(m_options), null, m_result.TaskControl, null, stopToken);
 
                 var sink = CoCoL.AutomationExtensions.RunTask(new
@@ -62,7 +62,7 @@ namespace Duplicati.Library.Main.Operation
                 },
                     async self =>
                     {
-                        while (await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                        while (await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                         {
                             var entry = await self.source.ReadAsync();
                             var fa = entry.IsFolder
@@ -86,7 +86,7 @@ namespace Duplicati.Library.Main.Operation
                             // Go for the symlink target, as we know we follow symlinks
                             if (!string.IsNullOrWhiteSpace(symlinkTarget))
                             {
-                                var targetEntry = await provider.GetEntry(symlinkTarget, false, stopToken).ConfigureAwait(false);
+                                var targetEntry = await provider.GetEntryAsync(symlinkTarget, false, stopToken).ConfigureAwait(false);
                                 fa = FileAttributes.Normal;
 
                                 try { fa = targetEntry!.Attributes; }
@@ -94,7 +94,7 @@ namespace Duplicati.Library.Main.Operation
 
                                 // If we guessed wrong and the symlink target is a folder, we need to fetch it with the correct flag
                                 if (fa.HasFlag(FileAttributes.Directory))
-                                    targetEntry = await provider.GetEntry(symlinkTarget, true, stopToken).ConfigureAwait(false);
+                                    targetEntry = await provider.GetEntryAsync(symlinkTarget, true, stopToken).ConfigureAwait(false);
 
                                 // No such target
                                 if (targetEntry == null)

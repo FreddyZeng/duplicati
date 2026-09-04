@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -19,6 +19,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
 // DEALINGS IN THE SOFTWARE.
 
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Duplicati.Library.Logging;
@@ -60,6 +61,20 @@ public class RegisterForRemote : IDisposable
             var envvalue = Environment.GetEnvironmentVariable("DUPLICATI_REMOTE_CONTROL_URL");
             return string.IsNullOrWhiteSpace(envvalue)
                 ? "https://api.duplicati.com/remotecontrol/register"
+                : envvalue;
+        }
+    }
+
+    /// <summary>
+    /// The default URL to register the machine with
+    /// </summary>
+    public static string DefaultDashboardUrl
+    {
+        get
+        {
+            var envvalue = Environment.GetEnvironmentVariable("DUPLICATI_DASHBOARD_URL");
+            return string.IsNullOrWhiteSpace(envvalue)
+                ? "https://app.duplicati.com/app/machines"
                 : envvalue;
         }
     }
@@ -118,6 +133,7 @@ public class RegisterForRemote : IDisposable
     /// <param name="CertificateUrl">The URL for getting new server certificates</param>
     /// <param name="ServerCertificates">The certificates for the remote server</param>
     /// <param name="LocalEncryptionKey">The encryption key for the local settings</param>
+    /// <param name="Settings">The settings for the machine</param>
     private sealed record EnvelopedClaimedClientData(
         bool Success,
         string StatusMessage,
@@ -125,7 +141,8 @@ public class RegisterForRemote : IDisposable
         string ServerUrl,
         string CertificateUrl,
         IEnumerable<MiniServerCertificate> ServerCertificates,
-        string? LocalEncryptionKey
+        string? LocalEncryptionKey,
+        Dictionary<string, string?>? Settings
     );
 
     /// <summary>
@@ -155,17 +172,24 @@ public class RegisterForRemote : IDisposable
     private ClaimedClientData? _claimedClientData;
 
     /// <summary>
+    /// The machine ID override to report, or null to use the machine default
+    /// </summary>
+    private readonly string? _machineId;
+
+    /// <summary>
     /// Creates a new instance of the registration process
     /// </summary>
     /// <param name="registrationUrl">The URL to register the machine with</param>
     /// <param name="httpClient">The HTTP client to use for requests</param>
+    /// <param name="machineId">An optional machine ID override; if null or empty the machine default is used</param>
     /// <param name="cancellationToken">The cancellation token to use for the process</param>
-    public RegisterForRemote(string registrationUrl, HttpClient? httpClient, CancellationToken cancellationToken)
+    public RegisterForRemote(string registrationUrl, HttpClient? httpClient, string? machineId, CancellationToken cancellationToken)
     {
         _state = States.NotStarted;
         _registrationUrl = registrationUrl;
         _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _httpClient = httpClient ?? HttpClientHelper.CreateClient();
+        _machineId = string.IsNullOrWhiteSpace(machineId) ? null : machineId;
         // Timeout for _httpClient will be kept at default 100s (Which is already a long one for registration)
     }
 
@@ -182,7 +206,7 @@ public class RegisterForRemote : IDisposable
     /// <returns>The data needed to claim the machine</returns>
     /// <exception cref="InvalidOperationException">Thrown if the class is not in the correct state</exception>
     /// <exception cref="Exception">Thrown if the machine could not be registered</exception>
-    public async Task<(RegisterClientData? RegistrationData, ClaimedClientData? ClaimedData)> Register(int? maxRetries = null, TimeSpan? retryInterval = null)
+    public async Task<(RegisterClientData? RegistrationData, ClaimedClientData? ClaimedData)> RegisterAsync(int? maxRetries = null, TimeSpan? retryInterval = null)
     {
         if (_state != States.NotStarted)
             throw new InvalidOperationException("Registration process has already started");
@@ -190,7 +214,7 @@ public class RegisterForRemote : IDisposable
         _state = States.Registering;
         try
         {
-            (_registerClientData, _claimedClientData) = await RetryHelper.Retry(() => RegisterClient(), maxRetries ?? ClientRegisterMaxRetries, retryInterval ?? ClientRegisterRetryInterval, _cancellationTokenSource.Token);
+            (_registerClientData, _claimedClientData) = await RetryHelper.Retry(() => RegisterClientAsync(), maxRetries ?? ClientRegisterMaxRetries, retryInterval ?? ClientRegisterRetryInterval, _cancellationTokenSource.Token);
         }
         catch (Exception ex)
         {
@@ -220,10 +244,10 @@ public class RegisterForRemote : IDisposable
         var basics = new Dictionary<string, string?>
         {
             { "instanceId", ClientInstanceId },
-            { "machineId", AutoUpdater.DataFolderManager.MachineID },
+            { "machineId", _machineId ?? AutoUpdater.DataFolderManager.GetMachineID() },
             { "machineName", AutoUpdater.DataFolderManager.MachineName },
-            { "installId", AutoUpdater.DataFolderManager.InstallID },
-            { "localTime", DateTimeOffset.Now.ToString("o") },
+            { "installId", AutoUpdater.DataFolderManager.GetInstallID() },
+            { "localTime", DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture) },
             { "version", AutoUpdater.UpdaterManager.SelfVersion?.Version },
             { "packageTypeId", AutoUpdater.UpdaterManager.PackageTypeId },
             { "operatingSystem", AutoUpdater.UpdaterManager.OperatingSystemName }
@@ -244,7 +268,7 @@ public class RegisterForRemote : IDisposable
     /// Registers the machine with the server
     /// </summary>
     /// <returns>The data needed to claim the machine</returns>
-    private async Task<(RegisterClientData?, ClaimedClientData?)> RegisterClient()
+    private async Task<(RegisterClientData?, ClaimedClientData?)> RegisterClientAsync()
     {
         var response = await _httpClient.PostAsync(_registrationUrl, CreateMachineData(), _cancellationTokenSource.Token);
 
@@ -256,11 +280,13 @@ public class RegisterForRemote : IDisposable
         var doc = JsonDocument.Parse(raw);
         if (doc.RootElement.TryGetProperty("jwt", out var _) && doc.RootElement.TryGetProperty("serverUrl", out var _))
         {
-            return JsonSerializer.Deserialize<ClaimedClientData>(raw, JsonOptions) switch
-            {
-                { } data => (null, data),
-                null => throw new Exception("Failed to read client claimed data")
-            };
+            var res = JsonSerializer.Deserialize<ClaimedClientData>(raw, JsonOptions)
+                ?? throw new Exception("Failed to read client claimed data");
+
+            if (string.IsNullOrWhiteSpace(res.JWT) || string.IsNullOrWhiteSpace(res.ServerUrl))
+                throw new Exception($"Failed to obtain registration data, status message: {res.StatusMessage}");
+
+            return (null, res);
         }
 
         if (doc.RootElement.TryGetProperty("claimLink", out var _) && doc.RootElement.TryGetProperty("statusLink", out var _))
@@ -281,7 +307,7 @@ public class RegisterForRemote : IDisposable
     /// <returns>The settings for the machine</returns>
     /// <exception cref="InvalidOperationException">Thrown if the class is not in the correct state</exception>
     /// <exception cref="Exception">Thrown if the machine could not be registered</exception>
-    public async Task<ClaimedClientData> Claim()
+    public async Task<ClaimedClientData> ClaimAsync()
     {
         if (_state == States.Claimed)
             return _claimedClientData ?? throw new InvalidOperationException("Claimed data is null");
@@ -293,7 +319,7 @@ public class RegisterForRemote : IDisposable
         _cancellationTokenSource.CancelAfter(TimeSpan.FromSeconds(Math.Min(3600, Math.Max(1, _registerClientData!.MaxLifetimeSeconds))));
         try
         {
-            _claimedClientData = await RetryHelper.Retry(() => CheckClientClaimed(), Math.Min(100, Math.Max(1, _registerClientData!.MaxRetries)), TimeSpan.FromSeconds(_registerClientData!.RetrySeconds), _cancellationTokenSource.Token);
+            _claimedClientData = await RetryHelper.Retry(() => CheckClientClaimedAsync(), Math.Min(100, Math.Max(1, _registerClientData!.MaxRetries)), TimeSpan.FromSeconds(_registerClientData!.RetrySeconds), _cancellationTokenSource.Token);
         }
         catch (Exception ex)
         {
@@ -312,7 +338,7 @@ public class RegisterForRemote : IDisposable
     /// </summary>
     /// <returns>The data for the claimed machine</returns>
     /// <exception cref="Exception">Thrown if the machine could not be claimed</exception>
-    private async Task<ClaimedClientData> CheckClientClaimed()
+    private async Task<ClaimedClientData> CheckClientClaimedAsync()
     {
         var response = await _httpClient.PostAsync(_registerClientData!.StatusLink, CreateMachineData(), _cancellationTokenSource.Token);
 
@@ -323,7 +349,14 @@ public class RegisterForRemote : IDisposable
         if (!result.Success)
             throw new Exception($"Failed to claim machine: {result.StatusMessage}");
 
-        return new ClaimedClientData(result.JWT, result.ServerUrl, result.CertificateUrl, result.ServerCertificates, result.LocalEncryptionKey);
+        return new ClaimedClientData(
+            result.JWT,
+            result.ServerUrl,
+            result.CertificateUrl,
+            result.ServerCertificates,
+            result.LocalEncryptionKey,
+            result.StatusMessage,
+            result.Settings);
     }
 
     /// </inheritdoc>

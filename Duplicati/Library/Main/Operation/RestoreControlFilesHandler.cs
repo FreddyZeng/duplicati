@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -21,7 +21,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Utility;
 
@@ -46,7 +45,7 @@ namespace Duplicati.Library.Main.Operation
                 Directory.CreateDirectory(m_options.Restorepath);
 
             using var tmpdb = new TempFile();
-            await using var db = await Database.LocalDatabase.CreateLocalDatabaseAsync(
+            await using var db = await Database.Local.LocalDatabase.CreateLocalDatabaseAsync(
                 File.Exists(m_options.Dbpath) ? m_options.Dbpath : (string)tmpdb, "RestoreControlFiles",
                 true,
                 null,
@@ -57,7 +56,7 @@ namespace Duplicati.Library.Main.Operation
 
             try
             {
-                var filteredList = ListFilesHandler.ParseAndFilterFilesets(await backendManager.ListAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false), m_options);
+                var filteredList = ListFilesHandler.ParseAndFilterFilesets(await backendManager.ListAsync(null, m_result.TaskControl.ProgressToken).ConfigureAwait(false), m_options);
                 if (filteredList.Count == 0)
                     throw new Exception("No filesets found on remote target");
 
@@ -66,7 +65,7 @@ namespace Duplicati.Library.Main.Operation
                 foreach (var fileversion in filteredList)
                     try
                     {
-                        if (!await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                        if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                         {
                             await backendManager.WaitForEmptyAsync(db, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
                             return;
@@ -74,12 +73,18 @@ namespace Duplicati.Library.Main.Operation
 
                         var file = fileversion.Value.File;
                         var entry = await db
-                            .GetRemoteVolume(file.Name, m_result.TaskControl.ProgressToken)
+                            .GetRemoteVolumeAsync(file.Name, m_result.TaskControl.ProgressToken)
                             .ConfigureAwait(false);
 
                         var res = new List<string>();
-                        using (var tmpfile = await backendManager.GetAsync(file.Name, entry.Hash, entry.Size < 0 ? file.Size : entry.Size, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
-                        using (var tmp = new Volumes.FilesetVolumeReader(RestoreHandler.GetCompressionModule(file.Name), tmpfile, m_options))
+
+                        // We do not want to match the manifest settings to the current settings,
+                        // as we only want to access the control files
+                        var readopts = new Options(m_options.RawOptions);
+                        readopts.RawOptions["dont-read-manifests"] = "true";
+
+                        using (var tmpfile = await backendManager.GetAsync(file.Name, entry.Hash, entry.Size < 0 ? file.Size : entry.Size, allowParityRepair: true, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                        using (var tmp = new Volumes.FilesetVolumeReader(RestoreHandler.GetCompressionModule(file.Name), tmpfile, readopts))
                             foreach (var cf in tmp.ControlFiles)
                                 if (FilterExpression.Matches(filter, cf.Key))
                                 {

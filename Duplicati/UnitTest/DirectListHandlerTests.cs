@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Main;
 using Duplicati.Library.Main.Database;
+using Duplicati.Library.Main.Database.Local;
 using Duplicati.Library.Utility;
 using NUnit.Framework;
 
@@ -15,7 +16,7 @@ namespace Duplicati.UnitTest
     public class DirectListHandlerTests : BasicSetupHelper
     {
         [Test]
-        public void ListFilesets()
+        public async Task ListFilesetsAsync()
         {
             var options = new Dictionary<string, string>(this.TestOptions)
             {
@@ -26,15 +27,16 @@ namespace Duplicati.UnitTest
             {
                 using (var c = new Controller("file://" + this.TARGETFOLDER, options, null))
                 {
-                    TestUtils.AssertResults(c.Backup(new[] { this.DATAFOLDER }));
-                    var sets = c.ListFilesets();
+                    // The source folder is intentionally empty, so the NoFilesInBackup warning is expected
+                    TestUtils.AssertResults(await c.BackupAsync(new[] { this.DATAFOLDER }), ignoredWarnings: ["NoFilesInBackup"]);
+                    var sets = await c.ListFilesetsAsync();
                     Assert.That(sets.Filesets.Count(), Is.EqualTo(i + 1));
                 }
             }
         }
 
         [Test]
-        public void ListFolderContents()
+        public async Task ListFolderContentsAsync()
         {
             var options = new Dictionary<string, string>(this.TestOptions)
             {
@@ -92,10 +94,10 @@ namespace Duplicati.UnitTest
                 foreach (var round in rounds)
                 {
                     createStructure(round);
-                    TestUtils.AssertResults(c.Backup(rootItems(round).Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
+                    TestUtils.AssertResults(await c.BackupAsync(rootItems(round).Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
                 }
 
-                var sets = c.ListFilesets();
+                var sets = await c.ListFilesetsAsync();
                 Assert.That(sets.Filesets.Count(), Is.EqualTo(rounds.Length));
             }
 
@@ -104,7 +106,7 @@ namespace Duplicati.UnitTest
             {
                 using (var c = new Controller("file://" + this.TARGETFOLDER, options.Expand(new { version = version }), null))
                 {
-                    var files = c.ListFolder([""], 0, 0);
+                    var files = await c.ListFolderAsync([""], 0, 0, false);
                     var roots = rootItems(round).Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray();
 
                     Assert.That(files.Entries.Items.Count(), Is.EqualTo(roots.Length));
@@ -116,7 +118,7 @@ namespace Duplicati.UnitTest
                     while (work.Count > 0)
                     {
                         var path = work.Dequeue();
-                        var files2 = c.ListFolder(new[] { Path.Combine(this.DATAFOLDER, path.Replace("/", Path.DirectorySeparatorChar.ToString())) }, 0, 0);
+                        var files2 = await c.ListFolderAsync(new[] { Path.Combine(this.DATAFOLDER, path.Replace("/", Path.DirectorySeparatorChar.ToString())) }, 0, 0, false);
                         var matches = round.Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString())))
                             .Where(x => x.StartsWith(path) && x.Length > path.Length && !x.Substring(path.Length, x.Length - path.Length - 1).Contains(Path.DirectorySeparatorChar))
                             .ToArray();
@@ -136,7 +138,7 @@ namespace Duplicati.UnitTest
         }
 
         [Test]
-        public void ListFileVersions_LifecycleTest()
+        public async Task ListFileVersions_LifecycleTestAsync()
         {
             var options = new Dictionary<string, string>(this.TestOptions)
             {
@@ -174,16 +176,16 @@ namespace Duplicati.UnitTest
             {
                 // Round 0 - initial
                 createStructure(rounds[0]);
-                TestUtils.AssertResults(c.Backup(rounds[0].Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
+                TestUtils.AssertResults(await c.BackupAsync(rounds[0].Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
 
                 // Round 1 - modify and create new file
                 modifyFile(modify, "modified-content");
                 createStructure(new[] { create });
                 File.Delete(Path.Combine(this.DATAFOLDER, delete.Replace("/", Path.DirectorySeparatorChar.ToString()))); // Delete file
-                TestUtils.AssertResults(c.Backup(rounds[1].Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
+                TestUtils.AssertResults(await c.BackupAsync(rounds[1].Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
 
                 // Round 2 - no changes
-                TestUtils.AssertResults(c.Backup(rounds[2].Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
+                TestUtils.AssertResults(await c.BackupAsync(rounds[2].Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
             }
 
             var pathsToCheck = new[]
@@ -196,7 +198,7 @@ namespace Duplicati.UnitTest
 
             using (var c = new Controller("file://" + this.TARGETFOLDER, options, null))
             {
-                var allVersions = c.ListFileVersions(pathsToCheck, 0, 0);
+                var allVersions = await c.ListFileVersionsAsync(pathsToCheck, 0, 0);
                 var grouped = allVersions.FileVersions.Items.GroupBy(x => x.Path);
 
                 foreach (var group in grouped)
@@ -219,7 +221,7 @@ namespace Duplicati.UnitTest
         }
 
         [Test]
-        public void SearchFilesTest()
+        public async Task SearchFilesTestAsync()
         {
             var options = new Dictionary<string, string>(this.TestOptions)
             {
@@ -256,66 +258,66 @@ namespace Duplicati.UnitTest
             using (var c = new Controller("file://" + this.TARGETFOLDER, options, null))
             {
                 createStructure(initial);
-                TestUtils.AssertResults(c.Backup(rootItems(initial).Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
+                TestUtils.AssertResults(await c.BackupAsync(rootItems(initial).Select(x => Path.Combine(this.DATAFOLDER, x.Replace("/", Path.DirectorySeparatorChar.ToString()))).ToArray()));
 
                 // Simple Search for 'file'
-                var search = c.SearchEntries(null, ParseFilters("+file"), 0, 0);
+                var search = await c.SearchEntriesAsync(null, ParseFilters("+file"), false, 0, 0, false, false);
                 Assert.That(search.FileVersions.Items.Count(), Is.EqualTo(3)); // file1.txt, file2.txt, file3.txt
 
                 // Simple Search for 'notes'
-                var searchNotes = c.SearchEntries(null, ParseFilters("+notes"), 0, 0);
+                var searchNotes = await c.SearchEntriesAsync(null, ParseFilters("+notes"), false, 0, 0, false, false);
                 Assert.That(searchNotes.FileVersions.Items.Count(), Is.EqualTo(1));
                 Assert.That(searchNotes.FileVersions.Items.First().Path.EndsWith("notes.txt"));
 
                 // Simple Search for NOT 'notes'
-                var searchNotNotes = c.SearchEntries(null, ParseFilters("-notes"), 0, 0);
+                var searchNotNotes = await c.SearchEntriesAsync(null, ParseFilters("-notes"), false, 0, 0, false, false);
                 Assert.That(searchNotNotes.FileVersions.Items.Count(), Is.EqualTo(5));
                 Assert.That(searchNotNotes.FileVersions.Items.All(x => !x.Path.Contains("notes")), Is.True);
 
                 // Simple Search for 'folder1' folder contents
-                var searchFolder = c.SearchEntries(null, ParseFilters("+folder1"), 0, 0);
+                var searchFolder = await c.SearchEntriesAsync(null, ParseFilters("+folder1"), false, 0, 0, false, false);
                 Assert.That(searchFolder.FileVersions.Items.All(x => x.Path.Contains("folder1")), Is.True);
 
                 // Simple Search with exact file name
-                var searchExact = c.SearchEntries(null, ParseFilters("+file1.txt"), 0, 0);
+                var searchExact = await c.SearchEntriesAsync(null, ParseFilters("+file1.txt"), false, 0, 0, false, false);
                 Assert.That(searchExact.FileVersions.Items.Count(), Is.EqualTo(1));
                 Assert.That(searchExact.FileVersions.Items.First().Path.EndsWith("file1.txt"));
 
                 // Mixed include and exclude
-                var searchMixed = c.SearchEntries(null, ParseFilters("+file;-file2"), 0, 0);
+                var searchMixed = await c.SearchEntriesAsync(null, ParseFilters("+file;-file2"), false, 0, 0, false, false);
                 // Include has precedence over exclude, but we include non-matches as well
                 Assert.That(searchMixed.FileVersions.Items.Count(), Is.EqualTo(6));
                 Assert.That(searchMixed.FileVersions.Items.Any(x => x.Path.Contains("file2")), Is.True);
 
                 // Mixed include and exclude
-                var searchMixed2 = c.SearchEntries(null, ParseFilters("+file2;-file"), 0, 0);
+                var searchMixed2 = await c.SearchEntriesAsync(null, ParseFilters("+file2;-file"), false, 0, 0, false, false);
                 // Include has precedence over exclude, but we include non-matches as well
                 Assert.That(searchMixed2.FileVersions.Items.Count(), Is.EqualTo(4));
                 Assert.That(searchMixed2.FileVersions.Items.Any(x => x.Path.Contains("file2")), Is.True);
 
                 // Mixed include and exclude, wildcards
-                var searchMixed3 = c.SearchEntries(null, ParseFilters("+file2;-*"), 0, 0);
+                var searchMixed3 = await c.SearchEntriesAsync(null, ParseFilters("+file2;-*"), false, 0, 0, false, false);
                 // Include has precedence over exclude, but we include non-matches as well
                 Assert.That(searchMixed3.FileVersions.Items.Count(), Is.EqualTo(1));
                 Assert.That(searchMixed3.FileVersions.Items.All(x => x.Path.Contains("file2")), Is.True);
 
                 // NEW: Search inside specific folder prefix: folder1
-                var searchInFolder1 = c.SearchEntries(
+                var searchInFolder1 = await c.SearchEntriesAsync(
                     new[] { Path.Combine(this.DATAFOLDER, "folder1") },
-                    ParseFilters("+file"),
-                    0, 0);
+                    ParseFilters("+file"), false,
+                    0, 0, false, false);
                 Assert.That(searchInFolder1.FileVersions.Items.Count(), Is.EqualTo(2)); // file2.txt, file3.txt inside folder1
                 Assert.That(searchInFolder1.FileVersions.Items.All(x => x.Path.Contains("folder1")), Is.True);
 
                 // NEW: Search inside multiple folder prefixes: folder1 and folder2
-                var searchInFolders = c.SearchEntries(
+                var searchInFolders = await c.SearchEntriesAsync(
                     new[]
                     {
                 Path.Combine(this.DATAFOLDER, "folder1"),
                 Path.Combine(this.DATAFOLDER, "folder2")
                     },
-                    ParseFilters("+file;+notes"),
-                    0, 0);
+                    ParseFilters("+file;+notes"), false,
+                    0, 0, false, false);
                 Assert.That(searchInFolders.FileVersions.Items.Count(), Is.EqualTo(3)); // file2.txt, file3.txt, notes.txt
                 Assert.That(searchInFolders.FileVersions.Items.Any(x => x.Path.Contains("folder1")), Is.True);
                 Assert.That(searchInFolders.FileVersions.Items.Any(x => x.Path.Contains("folder2")), Is.True);
@@ -323,7 +325,7 @@ namespace Duplicati.UnitTest
         }
 
         [Test]
-        public async Task GetMinimalUniquePrefixEntries_ShouldReturnCorrectLinuxPrefixes()
+        public async Task GetMinimalUniquePrefixEntries_ShouldReturnCorrectLinuxPrefixesAsync()
         {
             using var tempFile = new TempFile();
             using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
@@ -337,7 +339,7 @@ namespace Duplicati.UnitTest
             ]);
 
             var result = await db
-                .GetMinimalUniquePrefixEntries(1, CancellationToken.None)
+                .GetMinimalUniquePrefixEntriesAsync(1, CancellationToken.None)
                 .Select(e => e.Path)
                 .ToListAsync()
                 .ConfigureAwait(false);
@@ -351,7 +353,7 @@ namespace Duplicati.UnitTest
         }
 
         [Test]
-        public async Task GetMinimalUniquePrefixEntries_ShouldReturnCorrectWindowsDrivePrefixes()
+        public async Task GetMinimalUniquePrefixEntries_ShouldReturnCorrectWindowsDrivePrefixes_Async()
         {
             using var tempFile = new TempFile();
             using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
@@ -364,7 +366,7 @@ namespace Duplicati.UnitTest
             ]);
 
             var result = await db
-                .GetMinimalUniquePrefixEntries(1, CancellationToken.None)
+                .GetMinimalUniquePrefixEntriesAsync(1, CancellationToken.None)
                 .Select(e => e.Path)
                 .ToListAsync()
                 .ConfigureAwait(false);
@@ -377,7 +379,7 @@ namespace Duplicati.UnitTest
         }
 
         [Test]
-        public async Task GetMinimalUniquePrefixEntries_ShouldReturnCorrectWindowsUncPrefixes()
+        public async Task GetMinimalUniquePrefixEntries_ShouldReturnCorrectWindowsUncPrefixes_Async()
         {
             using var tempFile = new TempFile();
             using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
@@ -389,7 +391,7 @@ namespace Duplicati.UnitTest
             ]);
 
             var result = await db
-                .GetMinimalUniquePrefixEntries(1, CancellationToken.None)
+                .GetMinimalUniquePrefixEntriesAsync(1, CancellationToken.None)
                 .Select(e => e.Path)
                 .ToListAsync()
                 .ConfigureAwait(false);
@@ -401,7 +403,7 @@ namespace Duplicati.UnitTest
         }
 
         [Test]
-        public async Task GetMinimalUniquePrefixEntries_ShouldHandleMixedWindowsDriveAndUncPaths()
+        public async Task GetMinimalUniquePrefixEntries_ShouldHandleMixedWindowsDriveAndUncPathsAsync()
         {
             using var tempFile = new TempFile();
             using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
@@ -417,7 +419,7 @@ namespace Duplicati.UnitTest
             ]);
 
             var result = await db
-                .GetMinimalUniquePrefixEntries(1, CancellationToken.None)
+                .GetMinimalUniquePrefixEntriesAsync(1, CancellationToken.None)
                 .Select(e => e.Path)
                 .ToListAsync()
                 .ConfigureAwait(false);
@@ -433,7 +435,7 @@ namespace Duplicati.UnitTest
         }
 
         [Test]
-        public async Task GetMinimalUniquePrefixEntries_ShouldReturnExpectedMinimalRoots()
+        public async Task GetMinimalUniquePrefixEntries_ShouldReturnExpectedMinimalRootsAsync()
         {
             // Arrange: Prepare prefixes (minimal unique) and contents
             var testPrefixes = new[]
@@ -457,7 +459,7 @@ namespace Duplicati.UnitTest
             SeedTestData(db, testPrefixes);
 
             var resultItems = await db
-                .GetMinimalUniquePrefixEntries(1, CancellationToken.None)
+                .GetMinimalUniquePrefixEntriesAsync(1, CancellationToken.None)
                 .ToListAsync()
                 .ConfigureAwait(false);
 
@@ -546,6 +548,468 @@ namespace Duplicati.UnitTest
 
                 fileId++;
             }
+        }
+
+        /// <summary>
+        /// Tests that ListFolder works correctly with a large number of prefix IDs
+        /// that triggers the temporary table code path (when count > CHUNK_SIZE = 128).
+        /// </summary>
+        [Test]
+        [Category("Database")]
+        public async Task ListFolder_WithLargePrefixIds_UsesTemporaryTableAsync()
+        {
+            using var tempFile = new TempFile();
+            await using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Insert fileset entry
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                await cmd.SetCommandAndParameters(@"
+                    INSERT OR IGNORE INTO Fileset (ID, OperationID, VolumeID, IsFullBackup, Timestamp)
+                    VALUES (@filesetId, 1, 1, 1, 0);")
+                    .SetParameterValue("@filesetId", 1L)
+                    .ExecuteNonQueryAsync();
+            }
+
+            // Create 150 prefix IDs (exceeds CHUNK_SIZE of 128) to trigger temporary table path
+            var prefixIds = new List<long>();
+            for (int i = 0; i < 150; i++)
+            {
+                var prefix = $"/test/prefix/{i}/";
+                using var cmd = db.Connection.CreateCommand();
+
+                // Insert prefix
+                await cmd.SetCommandAndParameters(@"
+                    INSERT OR IGNORE INTO PathPrefix (Prefix)
+                    VALUES (@prefix);")
+                    .SetParameterValue("@prefix", prefix)
+                    .ExecuteNonQueryAsync();
+
+                // Get prefix ID
+                var prefixId = cmd.SetCommandAndParameters("SELECT ID FROM PathPrefix WHERE Prefix = @prefix")
+                    .SetParameterValue("@prefix", prefix)
+                    .ExecuteScalarInt64();
+
+                prefixIds.Add(prefixId);
+
+                // Insert FileLookup
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO FileLookup (ID, PrefixID, Path, BlocksetID, MetadataID)
+                    VALUES (@fileId, @prefixId, @path, 1, 1);")
+                    .SetParameterValue("@fileId", i + 1)
+                    .SetParameterValue("@prefixId", prefixId)
+                    .SetParameterValue("@path", $"file{i}.txt")
+                    .ExecuteNonQueryAsync();
+
+                // Insert FilesetEntry
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO FilesetEntry (FilesetID, FileID, Lastmodified)
+                    VALUES (@filesetId, @fileId, 0);")
+                    .SetParameterValue("@filesetId", 1L)
+                    .SetParameterValue("@fileId", i + 1)
+                    .ExecuteNonQueryAsync();
+            }
+
+            // Act: Call ListFolder with 150 prefix IDs
+            // This should trigger the temporary table code path
+            var result = await db.ListFolderAsync(prefixIds, 1, 0, 1000, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Assert: Should return all 150 files
+            Assert.That(result.Items.Count(), Is.EqualTo(150));
+        }
+
+        /// <summary>
+        /// Tests that <see cref="LocalListDatabase.ListFileVersionsAsync"/> works correctly
+        /// with a large number of fileset IDs that triggers the temporary table code path
+        /// (when count > CHUNK_SIZE = 128).
+        /// </summary>
+        [Test]
+        [Category("Database")]
+        public async Task ListFileVersions_WithLargeFilesetIds_UsesTemporaryTableAsync()
+        {
+            // Arrange
+            using var tempFile = new TempFile();
+            await using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Insert operation entry
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                await cmd.SetCommandAndParameters(@"
+                    INSERT OR IGNORE INTO Operation (ID, Description, Timestamp)
+                    VALUES (1, 'TestOperation', 0);")
+                    .ExecuteNonQueryAsync();
+            }
+
+            // Create 150 filesets (exceeds CHUNK_SIZE of 128) to trigger temporary table path
+            var filesetIds = new List<long>();
+            for (int i = 0; i < 150; i++)
+            {
+                using var cmd = db.Connection.CreateCommand();
+
+                // Insert RemoteVolume for the fileset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO RemoteVolume (ID, OperationID, Name, Type, State, Size, VerificationCount, DeleteGraceTime, ArchiveTime, LockExpirationTime)
+                    VALUES (@id, @operationId, @name, @type, @state, @size, @verificationCount, @deleteGraceTime, @archiveTime, @lockExpirationTime);")
+                    .SetParameterValue("@id", i + 1)
+                    .SetParameterValue("@operationId", 1L)
+                    .SetParameterValue("@name", $"volume{i}.zip")
+                    .SetParameterValue("@type", "Files")
+                    .SetParameterValue("@state", "Verified")
+                    .SetParameterValue("@size", 1024L)
+                    .SetParameterValue("@verificationCount", 0)
+                    .SetParameterValue("@deleteGraceTime", 0)
+                    .SetParameterValue("@archiveTime", 0)
+                    .SetParameterValue("@lockExpirationTime", 0)
+                    .ExecuteNonQueryAsync();
+
+                // Insert Fileset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Fileset (ID, OperationID, VolumeID, IsFullBackup, Timestamp)
+                    VALUES (@id, @operationId, @volumeId, @isFullBackup, @timestamp);")
+                    .SetParameterValue("@id", i + 1)
+                    .SetParameterValue("@operationId", 1L)
+                    .SetParameterValue("@volumeId", i + 1)
+                    .SetParameterValue("@isFullBackup", 1)
+                    .SetParameterValue("@timestamp", i)
+                    .ExecuteNonQueryAsync();
+
+                filesetIds.Add(i + 1);
+            }
+
+            // Insert a single file that exists in all filesets
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                // Insert Blockset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Blockset (ID, Length, FullHash)
+                    VALUES (1, 1024, 'fullhash');")
+                    .ExecuteNonQueryAsync();
+
+                // Insert Metadataset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Metadataset (ID, BlocksetID)
+                    VALUES (1, 1);")
+                    .ExecuteNonQueryAsync();
+
+                // Insert PathPrefix
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO PathPrefix (ID, Prefix)
+                    VALUES (1, '/test/');")
+                    .ExecuteNonQueryAsync();
+
+                // Insert FileLookup
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO FileLookup (ID, PrefixID, Path, BlocksetID, MetadataID)
+                    VALUES (1, 1, 'file.txt', 1, 1);")
+                    .ExecuteNonQueryAsync();
+
+                // Insert FilesetEntry for each fileset
+                for (int i = 0; i < 150; i++)
+                {
+                    await cmd.SetCommandAndParameters(@"
+                        INSERT INTO FilesetEntry (FilesetID, FileID, Lastmodified)
+                        VALUES (@filesetId, @fileId, @lastModified);")
+                        .SetParameterValue("@filesetId", i + 1)
+                        .SetParameterValue("@fileId", 1)
+                        .SetParameterValue("@lastModified", 0)
+                        .ExecuteNonQueryAsync();
+                }
+            }
+
+            // Act: Call ListFileVersions with 150 fileset IDs
+            // This should trigger the temporary table code path
+            var result = await db.ListFileVersionsAsync(
+                new[] { "file.txt" },
+                filesetIds.ToArray(),
+                0,
+                1000,
+                CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Assert: Should return all 150 file versions
+            Assert.That(result.Items.Count(), Is.EqualTo(150));
+        }
+
+        /// <summary>
+        /// Tests that <see cref="LocalListDatabase.SearchEntriesAsync"/> works correctly
+        /// with a large number of fileset IDs that triggers the temporary table code path
+        /// (when count > CHUNK_SIZE = 128).
+        /// </summary>
+        [Test]
+        [Category("Database")]
+        public async Task SearchEntries_WithLargeFilesetIds_UsesTemporaryTableAsync()
+        {
+            // Arrange
+            using var tempFile = new TempFile();
+            await using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Insert operation entry
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                await cmd.SetCommandAndParameters(@"
+                    INSERT OR IGNORE INTO Operation (ID, Description, Timestamp)
+                    VALUES (1, 'TestOperation', 0);")
+                    .ExecuteNonQueryAsync();
+            }
+
+            // Create 150 filesets (exceeds CHUNK_SIZE of 128) to trigger temporary table path
+            var filesetIds = new List<long>();
+            for (int i = 0; i < 150; i++)
+            {
+                using var cmd = db.Connection.CreateCommand();
+
+                // Insert RemoteVolume for the fileset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO RemoteVolume (ID, OperationID, Name, Type, State, Size, VerificationCount, DeleteGraceTime, ArchiveTime, LockExpirationTime)
+                    VALUES (@id, @operationId, @name, @type, @state, @size, @verificationCount, @deleteGraceTime, @archiveTime, @lockExpirationTime);")
+                    .SetParameterValue("@id", i + 1)
+                    .SetParameterValue("@operationId", 1L)
+                    .SetParameterValue("@name", $"volume{i}.zip")
+                    .SetParameterValue("@type", "Files")
+                    .SetParameterValue("@state", "Verified")
+                    .SetParameterValue("@size", 1024L)
+                    .SetParameterValue("@verificationCount", 0)
+                    .SetParameterValue("@deleteGraceTime", 0)
+                    .SetParameterValue("@archiveTime", 0)
+                    .SetParameterValue("@lockExpirationTime", 0)
+                    .ExecuteNonQueryAsync();
+
+                // Insert Fileset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Fileset (ID, OperationID, VolumeID, IsFullBackup, Timestamp)
+                    VALUES (@id, @operationId, @volumeId, @isFullBackup, @timestamp);")
+                    .SetParameterValue("@id", i + 1)
+                    .SetParameterValue("@operationId", 1L)
+                    .SetParameterValue("@volumeId", i + 1)
+                    .SetParameterValue("@isFullBackup", 1)
+                    .SetParameterValue("@timestamp", i)
+                    .ExecuteNonQueryAsync();
+
+                filesetIds.Add(i + 1);
+            }
+
+            // Insert files that exist in all filesets
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                // Insert Blockset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Blockset (ID, Length, FullHash)
+                    VALUES (1, 1024, 'fullhash');")
+                    .ExecuteNonQueryAsync();
+
+                // Insert Metadataset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Metadataset (ID, BlocksetID)
+                    VALUES (1, 1);")
+                    .ExecuteNonQueryAsync();
+
+                // Insert PathPrefix
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO PathPrefix (ID, Prefix)
+                    VALUES (1, '/test/');")
+                    .ExecuteNonQueryAsync();
+
+                // Insert FileLookup entries
+                for (int i = 0; i < 10; i++)
+                {
+                    await cmd.SetCommandAndParameters(@"
+                        INSERT INTO FileLookup (ID, PrefixID, Path, BlocksetID, MetadataID)
+                        VALUES (@id, @prefixId, @path, @blocksetId, @metadataId);")
+                        .SetParameterValue("@id", i + 1)
+                        .SetParameterValue("@prefixId", 1)
+                        .SetParameterValue("@path", $"file{i}.txt")
+                        .SetParameterValue("@blocksetId", 1)
+                        .SetParameterValue("@metadataId", 1)
+                        .ExecuteNonQueryAsync();
+                }
+
+                // Insert FilesetEntry for each fileset and file
+                for (int i = 0; i < 150; i++)
+                {
+                    for (int j = 0; j < 10; j++)
+                    {
+                        await cmd.SetCommandAndParameters(@"
+                            INSERT INTO FilesetEntry (FilesetID, FileID, Lastmodified)
+                            VALUES (@filesetId, @fileId, @lastModified);")
+                            .SetParameterValue("@filesetId", i + 1)
+                            .SetParameterValue("@fileId", j + 1)
+                            .SetParameterValue("@lastModified", 0)
+                            .ExecuteNonQueryAsync();
+                    }
+                }
+            }
+
+            // Act: Call SearchEntries with 150 fileset IDs
+            // This should trigger the temporary table code path
+            // Use a simple filter that matches all files (empty filter matches everything)
+            var result = await db.SearchEntriesAsync(
+                null,
+                new FilterExpression("*", true),
+                false,
+                filesetIds.ToArray(),
+                false,
+                0,
+                2000,
+                CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Assert: Should return all 1500 file versions (150 filesets * 10 files)
+            Assert.That(result.Items.Count(), Is.EqualTo(1500));
+        }
+
+        /// <summary>
+        /// Tests that <see cref="LocalListDatabase.SearchEntriesAsync"/> can match values inside
+        /// metadata JSON when <c>searchMetadata</c> is <c>true</c>.
+        /// </summary>
+        [Test]
+        [Category("Database")]
+        public async Task SearchEntries_WithMetadataSearch_MatchesMetadataValuesAsync()
+        {
+            // Arrange
+            using var tempFile = new TempFile();
+            await using var db = await LocalListDatabase.CreateAsync(tempFile, null, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Insert operation entry
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                await cmd.SetCommandAndParameters(@"
+                    INSERT OR IGNORE INTO Operation (ID, Description, Timestamp)
+                    VALUES (1, 'TestOperation', 0);")
+                    .ExecuteNonQueryAsync();
+            }
+
+            // Insert RemoteVolume and Fileset
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO RemoteVolume (ID, OperationID, Name, Type, State, Size, VerificationCount, DeleteGraceTime, ArchiveTime, LockExpirationTime)
+                    VALUES (1, 1, 'volume.zip', 'Files', 'Verified', 1024, 0, 0, 0, 0);")
+                    .ExecuteNonQueryAsync();
+
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Fileset (ID, OperationID, VolumeID, IsFullBackup, Timestamp)
+                    VALUES (1, 1, 1, 1, 0);")
+                    .ExecuteNonQueryAsync();
+            }
+
+            using (var cmd = db.Connection.CreateCommand())
+            {
+                // Insert Blockset for the Metadataset
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Blockset (ID, Length, FullHash)
+                    VALUES (1, 1024, 'fullhash');")
+                    .ExecuteNonQueryAsync();
+
+                // Insert two metadata entries
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Metadataset (ID, BlocksetID, Content)
+                    VALUES (1, 1, '{""o365:Name"": ""MyDocument"", ""o365:Type"": ""DriveFile""}');")
+                    .ExecuteNonQueryAsync();
+
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO Metadataset (ID, BlocksetID, Content)
+                    VALUES (2, 1, '{""gsuite:Name"": ""MySheet"", ""gsuite:Type"": ""Spreadsheet""}');")
+                    .ExecuteNonQueryAsync();
+
+                // Insert PathPrefix
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO PathPrefix (ID, Prefix)
+                    VALUES (1, '/test/');")
+                    .ExecuteNonQueryAsync();
+
+                // Insert FileLookup entries: one with metadata, one without
+                // File 1: has metadata matching "MyDocument"
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO FileLookup (ID, PrefixID, Path, BlocksetID, MetadataID)
+                    VALUES (1, 1, 'file1.txt', 1, 1);")
+                    .ExecuteNonQueryAsync();
+
+                // File 2: has metadata matching "MySheet" (different key)
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO FileLookup (ID, PrefixID, Path, BlocksetID, MetadataID)
+                    VALUES (2, 1, 'file2.txt', 1, 2);")
+                    .ExecuteNonQueryAsync();
+
+                // File 3: no metadata
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO FileLookup (ID, PrefixID, Path, BlocksetID, MetadataID)
+                    VALUES (3, 1, 'file3.txt', 1, 0);")
+                    .ExecuteNonQueryAsync();
+
+                // Folder 4: folder with metadata matching "MyDocument"
+                // BlocksetID = -100 is FOLDER_BLOCKSET_ID
+                await cmd.SetCommandAndParameters(@"
+                    INSERT INTO FileLookup (ID, PrefixID, Path, BlocksetID, MetadataID)
+                    VALUES (4, 1, 'folder1', -100, 1);")
+                    .ExecuteNonQueryAsync();
+
+                // Insert FilesetEntry for all four entries
+                for (int fileId = 1; fileId <= 4; fileId++)
+                {
+                    await cmd.SetCommandAndParameters(@"
+                        INSERT INTO FilesetEntry (FilesetID, FileID, Lastmodified)
+                        VALUES (@filesetId, @fileId, @lastModified);")
+                        .SetParameterValue("@filesetId", 1)
+                        .SetParameterValue("@fileId", fileId)
+                        .SetParameterValue("@lastModified", 0)
+                        .ExecuteNonQueryAsync();
+                }
+            }
+
+            // Act: Search for "MyDocument" with metadata search enabled
+            var result = await db.SearchEntriesAsync(
+                null,
+                new FilterExpression("MyDocument", true),
+                false,
+                [1],
+                true, // searchMetadata
+                0,
+                100,
+                CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Assert: Both file1.txt and folder1 should match (via o365:Name metadata)
+            Assert.That(result.Items.Count(), Is.EqualTo(2));
+            var paths = result.Items.Select(x => x.Path).OrderBy(x => x).ToList();
+            Assert.That(paths[0], Is.EqualTo("/test/file1.txt"));
+            Assert.That(paths[1], Is.EqualTo("/test/folder1"));
+            Assert.That(result.Items.First(x => x.Path == "/test/folder1").IsDirectory, Is.True);
+
+            // Act: Search for "MySheet" with metadata search enabled
+            result = await db.SearchEntriesAsync(
+                null,
+                new FilterExpression("MySheet", true),
+                false,
+                [1],
+                true, // searchMetadata
+                0,
+                100,
+                CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Assert: Only file2.txt should match (via gsuite:Name metadata)
+            Assert.That(result.Items.Count(), Is.EqualTo(1));
+            Assert.That(result.Items.First().Path, Is.EqualTo("/test/file2.txt"));
+
+            // Act: Search for "MyDocument" with metadata search DISABLED
+            result = await db.SearchEntriesAsync(
+                null,
+                new FilterExpression("MyDocument", true),
+                false,
+                [1],
+                false, // searchMetadata disabled
+                0,
+                100,
+                CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Assert: No files should match (path doesn't contain "MyDocument")
+            Assert.That(result.Items.Count(), Is.EqualTo(0));
         }
     }
 }

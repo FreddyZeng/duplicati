@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -92,7 +92,7 @@ internal static class TransportHelper
     /// Parses an encrypted message using the provided key
     /// </summary>
     /// <param name="message">The encrypted message to parse</param>
-    /// <param name="privateKey">The private key to decrypt with</param>
+    /// <param name="key">The key to decrypt or verify with</param>
     /// <returns>The parsed message</returns>
     private static EnvelopedMessage ParsedFromEncodedMessage(string message, RSA key, bool isPrivateKey)
     {

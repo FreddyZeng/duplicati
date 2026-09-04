@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -47,7 +47,13 @@ public class BackendSourceProvider(IFolderEnabledBackend backend, string mounted
     public string DisplayName => backend.DisplayName;
 
     /// <inheritdoc/>
+    public string Description => backend.Description;
+
+    /// <inheritdoc/>
     public IList<ICommandLineArgument> SupportedCommands => backend.SupportedCommands;
+
+    /// <inheritdoc />
+    public bool NeedsStoredMetadata => false;
 
     /// <summary>
     /// The prepared root entry, if any
@@ -67,7 +73,7 @@ public class BackendSourceProvider(IFolderEnabledBackend backend, string mounted
         => new BackendSourceFileEntry(this, "", true, true, new DateTime(0), new DateTime(0), 0);
 
     /// <inheritdoc/>
-    public async Task Initialize(CancellationToken cancellationToken)
+    public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         // Only allow a single intiiialization call
         if (Interlocked.Exchange(ref isInitialized, 1) != 0)
@@ -80,11 +86,15 @@ public class BackendSourceProvider(IFolderEnabledBackend backend, string mounted
     }
 
     /// <inheritdoc/>
-    public IAsyncEnumerable<ISourceProviderEntry> Enumerate(CancellationToken cancellationToken)
+    public Task TestAsync(CancellationToken cancellationToken)
+        => backend.TestAsync(false, cancellationToken);
+
+    /// <inheritdoc/>
+    public IAsyncEnumerable<ISourceProviderEntry> EnumerateAsync(CancellationToken cancellationToken)
         => new[] { Interlocked.Exchange(ref preparedRoot, null) ?? CreateRoot() }.ToAsyncEnumerable();
 
     /// <inheritdoc/>
-    public async Task<ISourceProviderEntry?> GetEntry(string path, bool isFolder, CancellationToken cancellationToken)
+    public async Task<ISourceProviderEntry?> GetEntryAsync(string path, bool isFolder, CancellationToken cancellationToken)
     {
         var entry = await backend.GetEntryAsync(BackendSourceFileEntry.NormalizePathTo(path, '/'), cancellationToken).ConfigureAwait(false);
         return entry == null ? null : BackendSourceFileEntry.FromFileEntry(this, path, entry);

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -22,6 +22,7 @@ using Duplicati.Library.Common.IO;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using uplink.NET.Interfaces;
 using uplink.NET.Models;
@@ -29,7 +30,7 @@ using uplink.NET.Services;
 
 namespace Duplicati.Library.Backend.Storj
 {
-    public class Storj : IStreamingBackend
+    public class Storj : IStreamingBackend, IRenameEnabledBackend
     {
         private const string STORJ_AUTH_METHOD = "storj-auth-method";
         private const string STORJ_SATELLITE = "storj-satellite";
@@ -252,8 +253,8 @@ namespace Duplicati.Library.Backend.Storj
         {
             var bucket = await GetBucketAsync(cancelToken).ConfigureAwait(false);
             var custom = new CustomMetadata();
-            custom.Entries.Add(new CustomMetadataEntry { Key = StorjFile.STORJ_LAST_ACCESS, Value = DateTime.Now.ToUniversalTime().ToString("O") });
-            custom.Entries.Add(new CustomMetadataEntry { Key = StorjFile.STORJ_LAST_MODIFICATION, Value = DateTime.Now.ToUniversalTime().ToString("O") });
+            custom.Entries.Add(new CustomMetadataEntry { Key = StorjFile.STORJ_LAST_ACCESS, Value = DateTime.Now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) });
+            custom.Entries.Add(new CustomMetadataEntry { Key = StorjFile.STORJ_LAST_MODIFICATION, Value = DateTime.Now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) });
             using var ts = stream.ObserveReadTimeout(_timeouts.ReadWriteTimeout, false);
             var upload = await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken, _ => _objectService.UploadObjectAsync(bucket, GetBasePath() + remotename, new UploadOptions(), ts, custom, false)).ConfigureAwait(false);
             await upload.StartUploadAsync().ConfigureAwait(false);
@@ -261,8 +262,8 @@ namespace Duplicati.Library.Backend.Storj
                 throw new Exception(upload.ErrorMessage);
         }
 
-        public Task TestAsync(CancellationToken cancelToken)
-            => Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken, ct => TestImplAsync(ct));
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancelToken, ct => TestImplAsync(alsoWrite, ct));
 
         /// <summary>
         /// Test the connection by:
@@ -270,22 +271,31 @@ namespace Duplicati.Library.Backend.Storj
         /// - uploading 256 random bytes to a test-file
         /// - downloading the file back and expecting 256 bytes
         /// </summary>
+        /// <param name="alsoWrite">If true, the test will also write a file to the backend</param>
+        /// <param name="cancelToken">The cancellation token</param>
         /// <returns>true, if the test was successfull or and exception</returns>
-        private async Task<bool> TestImplAsync(CancellationToken cancelToken)
+        private async Task<bool> TestImplAsync(bool alsoWrite, CancellationToken cancelToken)
         {
             var testFileName = GetBasePath() + "duplicati_test.dat";
 
             var bucket = await GetBucketAsync(cancelToken).ConfigureAwait(false);
-            var upload = await _objectService.UploadObjectAsync(bucket, testFileName, new UploadOptions(), GetRandomBytes(256), false).ConfigureAwait(false);
-            await upload.StartUploadAsync().ConfigureAwait(false);
+            if (alsoWrite)
+            {
+                var upload = await _objectService.UploadObjectAsync(bucket, testFileName, new UploadOptions(), GetRandomBytes(256), false).ConfigureAwait(false);
+                await upload.StartUploadAsync().ConfigureAwait(false);
 
-            var download = await _objectService.DownloadObjectAsync(bucket, testFileName, new DownloadOptions(), false).ConfigureAwait(false);
-            await download.StartDownloadAsync().ConfigureAwait(false);
+                var download = await _objectService.DownloadObjectAsync(bucket, testFileName, new DownloadOptions(), false).ConfigureAwait(false);
+                await download.StartDownloadAsync().ConfigureAwait(false);
 
-            await _objectService.DeleteObjectAsync(bucket, testFileName).ConfigureAwait(false);
+                await _objectService.DeleteObjectAsync(bucket, testFileName).ConfigureAwait(false);
 
-            if (download.Failed || download.BytesReceived != 256)
-                throw new Exception(download.ErrorMessage);
+                if (download.Failed || download.BytesReceived != 256)
+                    throw new Exception(download.ErrorMessage);
+            }
+            else
+            {
+                await _objectService.ListObjectsAsync(bucket, new ListObjectsOptions { Prefix = GetBasePath() }).ConfigureAwait(false);
+            }
 
             return true;
         }
@@ -309,6 +319,16 @@ namespace Duplicati.Library.Backend.Storj
             var bytes = new byte[length];
             Random.Shared.NextBytes(bytes);
             return bytes;
+        }
+
+        public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            var bucket = await GetBucketAsync(cancellationToken).ConfigureAwait(false);
+            var oldKey = GetBasePath() + oldname;
+            var newKey = GetBasePath() + newname;
+
+            await Utility.Utility.WithTimeout(_timeouts.ShortTimeout, cancellationToken, _ => _objectService.CopyObjectAsync(bucket, oldKey, bucket, newKey)).ConfigureAwait(false);
+            await DeleteAsync(oldname, cancellationToken).ConfigureAwait(false);
         }
     }
 }

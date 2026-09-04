@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,6 +26,7 @@ using Duplicati.Library.Interface;
 using Duplicati.Library.Main;
 using Duplicati.Library.Snapshots;
 using NUnit.Framework;
+using System.Threading.Tasks;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace Duplicati.UnitTest
@@ -35,7 +36,7 @@ namespace Duplicati.UnitTest
     {
         [Test]
         [Category("SymLink")]
-        public void SymlinkExists()
+        public async Task SymlinkExistsAsync()
         {
             // Create symlink target directory
             const string targetDirName = "target";
@@ -63,10 +64,14 @@ namespace Duplicati.UnitTest
             }
 
             // Backup all files
-            Dictionary<string, string> restoreOptions = new(this.TestOptions) { ["restore-path"] = this.RESTOREFOLDER };
+            Dictionary<string, string> restoreOptions = new(this.TestOptions)
+            {
+                ["restore-path"] = this.RESTOREFOLDER,
+                ["allow-restore-outside-target-directory"] = "true" // For this test, we restore symlinks that point outside the restore target 
+            };
             using (Controller c = new("file://" + this.TARGETFOLDER, this.TestOptions, null))
             {
-                IBackupResults backupResults = c.Backup(new[] { this.DATAFOLDER });
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
                 Assert.AreEqual(0, backupResults.Errors.Count());
                 Assert.AreEqual(0, backupResults.Warnings.Count());
             }
@@ -74,7 +79,7 @@ namespace Duplicati.UnitTest
             // Restore all files
             using (Controller c = new("file://" + this.TARGETFOLDER, restoreOptions, null))
             {
-                IRestoreResults restoreResults = c.Restore(null);
+                var restoreResults = await c.RestoreAsync(null);
                 Assert.AreEqual(0, restoreResults.Errors.Count());
                 Assert.AreEqual(0, restoreResults.Warnings.Count());
 
@@ -89,7 +94,7 @@ namespace Duplicati.UnitTest
             // Restore again, trying to overwrite existing symlink
             using (Controller c = new("file://" + this.TARGETFOLDER, restoreOptions, null))
             {
-                IRestoreResults restoreResults = c.Restore(null);
+                var restoreResults = await c.RestoreAsync(null);
                 Assert.AreEqual(0, restoreResults.Errors.Count());
                 Assert.AreEqual(0, restoreResults.Warnings.Count());
             }
@@ -100,7 +105,7 @@ namespace Duplicati.UnitTest
         [TestCase(Options.SymlinkStrategy.Store)]
         [TestCase(Options.SymlinkStrategy.Follow)]
         [TestCase(Options.SymlinkStrategy.Ignore)]
-        public void SymLinkPolicy(Options.SymlinkStrategy symlinkPolicy)
+        public async Task SymLinkPolicyAsync(Options.SymlinkStrategy symlinkPolicy)
         {
             // Create symlink target directory
             const string targetDirName = "target";
@@ -128,18 +133,22 @@ namespace Duplicati.UnitTest
             }
 
             // Backup all files with given symlink policy
-            Dictionary<string, string> restoreOptions = new Dictionary<string, string>(this.TestOptions) { ["restore-path"] = this.RESTOREFOLDER };
+            Dictionary<string, string> restoreOptions = new Dictionary<string, string>(this.TestOptions)
+            {
+                ["restore-path"] = this.RESTOREFOLDER,
+                ["allow-restore-outside-target-directory"] = "true" // For this test, we restore symlinks that point outside the restore target
+            };
             Dictionary<string, string> backupOptions = new Dictionary<string, string>(this.TestOptions) { ["symlink-policy"] = symlinkPolicy.ToString() };
             using (Controller c = new Controller("file://" + this.TARGETFOLDER, backupOptions, null))
             {
-                IBackupResults backupResults = c.Backup(new[] { this.DATAFOLDER });
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
                 Assert.AreEqual(0, backupResults.Errors.Count());
                 Assert.AreEqual(0, backupResults.Warnings.Count());
             }
             // Restore all files
             using (Controller c = new Controller("file://" + this.TARGETFOLDER, restoreOptions, null))
             {
-                IRestoreResults restoreResults = c.Restore(null);
+                var restoreResults = await c.RestoreAsync(null);
                 Assert.AreEqual(0, restoreResults.Errors.Count());
                 Assert.AreEqual(0, restoreResults.Warnings.Count());
 
@@ -168,6 +177,67 @@ namespace Duplicati.UnitTest
                         Assert.Fail($"Unexpected symlink policy");
                         break;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Restores a directory symlink through both restore engines. The legacy engine applies
+        /// the stored metadata itself, and that is where a folder used to be created at the
+        /// symlink's own path, so this is the only test that covers it.
+        /// </summary>
+        [Test]
+        [Category("SymLink")]
+        public async Task SymlinkRestoreCreatesNoFolderAtItsOwnPathAsync([Values(true, false)] bool legacyRestore)
+        {
+            // Create symlink target directory with files in it
+            const string targetDirName = "target";
+            var targetDir = systemIO.PathCombine(this.DATAFOLDER, targetDirName);
+            systemIO.DirectoryCreate(targetDir);
+            foreach (var file in new[] { "a.txt", "b.txt", "c.txt" })
+                TestUtils.WriteFile(systemIO.PathCombine(targetDir, file), Encoding.Default.GetBytes(file));
+
+            const string symlinkDirName = "symlink";
+            var symlinkDir = systemIO.PathCombine(this.DATAFOLDER, symlinkDirName);
+            try
+            {
+                systemIO.CreateSymlink(symlinkDir, targetDir, asDir: true);
+            }
+            catch (Exception e)
+            {
+                // If client cannot create symlinks, mark test as ignored
+                Assert.Ignore($"Client could not create a symbolic link. Error reported: {e.Message}");
+            }
+
+            using (Controller c = new("file://" + this.TARGETFOLDER, this.TestOptions, null))
+            {
+                var backupResults = await c.BackupAsync(new[] { this.DATAFOLDER });
+                Assert.AreEqual(0, backupResults.Errors.Count());
+                Assert.AreEqual(0, backupResults.Warnings.Count());
+            }
+
+            Dictionary<string, string> restoreOptions = new(this.TestOptions)
+            {
+                ["restore-path"] = this.RESTOREFOLDER,
+                // The stored target is in the source folder, which is outside the restore target
+                ["allow-restore-outside-target-directory"] = "true",
+                ["restore-legacy"] = legacyRestore.ToString()
+            };
+
+            using (Controller c = new("file://" + this.TARGETFOLDER, restoreOptions, null))
+            {
+                var restoreResults = await c.RestoreAsync(null);
+                Assert.AreEqual(0, restoreResults.Errors.Count());
+
+                // The legacy engine used to report "Creating missing folder <path> for target
+                // <path>\" here, because the parent of a directory entry was computed as the
+                // entry itself.
+                Assert.AreEqual(0, restoreResults.Warnings.Count(),
+                    $"warnings: {string.Join("; ", restoreResults.Warnings)}");
+
+                var restored = systemIO.PathCombine(this.RESTOREFOLDER, symlinkDirName);
+                Assert.That(systemIO.IsSymlink(restored), Is.True, "the restored path is not a symlink");
+                Assert.That(systemIO.PathGetFullPath(systemIO.GetSymlinkTarget(restored)),
+                    Is.EqualTo(systemIO.PathGetFullPath(targetDir)));
             }
         }
     }

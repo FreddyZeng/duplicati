@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -34,11 +34,6 @@ namespace Duplicati.Library.AutoUpdater;
 public static class DataFolderLocator
 {
     /// <summary>
-    /// The log tag for this class
-    /// </summary>
-    private static readonly string LOGTAG = Logging.Log.LogTagFromType(typeof(DataFolderLocator));
-
-    /// <summary>
     /// Finds a default storage folder, using the operating system specific locations.
     /// The targetfilename is used to detect locations that are used in previous versions.
     /// If the targetfilename is found in an old location, but not the current, the old location is used.
@@ -54,34 +49,23 @@ public static class DataFolderLocator
             ? DataFolderManager.GetDataFolder(DataFolderManager.AccessMode.ProbeOnly)
             : GetDefaultStorageFolderInternal(targetfilename, AutoUpdateSettings.AppName);
 
-        if (SystemIO.IO_OS.DirectoryExists(folder))
+        // In read-only mode we neither create nor lock down the folder, but we still verify
+        // that an existing folder has the canonical restricted permissions, so a squatted or
+        // seeded folder is not silently trusted.
+        if (readOnly)
         {
-            if (!SystemIO.IO_OS.FileExists(System.IO.Path.Combine(folder, Util.InsecurePermissionsMarkerFile)))
-                try
-                {
-                    if (!readOnly)
-                        SystemIO.IO_OS.DirectorySetPermissionUserRWOnly(folder);
-                }
-                catch (Exception ex)
-                {
-                    Logging.Log.WriteWarningMessage(LOGTAG, "FailedToSetPermissions", ex, "Failed to set permissions for {0}: {1}", folder, ex.Message);
-                }
-        }
-        else if (autoCreate && !readOnly) // AutoCreate and readonly become incongruent 
-        {
-            // Create the folder
-            SystemIO.IO_OS.DirectoryCreate(folder);
+            if (SystemIO.IO_OS.DirectoryExists(folder))
+                DataFolderManager.VerifyDataFolderSecurityReadOnly(folder);
 
-            try
-            {
-                // Make sure the folder is only accessible by the current user
-                SystemIO.IO_OS.DirectorySetPermissionUserRWOnly(folder);
-            }
-            catch (Exception ex)
-            {
-                Logging.Log.WriteWarningMessage(LOGTAG, "FailedToSetPermissions", ex, "Failed to set permissions for {0}: {1}", folder, ex.Message);
-            }
+            return folder;
         }
+
+        // Route through the shared helper so the CLI, Agent and ServerUtil get the same
+        // folder-squatting / seeded-content protection as the Server. A folder created here is
+        // locked down; a pre-existing folder is verified as-is (never modified) and rejected if
+        // it is not already in the canonical locked-down form.
+        if (SystemIO.IO_OS.DirectoryExists(folder) || autoCreate)
+            DataFolderManager.PrepareSecureDataFolder(folder, createIfMissing: autoCreate);
 
         return folder;
     }

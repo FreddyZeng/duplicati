@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -23,7 +23,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Main;
-using Duplicati.Library.Main.Database;
+using Duplicati.Library.Main.Database.Local;
 using Duplicati.Library.Main.Operation;
 using NUnit.Framework;
 using NUnit.Framework.Legacy;
@@ -39,6 +39,7 @@ namespace Duplicati.UnitTest
             public DateTime Time { get; }
             public long FileCount { get; }
             public long FileSizes { get; }
+            public string Label { get; }
 
             public Fileset(int version, int backupType, DateTime time)
             {

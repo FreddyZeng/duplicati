@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -40,5 +40,21 @@ public sealed record SearchEntriesRequestDto : PaginatedRequest
     /// <summary>
     /// The time to search in
     /// </summary>
-    public required string? Time { get; init; }
+    public string? Time { get; init; }
+    /// <summary>
+    /// If true, return extended information
+    /// </summary>
+    public bool? ReturnExtended { get; init; }
+    /// <summary>
+    /// The version(s) to search in
+    /// </summary>
+    public long[]? Version { get; init; }
+    /// <summary>
+    /// If true, the search will be case sensitive
+    /// </summary>
+    public bool? CaseSensitiveSearch { get; init; }
+    /// <summary>
+    /// If true, the search will also look in the metadata JSON
+    /// </summary>
+    public bool? SearchMetadata { get; init; }
 }

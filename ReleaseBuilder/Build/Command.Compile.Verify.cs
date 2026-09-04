@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -52,10 +52,13 @@ public static partial class Command
                 _ => throw new Exception($"Not supported OS: {target.OS}")
             };
 
+            // For now, Vanara is not supported on ARM
+            if (target.OS == OSType.Windows && target.Arch != ArchType.Arm64 && target.Arch != ArchType.Arm7)
+                extras = extras.Append("ijwhost.dll").ToArray();
+
             // Random sample of files we expect
             string[] probeFiles = [
                 "System.CommandLine.dll",
-                "System.CommandLine.NamingConventionBinder.dll",
                 "AWSSDK.S3.dll",
                 "CoCoL.dll",
                 "Duplicati.Library.Interface.dll",
@@ -259,25 +262,25 @@ public static partial class Command
             { "AWSSDK.Core", new Version(4, 0, 0, 0) },
 
             // Using the Framework version, not the package version
-            { "Microsoft.CSharp", new Version(8, 0, 0, 0) },
-            { "System.Memory", new Version(8, 0, 0, 0) },
-            { "System.Security.AccessControl", new Version(8, 0, 0, 0) },
-            { "System.Security.Principal.Windows", new Version(8, 0, 0, 0) },
-            { "System.Security.Cryptography.Algorithms", new Version(8, 0, 0, 0) },
-            { "System.Security.Cryptography.Cng", new Version(8, 0, 0, 0) },
+            { "Microsoft.CSharp", new Version(10, 0, 0, 0) },
+            { "System.Memory", new Version(10, 0, 0, 0) },
+            { "System.Security.AccessControl", new Version(10, 0, 0, 0) },
+            { "System.Security.Principal.Windows", new Version(10, 0, 0, 0) },
+            { "System.Security.Cryptography.Algorithms", new Version(10, 0, 0, 0) },
+            { "System.Security.Cryptography.Cng", new Version(10, 0, 0, 0) },
 
             // The assembly version also has a revision number, but the nuget version does not.
-            { "SQLitePCLRaw.core", new Version(2, 1, 10, 2445) },
-
-            // Using v9.0 for assembly, but 9.0.2 in nuget
-            { "System.IO.Pipelines", new Version(9, 0, 0, 0) },
-
-            // Using v9.0 for assembly, but 9.0.6 in nuget
-            { "Microsoft.Win32.SystemEvents", new Version(9, 0, 0, 0) },
-            { "System.Drawing.Common", new Version(9, 0, 0, 0) },
+            { "SQLitePCLRaw.core", new Version(3, 0, 3, 3048) },
 
             // Using v6.0.0.1 for assembly, but 6.0.1 in nuget
-            { "System.Memory.Data", new Version(6, 0, 0, 1) }
+            { "System.Memory.Data", new Version(8, 0, 0, 1) },
+
+            // Microsoft.Extensions packages use 10.0.0.0 as assembly version
+            { "Microsoft.Extensions.Configuration.Abstractions", new Version(10, 0, 0, 0) },
+            { "Microsoft.Extensions.Diagnostics.Abstractions", new Version(10, 0, 0, 0) },
+            { "Microsoft.Extensions.Options", new Version(10, 0, 0, 0) },
+            { "Microsoft.Extensions.Primitives", new Version(10, 0, 0, 0) },
+            { "System.IO.Hashing", new Version(10, 0, 0, 3) }
         };
 
         /// <summary>

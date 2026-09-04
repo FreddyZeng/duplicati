@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -19,6 +19,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 using System.Globalization;
+using System.Formats.Tar;
 using System.IO.Compression;
 using System.Text;
 
@@ -37,6 +38,40 @@ public static partial class Command
         /// <param name="Target">The target package</param>
         /// <param name="CreatedFile">The created package file path</param>
         public record BuiltPackage(PackageTarget Target, string CreatedFile);
+
+        /// <summary>
+        /// Generates the metainfo content with the releases block injected
+        /// </summary>
+        /// <param name="baseDir">The base directory</param>
+        /// <param name="metainfoPath">The path to the source metainfo file</param>
+        /// <returns>The modified metainfo content</returns>
+        public static string GetMetainfoWithReleases(string baseDir, string metainfoPath)
+        {
+            var versionPath = Path.Combine(baseDir, "ReleaseBuilder", "build_version.txt");
+            var changelogPath = Path.Combine(baseDir, "ReleaseBuilder", "changelog-news.txt");
+
+            var version = File.ReadAllText(versionPath).Trim();
+            var changelog = File.ReadAllText(changelogPath).Trim();
+            var metainfo = File.ReadAllText(metainfoPath);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("  <releases>");
+            sb.AppendLine($"    <release version=\"{version}\" date=\"{DateTime.UtcNow:yyyy-MM-dd}\">");
+            sb.AppendLine("      <description>");
+            sb.AppendLine($"        <p>{System.Security.SecurityElement.Escape(changelog)}</p>");
+            sb.AppendLine("      </description>");
+            sb.AppendLine("    </release>");
+            sb.AppendLine("  </releases>");
+
+            // Insert before </component>
+            var insertIndex = metainfo.LastIndexOf("</component>");
+            if (insertIndex >= 0)
+            {
+                metainfo = metainfo.Insert(insertIndex, sb.ToString());
+            }
+
+            return metainfo;
+        }
 
         /// <summary>
         /// Builds the packages for the specified build targets.
@@ -139,6 +174,10 @@ public static partial class Command
                     await BuildZipPackage(Path.Combine(buildRoot, target.BuildTargetString), $"duplicati-{rtcfg.ReleaseInfo.ReleaseName}-{target.BuildTargetString}", tempFile, target, rtcfg);
                     break;
 
+                case PackageType.AppImage:
+                    await BuildAppImagePackage(baseDir, buildRoot, tempFile, target, rtcfg);
+                    break;
+
                 case PackageType.MSI:
                     await BuildMsiPackage(baseDir, buildRoot, tempFile, target, rtcfg);
                     break;
@@ -162,10 +201,13 @@ public static partial class Command
                     await BuildRpmPackage(baseDir, buildRoot, tempFile, target, rtcfg);
                     break;
 
-                // case PackageType.SynologySpk:
-                //     await BuildZipPackage(buildRoot, tempFile, target, rtcfg);
-                //     await SignSynologyPackage(Path.Combine(outputFolder, target.PackageTargetString), rtcfg);
-                //     break;
+                case PackageType.SynologySpk:
+                    await BuildSynologySpkPackage(baseDir, buildRoot, tempFile, target, rtcfg);
+                    break;
+
+                case PackageType.QnapQpkg:
+                    await BuildQnapQpkgPackage(baseDir, buildRoot, tempFile, target, rtcfg);
+                    break;
 
                 default:
                     throw new Exception($"Unsupported package type: {target.Package}");
@@ -254,6 +296,190 @@ public static partial class Command
         }
 
         /// <summary>
+        /// Builds an AppImage package asynchronously.
+        /// </summary>
+        /// <param name="baseDir">The base directory.</param>
+        /// <param name="buildRoot">The build root directory.</param>
+        /// <param name="appImageFile">The AppImage file to generate.</param>
+        /// <param name="target">The package target.</param>
+        /// <param name="rtcfg">The runtime configuration.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+        static async Task BuildAppImagePackage(string baseDir, string buildRoot, string appImageFile, PackageTarget target, RuntimeConfig rtcfg)
+        {
+            if (target.OS != OSType.Linux)
+                throw new Exception($"AppImage is only supported for Linux targets, got: {target.OS}");
+
+            if (target.Interface != InterfaceType.GUI)
+                throw new Exception($"AppImage is only supported for GUI interface, got: {target.Interface}");
+
+            var tmpRoot = Path.Combine(buildRoot, "tmp-appimage");
+            if (Directory.Exists(tmpRoot))
+                Directory.Delete(tmpRoot, true);
+            Directory.CreateDirectory(tmpRoot);
+
+            var appDir = Path.Combine(tmpRoot, "AppDir");
+            var appDirUsr = Path.Combine(appDir, "usr");
+            var appDirLib = Path.Combine(appDirUsr, "lib", "duplicati");
+            var appDirBin = Path.Combine(appDirUsr, "bin");
+            Directory.CreateDirectory(appDirLib);
+            Directory.CreateDirectory(appDirBin);
+
+            EnvHelper.CopyDirectory(
+                Path.Combine(buildRoot, target.BuildTargetString),
+                appDirLib,
+                recursive: true);
+
+            await PackageSupport.InstallPackageIdentifier(appDirLib, target);
+            await PackageSupport.RenameExecutables(appDirLib);
+            await PackageSupport.SetPermissionFlags(appDirLib, rtcfg);
+
+            var availableExecutables = ExecutableRenames.Values
+                .Where(x => File.Exists(Path.Combine(appDirLib, x)))
+                .ToList();
+
+            if (!availableExecutables.Any())
+                throw new Exception("No executables found in AppImage payload");
+
+            if (OperatingSystem.IsWindows())
+                throw new PlatformNotSupportedException("AppImage packaging is not supported on Windows, use WSL or Docker");
+
+            foreach (var executable in availableExecutables)
+            {
+                var linkPath = Path.Combine(appDirBin, executable);
+                await ProcessHelper.Execute([
+                    "ln", "-s",
+                    Path.Combine("..", "lib", "duplicati", executable),
+                    linkPath
+                ]);
+            }
+
+            var sharedDir = Path.Combine(baseDir, "ReleaseBuilder", "Resources", "shared");
+            var appImageResourcesDir = Path.Combine(baseDir, "ReleaseBuilder", "Resources", "appimage");
+
+            File.Copy(
+                Path.Combine(sharedDir, "desktop", "duplicati.desktop"),
+                Path.Combine(appDir, "com.duplicati.app.desktop"),
+                true
+            );
+
+            var applicationsDir = Path.Combine(appDirUsr, "share", "applications");
+            Directory.CreateDirectory(applicationsDir);
+            File.Copy(
+                Path.Combine(sharedDir, "desktop", "duplicati.desktop"),
+                Path.Combine(applicationsDir, "com.duplicati.app.desktop"),
+                true
+            );
+
+            var metainfoDir = Path.Combine(appDirUsr, "share", "metainfo");
+            Directory.CreateDirectory(metainfoDir);
+
+            // Use the correct reverse-DNS filename for metadata and desktop file to satisfy appstreamcli
+            var metainfoSrc = Path.Combine(sharedDir, "metainfo", "com.duplicati.app.metainfo.xml");
+            var metainfoDest = Path.Combine(metainfoDir, "com.duplicati.app.appdata.xml");
+            var metainfoContent = GetMetainfoWithReleases(baseDir, metainfoSrc);
+            // Update launchable to match new desktop filename
+            metainfoContent = metainfoContent.Replace("duplicati.desktop", "com.duplicati.app.desktop");
+            File.WriteAllText(metainfoDest, metainfoContent);
+
+            if (OperatingSystem.IsWindows())
+                throw new PlatformNotSupportedException("Creating unresolved symlinks is not supported on Windows, use WSL or Docker");
+
+            var iconSource = Path.Combine(sharedDir, "pixmaps", "duplicati.png");
+            File.Copy(iconSource, Path.Combine(appDir, "duplicati.png"), true);
+            File.Copy(iconSource, Path.Combine(appDir, ".DirIcon"), true);
+
+            var defaultExecutable = availableExecutables.Contains("duplicati")
+                ? "duplicati"
+                : availableExecutables.First();
+
+            var appRunTemplate = File.ReadAllText(Path.Combine(appImageResourcesDir, "AppRun.template"));
+            var appRunPayload = appRunTemplate
+                .Replace("%EXECUTABLE_LIST%", string.Join("\n", availableExecutables.Select(x => $"    echo \"  - {x}\"")))
+                .Replace("%INVOCATION_CASES%", string.Join("\n", availableExecutables.Select(x => $"    {x}) exec \"${{HERE}}/usr/bin/{x}\" \"$@\" ;;")))
+                .Replace("%FLAG_CASES%", string.Join("\n", availableExecutables.Select(x =>
+                    $"    --{x})\n        shift\n        exec \"${{HERE}}/usr/bin/{x}\" \"$@\"\n        ;;")))
+                .Replace("%DEFAULT_EXECUTABLE%", defaultExecutable);
+
+            File.WriteAllText(Path.Combine(appDir, "AppRun"), appRunPayload);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                var filemode755 = UnixFileMode.UserRead
+                    | UnixFileMode.UserWrite
+                    | UnixFileMode.UserExecute
+                    | UnixFileMode.GroupRead
+                    | UnixFileMode.GroupExecute
+                    | UnixFileMode.OtherRead
+                    | UnixFileMode.OtherExecute;
+
+                File.SetUnixFileMode(Path.Combine(appDir, "AppRun"), filemode755);
+            }
+
+            File.Copy(
+                Path.Combine(appImageResourcesDir, "Dockerfile.build"),
+                Path.Combine(tmpRoot, "Dockerfile"),
+                true
+            );
+
+            await ProcessHelper.Execute([
+                "docker", "build",
+                "-t", "duplicati/appimage-build:latest",
+                tmpRoot
+            ], workingDirectory: tmpRoot);
+
+            var appImageArch = target.Arch switch
+            {
+                ArchType.x64 => "x86_64",
+                ArchType.Arm64 => "aarch64",
+                ArchType.Arm7 => "armhf",
+                _ => throw new Exception($"Unsupported AppImage architecture: {target.Arch}")
+            };
+
+            // The AppImage is created with the final package name (not the
+            // temporary name), so the generated zsync file points to the
+            // correct remote filename
+            var appImageName = $"duplicati-{rtcfg.ReleaseInfo.ReleaseName}-{target.PackageTargetString}";
+            var appImageTempPath = Path.Combine(tmpRoot, appImageName);
+            if (File.Exists(appImageTempPath))
+                File.Delete(appImageTempPath);
+
+            // The update information points to a fixed "latest" zsync file,
+            // so AppImageUpdate can always find the most recent version
+            var zsyncName = $"latest-{target.ArchString}.zsync";
+            var zsyncUrl = ReplaceVersionPlaceholders(rtcfg.Configuration.ExtraSettings.PackageUrls.First(), rtcfg.ReleaseInfo)
+                .Replace("${FILENAME}", System.Web.HttpUtility.UrlEncode(zsyncName));
+            var updateInfo = $"zsync|{zsyncUrl}";
+
+            await ProcessHelper.Execute([
+                "docker", "run",
+                "--workdir", "/build",
+                "--volume", $"{tmpRoot}:/build:rw",
+                "-e", "APPIMAGE_EXTRACT_AND_RUN=1",
+                "-e", $"ARCH={appImageArch}",
+                "duplicati/appimage-build:latest",
+                "/usr/local/bin/appimagetool",
+                "-u", updateInfo,
+                "/build/AppDir",
+                $"/build/{appImageName}"
+            ]);
+
+            if (File.Exists(appImageFile))
+                File.Delete(appImageFile);
+
+            File.Move(appImageTempPath, appImageFile);
+
+            // Move the generated zsync file into the packages folder
+            // with the fixed "latest" name
+            var zsyncTempPath = appImageTempPath + ".zsync";
+            if (!File.Exists(zsyncTempPath))
+                throw new Exception($"AppImage update information was embedded, but no zsync file was generated: {zsyncTempPath}");
+
+            File.Move(zsyncTempPath, Path.Combine(Path.GetDirectoryName(appImageFile)!, zsyncName), true);
+
+            Directory.Delete(tmpRoot, true);
+        }
+
+        /// <summary>
         /// Builds an MSI package asynchronously.
         /// </summary>
         /// <param name="baseDir">The source base directory.</param>
@@ -292,10 +518,20 @@ public static partial class Command
             if (File.Exists(binFiles))
                 File.Delete(binFiles);
 
+            // For the TrayIcon and Agent MSIs, Duplicati.WindowsService.exe is
+            // declared manually in Duplicati.wxs so the explicit Component can
+            // host the native MSI ServiceInstall/ServiceControl rows. The
+            // harvester is told to skip the file here so we don't end up with
+            // two Components referencing the same source.
+            var harvestExcludes = target.Interface is InterfaceType.GUI or InterfaceType.Agent
+                ? new[] { "Duplicati.WindowsService.exe" }
+                : null;
+
             File.WriteAllText(binFiles, WixHeatBuilder.CreateWixFilelist(
                 sourceFiles,
                 version: rtcfg.ReleaseInfo.Version.ToString(),
-                wixNs: isWindows ? wixv4Namespace : originalNamespace
+                wixNs: isWindows ? wixv4Namespace : originalNamespace,
+                excludeFiles: harvestExcludes
             ));
 
             var msiArch = target.Arch switch
@@ -309,17 +545,27 @@ public static partial class Command
             // Prepare the Wix arguments, different for WiX (Windows) and wixl (Linux/MacOS)
             string[] wixArgs;
 
+            // Include these files explictly if they are present in the resource subdir.
+            var fragments = new[] {
+                    "InstallOptionsDlg.wxs",
+                    "ExitDialog.wxs",
+                    "Shortcuts.wxs",
+                    "Duplicati.wxs"
+                }
+                .Select(x => Path.Combine(resourcesSubDir, x))
+                .Where(File.Exists)
+                .ToArray();
+
             if (isWindows)
             {
                 // Update namespace in the .wxs files for WiX v4
-                var shortcutsTempfile = Path.Combine(buildTmp, "Shortcuts.wxs");
-                var entryTempfile = Path.Combine(buildTmp, "Duplicati.wxs");
-
-                File.WriteAllText(shortcutsTempfile, File.ReadAllText(Path.Combine(resourcesSubDir, "Shortcuts.wxs"))
-                    .Replace(originalNamespace, wixv4Namespace));
-
-                File.WriteAllText(entryTempfile, File.ReadAllText(Path.Combine(resourcesSubDir, "Duplicati.wxs"))
-                    .Replace(originalNamespace, wixv4Namespace));
+                var tempFiles = fragments
+                    .Select(x =>
+                    {
+                        var tempFile = Path.Combine(buildTmp, Path.GetFileName(x));
+                        File.WriteAllText(tempFile, File.ReadAllText(x).Replace(originalNamespace, wixv4Namespace));
+                        return tempFile;
+                    }).ToArray();
 
                 wixArgs = [
                     rtcfg.Configuration.Commands.Wix!,
@@ -327,9 +573,8 @@ public static partial class Command
                     "-define", $"HarvestPath={sourceFiles}",
                     "-arch", msiArch,
                     "-out", msiFile,
-                    shortcutsTempfile,
                     binFiles,
-                    entryTempfile
+                    ..tempFiles
                 ];
             }
             else
@@ -342,13 +587,35 @@ public static partial class Command
                     "--define", $"HarvestPath={sourceFiles}",
                     "--arch", msiArch,
                     "--output", msiFile,
-                    Path.Combine(resourcesSubDir, "Shortcuts.wxs"),
                     binFiles,
-                    Path.Combine(resourcesSubDir, "Duplicati.wxs")
+                    ..fragments,
                 ];
             }
 
             await ProcessHelper.Execute(wixArgs, workingDirectory: buildRoot);
+
+            // Apply post-wixl MSI table customizations on Linux/macOS. On Windows the
+            // real WiX toolchain handles all of these natively via WXS elements
+            if (!OperatingSystem.IsWindows())
+            {
+                if (string.IsNullOrWhiteSpace(rtcfg.Configuration.Commands.MsiBuild))
+                {
+                    Console.WriteLine("WARNING: msiBuild not found, skipping SQL file injection.");
+                }
+                else
+                {
+                    foreach (var sqlFile in Directory.GetFiles(resourcesSubDir, "*.sql"))
+                    {
+                        var queries = (await File.ReadAllLinesAsync(sqlFile))
+                            .Select(line => line.Trim())
+                            .Where(line => line.Length > 0 && !line.StartsWith("--"))
+                            .ToArray();
+
+                        foreach (var query in queries)
+                            await ProcessHelper.Execute([rtcfg.Configuration.Commands.MsiBuild, msiFile, "-q", query]);
+                    }
+                }
+            }
 
             if (rtcfg.UseAuthenticodeSigning)
                 await rtcfg.AuthenticodeSign(msiFile);
@@ -904,6 +1171,11 @@ public static partial class Command
                     Path.Combine(pkgroot, "usr", "share", "applications", "duplicati.desktop")
                 ));
 
+                var metainfoDest = Path.Combine(pkgroot, "usr", "share", "metainfo", "com.duplicati.app.metainfo.xml");
+                var metainfoDir = Path.GetDirectoryName(metainfoDest)!;
+                if (!Directory.Exists(metainfoDir)) Directory.CreateDirectory(metainfoDir);
+                File.WriteAllText(metainfoDest, GetMetainfoWithReleases(baseDir, Path.Combine(sharedDir, "metainfo", "com.duplicati.app.metainfo.xml")));
+
                 supportFiles.AddRange(
                     new[] { "duplicati.png", "duplicati.svg", "duplicati.xpm" }
                         .Select(f => (
@@ -1007,6 +1279,440 @@ public static partial class Command
             File.Move(Path.Combine(debroot, debpkgname), debFile);
             Directory.Delete(debroot, true);
         }
+
+        /// <summary>
+        /// Builds a Synology SPK package.
+        /// </summary>
+        /// <remarks>
+        /// Synology SPK packages are tar archives containing an INFO file, scripts, ui assets and a package.tgz payload.
+        /// The payload is extracted to <c>/var/packages/<PKG>/target</c>.
+        /// </remarks>
+        static async Task BuildSynologySpkPackage(string baseDir, string buildRoot, string spkFile, PackageTarget target, RuntimeConfig rtcfg)
+        {
+            if (target.OS != OSType.Linux)
+                throw new Exception($"Synology SPK is only supported for Linux targets, got: {target.OS}");
+
+            // Synology package is a server-style package (Duplicati.Server)
+            if (target.Interface != InterfaceType.Cli)
+                throw new Exception($"Synology SPK is only supported for CLI/server interface, got: {target.Interface}");
+
+            var synologyResourcesDir = Path.Combine(baseDir, "ReleaseBuilder", "Resources", "Synology");
+            if (!Directory.Exists(synologyResourcesDir))
+                throw new DirectoryNotFoundException($"Synology resources folder not found: {synologyResourcesDir}");
+
+            var filemode755 = UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead
+                | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead
+                | UnixFileMode.OtherExecute;
+
+            var tmpRoot = Path.Combine(buildRoot, "tmp-synology");
+            if (Directory.Exists(tmpRoot))
+                Directory.Delete(tmpRoot, true);
+            Directory.CreateDirectory(tmpRoot);
+
+            var payloadRoot = Path.Combine(tmpRoot, "payload"); // contents for package.tgz (Synology 'target' dir)
+            Directory.CreateDirectory(payloadRoot);
+
+            // Copy build output into payload
+            EnvHelper.CopyDirectory(Path.Combine(buildRoot, target.BuildTargetString), payloadRoot, recursive: true);
+
+            // Make the payload consistent with other Linux packages
+            await PackageSupport.InstallPackageIdentifier(payloadRoot, target);
+            await PackageSupport.RenameExecutables(payloadRoot);
+            await PackageSupport.SetPermissionFlags(payloadRoot, rtcfg);
+
+            // Install Synology-specific runtime templates into the payload
+            EnvHelper.CopyDirectory(Path.Combine(synologyResourcesDir, "nginx"), Path.Combine(payloadRoot, "nginx"), recursive: true);
+
+            // Include license file in the payload so it is available in the installed target directory
+            File.Copy(
+                Path.Combine(baseDir, "LICENSE"),
+                Path.Combine(payloadRoot, "LICENSE"),
+                overwrite: true
+            );
+
+            // Copy in the UI configuration
+            EnvHelper.CopyDirectory(
+                Path.Combine(synologyResourcesDir, "ui"),
+                Path.Combine(payloadRoot, "ui"),
+                recursive: true
+            );
+
+            // Copy in the nginx files
+            EnvHelper.CopyDirectory(
+                Path.Combine(synologyResourcesDir, "nginx"),
+                Path.Combine(payloadRoot, "nginx"),
+                recursive: true
+            );
+
+            if (!Directory.Exists(Path.Combine(payloadRoot, "webroot", "ngclient")))
+                throw new DirectoryNotFoundException($"Expected web UI folder not found in payload: {Path.Combine(payloadRoot, "webroot", "ngclient")}");
+
+            // Ensure executable flags on cgi scripts
+            if (!OperatingSystem.IsWindows())
+                foreach (var f in Directory.EnumerateFiles(Path.Combine(payloadRoot, "ui"), "*.cgi", SearchOption.TopDirectoryOnly))
+                    File.SetUnixFileMode(f, filemode755);
+
+            // Create package.tgz (payload) using System.Formats.Tar + GZip
+            var payloadTar = Path.Combine(tmpRoot, "package.tar");
+            var payloadTgz = Path.Combine(tmpRoot, "package.tgz");
+            if (File.Exists(payloadTar))
+                File.Delete(payloadTar);
+            if (File.Exists(payloadTgz))
+                File.Delete(payloadTgz);
+
+            TarFile.CreateFromDirectory(payloadRoot, payloadTar, includeBaseDirectory: false);
+            using (var inStream = File.OpenRead(payloadTar))
+            using (var outStream = File.Create(payloadTgz))
+            using (var gzip = new GZipStream(outStream, CompressionLevel.SmallestSize))
+                await inStream.CopyToAsync(gzip);
+
+            File.Delete(payloadTar);
+
+            // Stage SPK root contents
+            var spkRoot = Path.Combine(tmpRoot, "spkroot");
+            Directory.CreateDirectory(spkRoot);
+
+            // INFO
+            var synoArch = target.Arch switch
+            {
+                ArchType.x64 => "x86_64",
+                ArchType.Arm64 => "armv8",
+                ArchType.Arm7 => "armv7",
+                _ => throw new Exception($"Unsupported Synology architecture: {target.Arch}")
+            };
+
+            var spkVersion = $"{rtcfg.ReleaseInfo.Version}-1";
+
+            var infoTemplateFile = Path.Combine(synologyResourcesDir, "INFO.template");
+            var infoText = File.ReadAllText(infoTemplateFile)
+                .Replace("%VERSION%", spkVersion)
+                .Replace("%ARCH%", synoArch);
+
+            File.WriteAllText(Path.Combine(spkRoot, "INFO"), infoText);
+
+            // Include license file in the SPK root so it is visible in the distributed package
+            File.Copy(
+                Path.Combine(baseDir, "LICENSE"),
+                Path.Combine(spkRoot, "LICENSE"),
+                overwrite: true
+            );
+
+            // Icons for Synology package metadata
+            File.Copy(Path.Combine(synologyResourcesDir, "PACKAGE_ICON.PNG"), Path.Combine(spkRoot, "PACKAGE_ICON.PNG"), overwrite: true);
+            File.Copy(Path.Combine(synologyResourcesDir, "PACKAGE_ICON_256.PNG"), Path.Combine(spkRoot, "PACKAGE_ICON_256.PNG"), overwrite: true);
+
+            // scripts + conf
+            EnvHelper.CopyDirectory(Path.Combine(synologyResourcesDir, "scripts"), Path.Combine(spkRoot, "scripts"), recursive: true);
+            EnvHelper.CopyDirectory(Path.Combine(synologyResourcesDir, "conf"), Path.Combine(spkRoot, "conf"), recursive: true);
+            EnvHelper.CopyDirectory(Path.Combine(synologyResourcesDir, "WIZARD_UIFILES"), Path.Combine(spkRoot, "WIZARD_UIFILES"), recursive: true);
+
+            // Payload
+            File.Copy(payloadTgz, Path.Combine(spkRoot, "package.tgz"), overwrite: true);
+
+            // Ensure executable flags (important for scripts)
+            if (!OperatingSystem.IsWindows())
+                foreach (var f in Directory.EnumerateFiles(Path.Combine(spkRoot, "scripts"), "*", SearchOption.AllDirectories))
+                    File.SetUnixFileMode(f, filemode755);
+
+            // Create the final .spk (tar archive)
+            if (File.Exists(spkFile))
+                File.Delete(spkFile);
+
+            using (var outStream = File.Create(spkFile))
+                TarFile.CreateFromDirectory(spkRoot, outStream, includeBaseDirectory: false);
+
+            Directory.Delete(tmpRoot, true);
+        }
+
+        /// <summary>
+        /// Builds a QNAP QPKG package using Docker with the QNAP Development Kit (QDK).
+        /// </summary>
+        /// <remarks>
+        /// QPKG packages are self-extracting archives created by the QDK <c>qbuild</c> tool.
+        /// The payload is extracted to the package folder on the NAS, and the service
+        /// script <c>duplicati.sh</c> is registered as the start/stop program.
+        /// </remarks>
+        /// <param name="baseDir">The base directory.</param>
+        /// <param name="buildRoot">The build root directory.</param>
+        /// <param name="qpkgFile">The QPKG file to generate.</param>
+        /// <param name="target">The package target.</param>
+        /// <param name="rtcfg">The runtime configuration.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        static async Task BuildQnapQpkgPackage(string baseDir, string buildRoot, string qpkgFile, PackageTarget target, RuntimeConfig rtcfg)
+        {
+            if (target.OS != OSType.Linux)
+                throw new Exception($"QNAP QPKG is only supported for Linux targets, got: {target.OS}");
+
+            // QNAP package is a server-style package (Duplicati.Server)
+            if (target.Interface != InterfaceType.Cli)
+                throw new Exception($"QNAP QPKG is only supported for CLI/server interface, got: {target.Interface}");
+
+            var qnapResourcesDir = Path.Combine(baseDir, "ReleaseBuilder", "Resources", "QNAP");
+            if (!Directory.Exists(qnapResourcesDir))
+                throw new DirectoryNotFoundException($"QNAP resources folder not found: {qnapResourcesDir}");
+
+            // Map to the QNAP/QDK architecture identifiers
+            var qnapArch = target.Arch switch
+            {
+                ArchType.x64 => "x86_64",
+                ArchType.Arm64 => "arm_64",
+                ArchType.Arm7 => "arm-x41",
+                _ => throw new Exception($"Unsupported QNAP architecture: {target.Arch}")
+            };
+
+            // Map to the Docker platform used to build the Debian rootfs
+            var dockerPlatform = target.Arch switch
+            {
+                ArchType.x64 => "linux/amd64",
+                ArchType.Arm64 => "linux/arm64",
+                ArchType.Arm7 => "linux/arm/v7",
+                _ => throw new Exception($"Unsupported QNAP architecture: {target.Arch}")
+            };
+
+            var tmpRoot = Path.Combine(buildRoot, "tmp-qnap");
+            if (Directory.Exists(tmpRoot))
+                Directory.Delete(tmpRoot, true);
+            Directory.CreateDirectory(tmpRoot);
+
+            // Set up the QDK build root, with the chroot rootfs in the arch-specific folder.
+            // The server runs inside a chroot (see duplicati.sh), with the binaries in /app
+            var pkgRoot = Path.Combine(tmpRoot, "qpkg");
+            var dataDir = Path.Combine(pkgRoot, qnapArch);
+            var rootfsDir = Path.Combine(dataDir, "rootfs");
+            var appDir = Path.Combine(rootfsDir, "app");
+            Directory.CreateDirectory(appDir);
+
+            // Build a minimal Debian rootfs that provides the glibc runtime environment.
+            // QNAP QTS ships a very old glibc that cannot run the .NET binaries directly,
+            // so the package bundles a self-contained Debian userspace to chroot into
+            await CreateDebianRootfs(tmpRoot, qnapArch, dockerPlatform);
+
+            // Copy build output into the payload
+            EnvHelper.CopyDirectory(Path.Combine(buildRoot, target.BuildTargetString), appDir, recursive: true);
+
+            // Make the payload consistent with other Linux packages
+            await PackageSupport.InstallPackageIdentifier(appDir, target);
+            await PackageSupport.RenameExecutables(appDir);
+            await PackageSupport.SetPermissionFlags(appDir, rtcfg);
+
+            // Include license file in the payload so it is available in the installed directory
+            File.Copy(
+                Path.Combine(baseDir, "LICENSE"),
+                Path.Combine(dataDir, "LICENSE"),
+                overwrite: true
+            );
+
+            // Install the service script into the shared folder
+            var sharedFolder = Path.Combine(pkgRoot, "shared");
+            Directory.CreateDirectory(sharedFolder);
+            var serviceScript = Path.Combine(sharedFolder, "duplicati.sh");
+            File.Copy(Path.Combine(qnapResourcesDir, "shared", "duplicati.sh"), serviceScript, overwrite: true);
+
+            // Install the helper that sets up the chroot for command-line use
+            var chrootScript = Path.Combine(sharedFolder, "chroot-exec.sh");
+            File.Copy(Path.Combine(qnapResourcesDir, "shared", "chroot-exec.sh"), chrootScript, overwrite: true);
+
+            // Generate an executable helper for each binary in the payload,
+            // so the tools can be invoked as normal executables from the
+            // commandline; each helper forwards to chroot-exec.sh
+            var helperFolder = Path.Combine(sharedFolder, "bin");
+            Directory.CreateDirectory(helperFolder);
+            var helperScripts = ExecutableRenames.Values
+                .Where(x => File.Exists(Path.Combine(appDir, x)))
+                .Select(x => Path.Combine(helperFolder, x))
+                .ToList();
+
+            foreach (var helper in helperScripts)
+            {
+                var exe = Path.GetFileName(helper);
+                File.WriteAllText(helper,
+                    "#!/bin/sh\n" +
+                    $"# Runs {exe} inside the Duplicati package chroot; see chroot-exec.sh\n" +
+                    $"exec \"$(dirname \"$0\")/../chroot-exec.sh\" {exe} \"$@\"\n");
+            }
+
+            if (!OperatingSystem.IsWindows())
+            {
+                var execFlags = UnixFileMode.UserRead
+                    | UnixFileMode.UserWrite
+                    | UnixFileMode.UserExecute
+                    | UnixFileMode.GroupRead
+                    | UnixFileMode.GroupExecute
+                    | UnixFileMode.OtherRead
+                    | UnixFileMode.OtherExecute;
+
+                File.SetUnixFileMode(serviceScript, execFlags);
+                File.SetUnixFileMode(chrootScript, execFlags);
+                foreach (var helper in helperScripts)
+                    File.SetUnixFileMode(helper, execFlags);
+            }
+
+            // Write the package configuration with the current version
+            File.WriteAllText(
+                Path.Combine(pkgRoot, "qpkg.cfg"),
+                File.ReadAllText(Path.Combine(qnapResourcesDir, "qpkg.cfg.template"))
+                    .Replace("%VERSION%", rtcfg.ReleaseInfo.Version.ToString())
+            );
+
+            // Install the package routines and icons
+            File.Copy(
+                Path.Combine(qnapResourcesDir, "package_routines"),
+                Path.Combine(pkgRoot, "package_routines"),
+                overwrite: true
+            );
+            EnvHelper.CopyDirectory(Path.Combine(qnapResourcesDir, "icons"), Path.Combine(pkgRoot, "icons"), recursive: true);
+
+            // Copy the Docker build file
+            File.Copy(
+                Path.Combine(qnapResourcesDir, "Dockerfile.build"),
+                Path.Combine(tmpRoot, "Dockerfile"),
+                true
+            );
+
+            // Build a Docker image with QDK installed
+            await ProcessHelper.Execute([
+                "docker", "build",
+                "-t", "duplicati/qnap-build:latest",
+                tmpRoot
+            ], workingDirectory: tmpRoot);
+
+            // Docker desktop has some sync issues
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            var outputDir = Path.Combine(tmpRoot, "out");
+            Directory.CreateDirectory(outputDir);
+
+            // Build the QPKG package with qbuild
+            await ProcessHelper.Execute([
+                "docker", "run",
+                "--workdir", "/build",
+                "--volume", $"{tmpRoot}:/build:rw",
+                "duplicati/qnap-build:latest",
+                "qbuild", "--root", "/build/qpkg", "--build-arch", qnapArch, "--build-dir", "/build/out"
+            ]);
+
+            // The output is a single .qpkg file named by qbuild
+            var builtFiles = Directory.GetFiles(outputDir, "*.qpkg");
+            if (builtFiles.Length != 1)
+                throw new Exception($"Expected a single QPKG file in {outputDir}, found {builtFiles.Length}");
+
+            if (File.Exists(qpkgFile))
+                File.Delete(qpkgFile);
+
+            File.Move(builtFiles[0], qpkgFile);
+            Directory.Delete(tmpRoot, true);
+        }
+
+        /// <summary>
+        /// Creates a minimal Debian rootfs for the QNAP chroot environment.
+        /// </summary>
+        /// <remarks>
+        /// A <c>debian:bookworm-slim</c> container is created with only the runtime
+        /// dependencies installed and unneeded files stripped out. The filesystem
+        /// is exported and extracted into the package payload. Extraction happens
+        /// inside a container, so device nodes, symlinks and file ownership are
+        /// preserved correctly, even on hosts where tar extraction is restricted.
+        /// </remarks>
+        /// <param name="tmpRoot">The temporary build root directory.</param>
+        /// <param name="qnapArch">The QNAP/QDK architecture identifier.</param>
+        /// <param name="dockerPlatform">The Docker platform to build the rootfs for.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        static async Task CreateDebianRootfs(string tmpRoot, string qnapArch, string dockerPlatform)
+        {
+            // Setup script for the rootfs container: install the runtime dependencies,
+            // then strip everything that is not needed to load and run the .NET app.
+            // Only the dynamic loader, glibc, the listed runtime libraries, timezone
+            // data, CA certificates and a minimal shell/tool set (for Duplicati
+            // run-script support) are kept.
+            const string rootfsSetupScript = """
+                set -e
+                apt-get update
+                apt-get install -y --no-install-recommends ca-certificates zlib1g libstdc++6 libgcc-s1 libssl3 libicu72
+
+                # Remove package management (apt/dpkg) and their data files
+                rm -rf /etc/apt /etc/dpkg /usr/lib/apt /usr/lib/dpkg /var/lib/apt /var/lib/dpkg /var/cache/apt /usr/share/keyrings
+                rm -f /usr/bin/apt* /usr/bin/dpkg* /usr/sbin/dpkg* /usr/bin/gpgv* /usr/bin/dselect
+                rm -f /usr/lib/*/libapt-pkg* /usr/lib/*/libgnutls* /usr/lib/*/libp11-kit* /usr/lib/*/libtasn1* /usr/lib/*/libidn2* /usr/lib/*/libunistring* /usr/lib/*/libgcrypt* /usr/lib/*/libgpg-error* /usr/lib/*/libzstd* /usr/lib/*/libxxhash* /usr/lib/*/liblz4* /usr/lib/*/libbz2* /usr/lib/*/libmd* /usr/lib/*/libdb-5.3*
+
+                # Remove Perl (only used by dpkg/debconf)
+                rm -rf /usr/lib/*/perl-base /usr/share/perl /usr/share/perl5 /usr/share/debconf
+                rm -f /usr/bin/perl*
+
+                # Remove systemd support (the chroot runs the daemon directly)
+                rm -rf /usr/lib/systemd /lib/systemd /etc/systemd /usr/share/polkit-1 /usr/lib/tmpfiles.d /usr/lib/sysusers.d
+                rm -f /usr/lib/*/libsystemd* /usr/lib/*/libudev*
+
+                # Remove bash (dash remains as /bin/sh for Duplicati run-script support) and terminal databases
+                rm -f /bin/bash /usr/lib/*/libncurses* /usr/lib/*/libtinfo* /usr/lib/*/libtic* /usr/lib/*/libreadline* /usr/lib/*/libhistory*
+                rm -rf /usr/share/terminfo /lib/terminfo /usr/lib/terminfo /usr/share/tabset
+
+                # Remove system administration tools and libraries that are unusable inside the chroot
+                # (note: libss.so.* is the e2fsprogs library; libssl.so.3 must be kept!)
+                rm -rf /usr/sbin /usr/share/pam /usr/share/pam-configs /usr/share/util-linux /usr/lib/*/security
+                rm -f /usr/lib/*/libmount* /usr/lib/*/libblkid* /usr/lib/*/libsmartcols* /usr/lib/*/libfdisk* /usr/lib/*/libuuid* /usr/lib/*/libext2fs* /usr/lib/*/libe2p* /usr/lib/*/libcom_err* /usr/lib/*/libss.so.* /usr/lib/*/libpam* /usr/lib/*/libaudit* /usr/lib/*/libcap-ng* /usr/lib/*/libsemanage* /usr/lib/*/libsepol* /usr/lib/*/libcrypt.so.* /usr/lib/*/libnsl* /usr/lib/*/libtirpc*
+
+                # Remove binaries that only work with the libraries removed above
+                # (mount/filesystem tools, login/user management, terminal tools)
+                rm -f /usr/bin/chage /usr/bin/chattr /usr/bin/chfn /usr/bin/chsh /usr/bin/clear /usr/bin/clear_console /usr/bin/dmesg /usr/bin/fincore /usr/bin/findmnt /usr/bin/gpasswd /usr/bin/infocmp /usr/bin/lastlog /usr/bin/logger /usr/bin/login /usr/bin/lsattr /usr/bin/lsblk /usr/bin/lscpu /usr/bin/lsfd /usr/bin/lsipc /usr/bin/lsirq /usr/bin/lslocks /usr/bin/lslogins /usr/bin/lsmem /usr/bin/lsns /usr/bin/more /usr/bin/mount /usr/bin/mountpoint /usr/bin/newgrp /usr/bin/partx /usr/bin/passwd /usr/bin/prlimit /usr/bin/setpriv /usr/bin/setterm /usr/bin/su /usr/bin/tabs /usr/bin/tic /usr/bin/toe /usr/bin/tput /usr/bin/tset /usr/bin/umount /usr/bin/wdctl
+
+                # Remove scripts whose interpreters have been removed (Perl/bash scripts)
+                rm -f /usr/bin/adduser /usr/bin/deluser /usr/bin/debconf* /usr/bin/dpkg-reconfigure /usr/bin/update-alternatives /usr/bin/c_rehash /usr/bin/deb-systemd-helper /usr/bin/deb-systemd-invoke /usr/bin/tzselect /usr/bin/ldd
+
+                # Remove documentation and other arch-independent data
+                rm -rf /usr/share/doc /usr/share/man /usr/share/info /usr/share/locale /usr/lib/locale /usr/share/common-licenses /usr/share/pixmaps /usr/share/menu /usr/share/misc /usr/share/gcc
+
+                # Clean package caches, logs and temp files
+                rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/* /var/tmp/* /tmp/*
+                """;
+
+            // Create a container that installs the runtime dependencies and strips unneeded files
+            var containerId = (await ProcessHelper.ExecuteWithOutput([
+                "docker", "create",
+                "--platform", dockerPlatform,
+                "debian:bookworm-slim",
+                "sh", "-c",
+                rootfsSetupScript
+            ])).Trim();
+
+            var rootfsTar = Path.Combine(tmpRoot, "rootfs.tar");
+            try
+            {
+                // Run the setup script inside the container
+                await ProcessHelper.Execute(["docker", "start", "--attach", containerId]);
+
+                // Export the resulting filesystem
+                await ProcessHelper.Execute(["docker", "export", containerId, "-o", rootfsTar]);
+            }
+            finally
+            {
+                await ProcessHelper.Execute(["docker", "rm", containerId]);
+            }
+
+            try
+            {
+                // Extract the rootfs inside a container, so device nodes, symlinks
+                // and file ownership are handled correctly; BusyBox tar (Alpine) is
+                // used because GNU tar cannot extract the docker export stream
+                var rel = $"qpkg/{qnapArch}/rootfs";
+                await ProcessHelper.Execute([
+                    "docker", "run", "--rm",
+                    "--platform", dockerPlatform,
+                    "--volume", $"{tmpRoot}:/work",
+                    "alpine:3.18",
+                    "sh", "-c",
+                    $"mkdir -p /work/{rel} && tar -xf /work/rootfs.tar -C /work/{rel} && mkdir -p /work/{rel}/proc /work/{rel}/dev /work/{rel}/sys /work/{rel}/share /work/{rel}/data /work/{rel}/app"
+                ]);
+            }
+            finally
+            {
+                File.Delete(rootfsTar);
+            }
+        }
+
     }
 
     /// <summary>
@@ -1046,7 +1752,7 @@ public static partial class Command
         // Create the tarball
         var tarfile = Path.Combine(tmpbuild, $"duplicati-{rtcfg.ReleaseInfo.Version}.tar.bz2");
         await ProcessHelper.Execute(
-            ["tar", "-cjf", tarfile, Path.GetFileName(tarsrc)],
+            ["tar", "--no-acls", "--no-xattrs", "-cjf", tarfile, Path.GetFileName(tarsrc)],
             workingDirectory: Path.GetDirectoryName(tarsrc)
         );
         Directory.Delete(tarsrc, true);
@@ -1062,6 +1768,7 @@ public static partial class Command
         File.Copy(Path.Combine(sharedDir, "pixmaps", "duplicati.xpm"), Path.Combine(sources, "duplicati.xpm"));
         File.Copy(Path.Combine(sharedDir, "pixmaps", "duplicati.png"), Path.Combine(sources, "duplicati.png"));
         File.Copy(Path.Combine(sharedDir, "desktop", "duplicati.desktop"), Path.Combine(sources, "duplicati.desktop"));
+        File.WriteAllText(Path.Combine(sources, "com.duplicati.app.metainfo.xml"), CreatePackage.GetMetainfoWithReleases(baseDir, Path.Combine(sharedDir, "metainfo", "com.duplicati.app.metainfo.xml")));
         File.Copy(Path.Combine(resourcesDir, "duplicati-install-recursive.sh"), Path.Combine(sources, "duplicati-install-recursive.sh"));
         if (target.Interface != InterfaceType.Agent)
         {
@@ -1231,9 +1938,12 @@ public static partial class Command
             // Copy in the run-as-user.sh script
             File.Copy(Path.Combine(resourcesDir, "run-as-user.sh"), Path.Combine(tmpbuild, "run-as-user.sh"), true);
 
-            var tags = new List<string> { rtcfg.ReleaseInfo.Channel.ToString(), rtcfg.ReleaseInfo.Version.ToString(), $"{rtcfg.ReleaseInfo.Version}-{rtcfg.ReleaseInfo.Channel}" };
+            var tags = new List<string> { rtcfg.ReleaseInfo.Channel.ToString(), $"{rtcfg.ReleaseInfo.Version}-{rtcfg.ReleaseInfo.Channel}" };
             if (rtcfg.ReleaseInfo.Channel == ReleaseChannel.Stable)
+            {
+                tags.Add(rtcfg.ReleaseInfo.Version.ToString());
                 tags.Add("latest");
+            }
 
             if (!dockerArchs.Any())
                 continue;

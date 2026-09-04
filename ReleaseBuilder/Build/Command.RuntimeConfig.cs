@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -122,7 +122,7 @@ public static partial class Command
                     {
                         var signKeyPin = EnvHelper.GetEnvKey("SIGNKEY_PIN", "");
                         if (string.IsNullOrWhiteSpace(signKeyPin))
-                            signKeyPin = ConsoleHelper.ReadPassword("Enter the pin for the signing key");
+                            signKeyPin = ConsoleHelper.ReadPassword("Enter the pin for the signing key: ");
                         input = input with { SignkeyPin = signKeyPin };
                     }
 
@@ -143,6 +143,15 @@ public static partial class Command
 
                 throw new Exception("Configuration is not set up for jsign/signtool/osslsigncode");
             }
+        }
+
+        /// <summary>
+        /// Disables Authenticode signing
+        /// </summary>
+        public void DisableAuthenticodeSigning()
+        {
+            _useAuthenticodeSigning = false;
+            _useJsignToolForAuthenticode = false;
         }
 
         /// <summary>
@@ -178,6 +187,22 @@ public static partial class Command
                     throw new Exception("Configuration is not set up for signcode");
                 }
             }
+        }
+
+        /// <summary>
+        /// Disables codesign signing
+        /// </summary>
+        public void DisableSignCodeSigning()
+        {
+            _useCodeSignSigning = false;
+        }
+
+        /// <summary>
+        /// Disables notarize signing
+        /// </summary>
+        public void DisableNotarizeSigning()
+        {
+            _useNotarizeSigning = false;
         }
 
         /// <summary>

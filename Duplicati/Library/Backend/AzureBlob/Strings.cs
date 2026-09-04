@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -25,7 +25,7 @@ namespace Duplicati.Library.Backend.AzureBlob.Strings;
 
 internal static class AzureBlobBackend
 {
-    public static string DescriptionV2 => LC.L(@"This backend can read and write data to Azure blob storage. Allowed format is ""azure://bucketname"".");
+    public static string DescriptionV2 => LC.L(@"This backend can read and write data to Azure blob storage. Allowed format is ""azure://bucketname/folder"".");
     public static string DisplayName => LC.L(@"Azure blob");
     public static string ContainerNameDescriptionLong => LC.L(@"All files will be written to the container specified.");
     public static string ContainerNameDescriptionShort => LC.L(@"The name of the storage container");
@@ -41,4 +41,8 @@ internal static class AzureBlobBackend
     public static string AccessTierDescriptionLong => LC.L(@"Use this option to specify the access tier. If this option is not used, the server will choose a default access tier.");
     public static string ArchiveClassesDescriptionShort => LC.L(@"The storage classes that are considered archive classes");
     public static string ArchiveClassesDescriptionLong => LC.L(@"Use this option to specify what storage classes are considered archive storage classes. With this option it is possible to allow lifecycle policies to move data to cheaper storage classes and prevent Duplicati from accessing archived data.");
+    public static string InternalRetriesDescriptionShort => LC.L(@"The number of retries for Azure operations");
+    public static string InternalRetriesDescriptionLong => LC.L(@"Use this option to specify the number of retries for Azure blob operations. Set to 0 to disable retries.");
+    public static string ImmutabilityPolicyModeDescriptionShort => LC.L(@"The immutability policy mode");
+    public static string ImmutabilityPolicyModeDescriptionLong => LC.L(@"Use this option to specify the immutability policy mode. The default is 'Unlocked'.");
 }

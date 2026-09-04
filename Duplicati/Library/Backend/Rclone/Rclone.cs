@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -33,7 +33,7 @@ namespace Duplicati.Library.Backend
 {
     // ReSharper disable once UnusedMember.Global
     // This class is instantiated dynamically in the BackendLoader.
-    public class Rclone : IBackend
+    public class Rclone : IBackend, IRenameEnabledBackend
     {
         private const string OPTION_LOCAL_REPO = "rclone-local-repository";
         private const string OPTION_REMOTE_REPO = "rclone-remote-repository";
@@ -62,7 +62,7 @@ namespace Duplicati.Library.Backend
 
         public Rclone(string url, Dictionary<string, string?> options)
         {
-            var uri = new Utility.Uri(url);
+            var uri = new Utility.RelaxedUri(url);
             /*should check here if program is installed */
 
             local_repo = options.GetValueOrDefault(OPTION_LOCAL_REPO) ?? "";
@@ -297,8 +297,8 @@ namespace Duplicati.Library.Backend
 
         public Task<string[]> GetDNSNamesAsync(CancellationToken cancelToken) => Task.FromResult(new[] { remote_repo });
 
-        public Task TestAsync(CancellationToken cancelToken)
-            => this.TestReadWritePermissionsAsync(cancelToken);
+        public Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
+            => this.TestBackendAsync(alsoWrite, cancelToken);
 
         public Task CreateFolderAsync(CancellationToken cancelToken)
         {
@@ -312,6 +312,18 @@ namespace Duplicati.Library.Backend
         public void Dispose()
         {
 
+        }
+
+        public async Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await RcloneCommandExecuter(rclone_executable, $"moveto {remote_repo}:{Path.Combine(remote_path, oldname)} {remote_repo}:{Path.Combine(remote_path, newname)}", Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (FolderMissingException ex)
+            {
+                throw new FileMissingException(ex);
+            }
         }
 
         #endregion

@@ -1,0 +1,208 @@
+using System.Diagnostics.CodeAnalysis;
+using Duplicati.Library.Interface;
+using Duplicati.Library.Main;
+using Duplicati.Library.Utility;
+using Duplicati.Server;
+using Duplicati.Server.Database;
+using Duplicati.WebserverCore.Abstractions;
+
+namespace Duplicati.WebserverCore.Endpoints.Shared;
+
+public record BackendTupleDisposeWrapper(IBackend Backend, IEnumerable<IGenericModule> Modules) : IDisposable
+{
+    public void Dispose()
+    {
+        Backend?.Dispose();
+        foreach (var n in Modules)
+            if (n is IDisposable disposable)
+                disposable.Dispose();
+    }
+}
+
+public record SourceProviderTupleDisposeWrapper(ISourceProvider SourceProvider, IEnumerable<IGenericModule> Modules) : IDisposable
+{
+    public void Dispose()
+    {
+        SourceProvider?.Dispose();
+        foreach (var n in Modules)
+            if (n is IDisposable disposable)
+                disposable.Dispose();
+    }
+}
+
+public record RestoreDestinationProviderTupleDisposeWrapper(IRestoreDestinationProvider RestoreDestinationProvider, IEnumerable<IGenericModule> Modules) : IDisposable
+{
+    public void Dispose()
+    {
+        RestoreDestinationProvider?.Dispose();
+        foreach (var n in Modules)
+            if (n is IDisposable disposable)
+                disposable.Dispose();
+    }
+}
+
+public class SharedRemoteOperation
+{
+    public static Dictionary<string, string?> ParseUrlOptions(Connection connection, Library.Utility.RelaxedUri uri)
+    {
+        var qp = uri.QueryParameters;
+
+        var opts = Runner.GetCommonOptions(connection);
+        foreach (var k in qp.Keys.Cast<string>())
+            opts[k] = qp[k];
+
+        return opts;
+    }
+
+    public static IEnumerable<IGenericModule> ConfigureModules(IDictionary<string, string?> opts)
+    {
+        var modules = Library.DynamicLoader.GenericLoader.Modules.OfType<IConnectionModule>()
+            .Select(x => Library.DynamicLoader.GenericLoader.GetModule(x.Key))
+            .WhereNotNull()
+            .ToArray();
+
+        foreach (var n in modules)
+            n.Configure(opts);
+
+        return modules;
+    }
+
+    /// <summary>
+    /// This method will unmask the URL if needed, apply secrets from the secret provider, and merge in remote control storage API credentials if it's a Duplicati backend URL. 
+    /// It returns the expanded URL and the options used for the expansion, which may be needed for later operations to ensure consistency.
+    /// </summary>
+    /// <param name="connection">The database connection</param>
+    /// <param name="applicationSettings">The application settings</param>
+    /// <param name="url">The URL to expand</param>
+    /// <param name="backupId">The backup ID</param>
+    /// <param name="sourcePrefix">The prefix, if this is a remote source</param>
+    /// <param name="cancelToken">The cancellation token</param>
+    /// <returns>The unmasked URL and the options after the expansion</returns>
+    public static async Task<(string Url, Dictionary<string, string?> Options)> ExpandUrlAsync(Connection connection, IApplicationSettings applicationSettings, string url, string? backupId, long connectionStringId, string? sourcePrefix, CancellationToken cancelToken)
+    {
+        url = UnmaskUrl(connection, url, backupId, connectionStringId, sourcePrefix);
+        var uri = new Library.Utility.RelaxedUri(url);
+        var opts = ParseUrlOptions(connection, uri);
+
+        var tmp = new[] { uri };
+        await SecretProviderHelper.ApplySecretProviderAsync([], tmp, opts, Library.Utility.TempFolder.SystemTempPath, applicationSettings.SecretProvider, cancelToken);
+        url = tmp[0].ToString();
+
+        if (uri.Scheme.Equals(Library.Backend.Duplicati.DuplicatiBackend.PROTOCOL, StringComparison.OrdinalIgnoreCase))
+            url = Library.Backend.Duplicati.DuplicatiBackend.MergeArgsIntoUrl(
+                url,
+                connection.ApplicationSettings.RemoteControlStorageApiId,
+                connection.ApplicationSettings.RemoteControlStorageApiKey,
+                connection.ApplicationSettings.RemoteControlStorageEndpointUrl
+            );
+
+        return (url, opts);
+    }
+
+    [return: NotNullIfNotNull(nameof(url))]
+    private static string? AppendAdditionalPath(string? url, string? additionalPath)
+    {
+        if (string.IsNullOrEmpty(additionalPath))
+            return url;
+
+        if (additionalPath.Contains('?') || additionalPath.Contains('#') || additionalPath.Contains('*') || additionalPath.Contains(".."))
+            throw new UserInformationException("The additional path contains invalid characters", "InvalidPath");
+
+        if (string.IsNullOrEmpty(url))
+            return url;
+
+        var source = new Library.Utility.RelaxedUri(url);
+        var path = (source.Path ?? "").TrimEnd('/') + "/" + additionalPath.TrimStart('/');
+        // The relaxed serializer adds the '/' between host and path itself. A
+        // host-less url without a path puts the appended path in the authority
+        // position ("s3://" + "sub" => "s3://sub"), while an existing path stays
+        // absolute ("file:///a" + "b" => "file:///a/b"). System.UriBuilder handled
+        // this implicitly, but collapses host-less urls with schemes it does not
+        // know ("s3://" becomes "s3:/")
+        if (!string.IsNullOrEmpty(source.Host) || string.IsNullOrEmpty(source.Path))
+            path = path.TrimStart('/');
+        return source.SetPath(path).ToString();
+    }
+
+    public static async Task<BackendTupleDisposeWrapper> GetBackendAsync(Connection connection, IApplicationSettings applicationSettings, string url, string? additionalPath, string? backupId, long connectionStringId, CancellationToken cancelToken)
+    {
+        (url, var opts) = await ExpandUrlAsync(connection, applicationSettings, url, backupId, connectionStringId, null, cancelToken);
+        var modules = ConfigureModules(opts);
+        var backend = Library.DynamicLoader.BackendLoader.GetBackend(AppendAdditionalPath(url, additionalPath), opts);
+        return new BackendTupleDisposeWrapper(backend, modules);
+    }
+
+    public static async Task<SourceProviderTupleDisposeWrapper> GetSourceProviderForTestingAsync(Connection connection, IApplicationSettings applicationSettings, string url, string? additionalPath, string? backupId, long connectionStringId, string? sourcePrefix, CancellationToken cancelToken)
+    {
+        (url, var opts) = await ExpandUrlAsync(connection, applicationSettings, url, backupId, connectionStringId, sourcePrefix, cancelToken);
+        // Prevent the source provider from rejecting requests when we are simply testing
+        opts["store-metadata-content-in-database"] = "true";
+        // Signal that the items are enumerated for display, not for backup, so the provider can
+        // include metadata that only the user interface needs, such as the item classification
+        opts["enumeration-mode"] = "true";
+        var modules = ConfigureModules(opts);
+        var sourceProvider = await Library.DynamicLoader.SourceProviderLoader.GetSourceProvider(AppendAdditionalPath(url, additionalPath), "", opts, cancelToken);
+
+        return new SourceProviderTupleDisposeWrapper(sourceProvider, modules);
+    }
+
+    public static async Task<RestoreDestinationProviderTupleDisposeWrapper> GetRestoreDestinationProviderForTestingAsync(Connection connection, IApplicationSettings applicationSettings, string url, string? additionalPath, string? backupId, long connectionStringId, string? sourcePrefix, CancellationToken cancelToken)
+    {
+        (url, var opts) = await ExpandUrlAsync(connection, applicationSettings, url, backupId, connectionStringId, sourcePrefix, cancelToken);
+        var modules = ConfigureModules(opts);
+        var restoreDestinationProvider = await Library.DynamicLoader.RestoreDestinationProviderLoader.GetRestoreDestinationProviderForTesting(AppendAdditionalPath(url, additionalPath), opts, cancelToken);
+
+        return new RestoreDestinationProviderTupleDisposeWrapper(restoreDestinationProvider, modules);
+    }
+
+    public static Exception GetInnerException<T>(Exception ex) where T : Exception
+    {
+        var original = ex;
+        while (true)
+        {
+            if (ex == null)
+                return original;
+
+            if (ex is T)
+                return (T)ex;
+
+            if (ex.InnerException == null)
+                throw new ArgumentNullException(nameof(ex.InnerException));
+
+            ex = ex.InnerException;
+        }
+    }
+
+    /// <summary>
+    /// Unmask the URL if it is masked
+    /// </summary>
+    /// <param name="connection">The database connection</param>
+    /// <param name="maskedurl">The masked URL</param>
+    /// <param name="backupId">The backup ID</param>
+    /// <param name="prefix">The prefix, if this is a remote source</param>
+    /// <returns>The unmasked URL</returns>
+    private static string UnmaskUrl(Connection connection, string maskedurl, string? backupId, long connectionStringId, string? prefix)
+    {
+        var backup = !string.IsNullOrWhiteSpace(backupId) ? connection.GetBackup(backupId) : null;
+        var previousUrl = backup?.TargetURL;
+
+        if (string.IsNullOrWhiteSpace(previousUrl) && connectionStringId > 0)
+            previousUrl = connection.GetConnectionString(connectionStringId)?.BaseUrl;
+
+        if (!string.IsNullOrWhiteSpace(prefix) && backup?.Sources != null)
+        {
+            previousUrl = backup.Sources?.FirstOrDefault(s => s.StartsWith(prefix + '|', StringComparison.Ordinal));
+            if (!string.IsNullOrWhiteSpace(previousUrl))
+                previousUrl = previousUrl.Split('|', 2).LastOrDefault();
+        }
+
+        var unmasked = string.IsNullOrWhiteSpace(previousUrl)
+            ? maskedurl
+            : QuerystringMasking.Unmask(maskedurl, previousUrl);
+
+        if (Connection.UrlContainsPasswordPlaceholder(unmasked))
+            throw new ArgumentException("Unmasked URL contains password placeholder");
+
+        return unmasked;
+    }
+}

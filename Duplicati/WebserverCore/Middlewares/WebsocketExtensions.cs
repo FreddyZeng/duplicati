@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -46,7 +46,7 @@ public static class WebsocketExtensions
                     if (context.WebSockets.IsWebSocketRequest)
                     {
                         using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-                        await context.RequestServices.GetRequiredService<IWebsocketAuthenticator>().AddConnection(webSocket);
+                        await context.RequestServices.GetRequiredService<IWebsocketAuthenticator>().AddConnectionAsync(webSocket);
                     }
                     else
                     {
@@ -58,7 +58,7 @@ public static class WebsocketExtensions
                 if (context.WebSockets.IsWebSocketRequest)
                 {
                     using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-                    await context.RequestServices.GetRequiredService<IWebsocketAccessor>().AddConnection(webSocket, true);
+                    await context.RequestServices.GetRequiredService<IWebsocketAccessor>().AddConnectionAsync(webSocket, true);
                 }
                 else
                 {

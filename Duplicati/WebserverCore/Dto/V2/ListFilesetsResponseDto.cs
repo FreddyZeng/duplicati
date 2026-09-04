@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -96,4 +96,9 @@ public sealed record ListFilesetsResponseItem
     /// The total size of the fileset
     /// </summary>
     public required long? FileSizes { get; init; }
+
+    /// <summary>
+    /// The label assigned to the version, or null if no label is set
+    /// </summary>
+    public string? Label { get; init; }
 }

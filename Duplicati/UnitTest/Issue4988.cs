@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,6 +26,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Tasks;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Main;
 using Duplicati.Library.Utility;
@@ -45,7 +46,7 @@ public class Issue4988 : BasicSetupHelper
 
     [Test]
     [Category("ManualTamper")]
-    public void TestManualDindexTamperAndRecreate()
+    public async Task TestManualDindexTamperAndRecreateAsync()
     {
         var testopts = TestOptions.Expand(new { no_encryption = "true" });
         var opts = new Options(testopts);
@@ -55,8 +56,9 @@ public class Issue4988 : BasicSetupHelper
         Directory.CreateDirectory(emptyFolder);
 
         // Step 2: Backup empty folder
+        // The source contains no files, so the NoFilesInBackup warning is expected
         using (var c = new Controller("file://" + TARGETFOLDER, testopts, null))
-            TestUtils.AssertResults(c.Backup([emptyFolder]));
+            TestUtils.AssertResults(await c.BackupAsync([emptyFolder]), ignoredWarnings: ["NoFilesInBackup"]);
 
         // Step 3: Find the dblock created
         var dblockPath = Directory.GetFiles(TARGETFOLDER, "*.dblock*", SearchOption.TopDirectoryOnly).First();
@@ -109,7 +111,7 @@ public class Issue4988 : BasicSetupHelper
         {
             try
             {
-                TestUtils.AssertResults(c.Repair());
+                TestUtils.AssertResults(await c.RepairAsync());
                 Assert.Fail("Expected recreate to fail due to corrupted dblock/dindex");
             }
             catch (UserInformationException ex) when (ex.HelpID == "DatabaseIsBrokenConsiderPurge")
@@ -121,7 +123,7 @@ public class Issue4988 : BasicSetupHelper
         // Step 9: List broken files
         using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
         {
-            var res = c.ListBrokenFiles(null);
+            var res = await c.ListBrokenFilesAsync(null);
             Assert.IsTrue(res.BrokenFiles.Count() > 0, "Expected to find broken files");
             foreach (var f in res.BrokenFiles)
                 Console.WriteLine("Broken file: " + f);

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,6 +25,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Principal;
+using Microsoft.Win32;
 
 namespace Duplicati.Library.Utility;
 
@@ -33,6 +34,88 @@ namespace Duplicati.Library.Utility;
 /// </summary>
 public static class PermissionHelper
 {
+    /// <summary>
+    /// Checks if the current process has the required privileges to create snapshots.
+    /// Note that this just checks the SeBackupPrivilege or if the process is running as root.
+    /// There are other ways to give snapshot permissions, but this seems like a good indicator.
+    /// </summary>
+    /// <returns><c>true</c> if the current process has the required privileges to create snapshots, <c>false</c> otherwise.</returns>
+    public static bool HasSnapshotPrivilege()
+    {
+        try
+        {
+            return OperatingSystem.IsWindows()
+                ? HasSeBackupPrivilege()
+                : IsRunningAsAdministratorOrLocalSystem();
+        }
+        catch
+        { }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if the Microsoft Visual C++ Redistributable matching the current process architecture
+    /// (x64 or x86) is installed on the machine. The VC++ 2015-2022 runtime ships architecture-specific
+    /// binaries (VCRUNTIME140.dll / VCRUNTIME140_1.dll), and the VSS snapshot providers load mixed-mode
+    /// C++/CLI assemblies that link against them, so the check must match the running process architecture.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> if a matching Visual C++ Redistributable package is installed, <c>false</c> otherwise.
+    /// Always returns <c>false</c> on non-Windows platforms where the redistributable does not exist.
+    /// </returns>
+    public static bool IsVisualCRedistInstalled()
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+
+        // The VC++ 2015-2022 runtime uses architecture-specific registry subkey names.
+        // For older runtimes (VC++ 2010/2013) the key lives elsewhere, but the mixed-mode
+        // snapshot assemblies are built against the VC++ 2015-2022 toolset, so checking
+        // the 14.0 key for the matching architecture is the relevant test.
+        var arch = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X86 => "x86",
+            Architecture.X64 => "x64",
+            Architecture.Arm64 => "arm64",
+            _ => "x64",
+        };
+
+        // The VC++ Runtimes keys are not WOW6432Node-redirected, so both registry views
+        // resolve to the same physical location. RegistryView.Default follows the
+        // process architecture
+        try
+        {
+            using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Default);
+            return HasVisualCRedistInRegistry(baseKey, $@"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\{arch}");
+        }
+        catch
+        {
+            // Fail open: if registry access itself fails we cannot reliably determine
+            // whether the redistributable is installed, so we report it as present
+            // rather than misdirecting the user toward an irrelevant install step.
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Checks if a Visual C++ Redistributable runtime entry exists in the given registry location.
+    /// </summary>
+    /// <param name="root">The registry root key.</param>
+    /// <param name="path">The path to the runtime registry key.</param>
+    /// <returns><c>true</c> if the entry exists and reports an installed version, <c>false</c> otherwise.</returns>
+    [SupportedOSPlatform("windows")]
+    private static bool HasVisualCRedistInRegistry(RegistryKey root, string path)
+    {
+        using var key = root.OpenSubKey(path);
+        if (key == null)
+            return false;
+
+        // The "Installed" value is a DWORD (1 = installed). Some installers only write "Version".
+        return key.GetValue("Installed") is int installed && installed != 0
+            || key.GetValue("Version") != null;
+    }
+
     /// <summary>
     /// Checks if the current process has the Backup Privilege.
     /// </summary>
@@ -60,7 +143,7 @@ public static class PermissionHelper
     {
         if (OperatingSystem.IsWindows())
             return IsRunningAsAdministrator() || IsRunningAsLocalSystem();
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             return IsRunningAsRoot();
 
         return false;
@@ -94,6 +177,7 @@ public static class PermissionHelper
     /// </summary>
     /// <returns>The effective user ID of the calling process.</returns>
     [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
     [DllImport("libc")]
     public static extern uint geteuid();
 
@@ -102,6 +186,7 @@ public static class PermissionHelper
     /// </summary>
     /// <returns>True if running as root, false otherwise.</returns>
     [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
     private static bool IsRunningAsRoot()
     {
         return geteuid() == 0;

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -20,16 +20,15 @@
 // DEALINGS IN THE SOFTWARE.
 using System;
 using System.Collections.Generic;
-//using System.Data;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Main.Database;
+using Duplicati.Library.Main.Database.Local;
 using Duplicati.Library.Main.Volumes;
 using Duplicati.Library.Utility;
-using Microsoft.Data.Sqlite;
 
 namespace Duplicati.Library.Main.Operation
 {
@@ -65,16 +64,48 @@ namespace Duplicati.Library.Main.Operation
             if (File.Exists(path))
                 throw new UserInformationException(string.Format("Cannot recreate database because file already exists: {0}", path), "RecreateTargetDatabaseExists");
 
-            await using var db =
-                await LocalDatabase.CreateLocalDatabaseAsync(path, "Recreate", true, null, m_result.TaskControl.ProgressToken)
+            try
+            {
+                await using var db =
+                    await LocalDatabase.CreateLocalDatabaseAsync(path, "Recreate", true, null, m_result.TaskControl.ProgressToken)
+                        .ConfigureAwait(false);
+
+                await DoRunAsync(backendManager, db, false, filter, filelistfilter, blockprocessor).ConfigureAwait(false);
+
+                // Ensure database is consistent after the recreate
+                await db
+                    .VerifyConsistencyAsync(m_options.Blocksize, m_options.BlockhashSize, true, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
+            }
+            catch (UserInformationException uex) when (uex.HelpID == "EmptyRemoteLocation" || uex.HelpID == "EmptyRemoteLocationWithPrefix")
+            {
+                // The remote destination is empty (#6205): the freshly-created database is empty and
+                // would block further operations - a fresh backup cannot run, and even a retry fails
+                // because RunAsync refuses to run when the file already exists. Remove it so the next
+                // run starts cleanly. The database connection is already disposed by the await-using
+                // above (the using scope is left before this catch runs), so the file is no longer
+                // locked.
+                //
+                // Only the empty-destination case is cleaned up. Other recreate failures - notably a
+                // database with missing blocks / broken filelists (help id "DatabaseIsBrokenConsiderPurge")
+                // - intentionally KEEP the recreated database so the user can run list-broken-files /
+                // purge-broken-files against it; those exceptions do not match this filter and propagate
+                // with the database left in place. This is best-effort and must never mask the error.
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                        Logging.Log.WriteInformationMessage(LOGTAG, "RemovedIncompleteRecreateDatabase", "Removed incomplete recreate database at {0}", path);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logging.Log.WriteWarningMessage(LOGTAG, "RecreateCleanupFailed", ex, "Failed to remove incomplete recreate database at {0}: {1}", path, ex.Message);
+                }
 
-            await DoRunAsync(backendManager, db, false, filter, filelistfilter, blockprocessor).ConfigureAwait(false);
-
-            // Ensure database is consistent after the recreate
-            await db
-                .VerifyConsistency(m_options.Blocksize, m_options.BlockhashSize, true, m_result.TaskControl.ProgressToken)
-                .ConfigureAwait(false);
+                throw;
+            }
         }
 
         /// <summary>
@@ -92,7 +123,7 @@ namespace Duplicati.Library.Main.Operation
             await using var db =
                 await LocalDatabase.CreateLocalDatabaseAsync(m_options.Dbpath, "Recreate", true, null, m_result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
-            if ((await db.FindMatchingFilesets(m_options.Time, m_options.Version, m_result.TaskControl.ProgressToken).ConfigureAwait(false)).Any())
+            if ((await db.FindMatchingFilesetsAsync(m_options.Time, m_options.Version, m_result.TaskControl.ProgressToken).ConfigureAwait(false)).Any())
             {
                 if (m_options.IgnoreUpdateIfVersionExists)
                 {
@@ -104,17 +135,17 @@ namespace Duplicati.Library.Main.Operation
             }
 
             // Mark as incomplete
-            await db.PartiallyRecreated(m_result.TaskControl.ProgressToken, true).ConfigureAwait(false);
+            await db.PartiallyRecreatedAsync(m_result.TaskControl.ProgressToken, true).ConfigureAwait(false);
 
             var preexistingOptionsInDatabase =
-                await Utility.ContainsOptionsForVerification(db, m_result.TaskControl.ProgressToken)
+                await Utility.ContainsOptionsForVerificationAsync(db, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
-            await Utility.UpdateOptionsFromDb(db, m_options, m_result.TaskControl.ProgressToken)
+            await Utility.UpdateOptionsFromDbAsync(db, m_options, m_result.TaskControl.ProgressToken)
                 .ConfigureAwait(false);
 
             // Make sure the options have not changed between calls, unless there are no previous options
             if (preexistingOptionsInDatabase)
-                await Utility.VerifyOptionsAndUpdateDatabase(db, m_options, m_result.TaskControl.ProgressToken)
+                await Utility.VerifyOptionsAndUpdateDatabaseAsync(db, m_options, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
 
             await DoRunAsync(backendManager, db, true, filter, filelistfilter, blockprocessor).ConfigureAwait(false);
@@ -138,7 +169,13 @@ namespace Duplicati.Library.Main.Operation
             await using var restoredb =
                 await LocalRecreateDatabase.CreateAsync(dbparent, m_options, null, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
-            await restoredb.RepairInProgress(m_result.TaskControl.ProgressToken, true).ConfigureAwait(false);
+            await restoredb.RepairInProgressAsync(m_result.TaskControl.ProgressToken, true).ConfigureAwait(false);
+
+            // If a filelist filter is applied, we're only recreating a partial database (e.g., for a specific version restore).
+            // Mark it as partially recreated so it cannot be used for backups or other operations that require a complete database.
+            if (filelistfilter != null)
+                await restoredb.PartiallyRecreatedAsync(m_result.TaskControl.ProgressToken, true).ConfigureAwait(false);
+
             var expRecreateDb = false; // experimental recreate db code flag
             var volumeIds = new Dictionary<string, long>();
 
@@ -147,7 +184,7 @@ namespace Duplicati.Library.Main.Operation
                 expRecreateDb = true;
             }
 
-            var rawlist = await backendManager.ListAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+            var rawlist = await backendManager.ListAsync(null, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
 
             //First step is to examine the remote storage to see what
             // kind of data we can find
@@ -194,21 +231,37 @@ namespace Duplicati.Library.Main.Operation
                 orderby n.Time descending
                 select n;
 
+            // A filelist is only written once a backup finishes, so a first backup that was
+            // interrupted leaves blocks and index files behind and no filelist at all. Refusing
+            // to recreate from that made such a backup unrecoverable: the backup asked for a
+            // repair, and the repair had nothing it would accept to repair from.
+            //
+            // The blocks are still described by the index files, so the recreate has everything
+            // it needs to register them and let the next backup carry on from where it stopped.
+            // Asking for a particular filelist is a different matter: that was asked for
+            // explicitly, and not finding it is not something to carry on past.
             if (!filelists.Any())
-                throw new UserInformationException("No filelists found on the remote destination", "EmptyRemoteLocation");
+            {
+                if (filelistfilter != null)
+                    throw new UserInformationException("No filelists found on the remote destination", "EmptyRemoteLocation");
+
+                Logging.Log.WriteWarningMessage(LOGTAG, "EmptyRemoteLocation", null, "No filelists found on the remote destination. This is expected if a first backup was interrupted before it finished, and the recreated database will let it resume. If this destination did hold filelists, they have been lost, and the backup can no longer be restored from.");
+            }
 
             if (filelistfilter != null)
+            {
                 filelists = filelistfilter(filelists).Select(x => x.Value).ToArray();
 
-            if (!filelists.Any())
-                throw new UserInformationException("No filelists", "NoMatchingRemoteFilelists");
+                if (!filelists.Any())
+                    throw new UserInformationException("No filelists", "NoMatchingRemoteFilelists");
+            }
 
             // If we are updating, all files should be accounted for
             foreach (var fl in remotefiles)
                 volumeIds[fl.File.Name] = updating
-                    ? await restoredb.GetRemoteVolumeID(fl.File.Name, m_result.TaskControl.ProgressToken)
+                    ? await restoredb.GetRemoteVolumeIDAsync(fl.File.Name, m_result.TaskControl.ProgressToken)
                         .ConfigureAwait(false)
-                    : await restoredb.RegisterRemoteVolume(fl.File.Name, fl.FileType, fl.File.Size, RemoteVolumeState.Uploaded, m_result.TaskControl.ProgressToken)
+                    : await restoredb.RegisterRemoteVolumeAsync(fl.File.Name, fl.FileType, fl.File.Size, RemoteVolumeState.Uploaded, m_result.TaskControl.ProgressToken)
                         .ConfigureAwait(false);
 
             var hasUpdatedOptions = false;
@@ -216,6 +269,12 @@ namespace Duplicati.Library.Main.Operation
             // Record all blocksets and files needed
             var filelistWork = (from n in filelists orderby n.Time select new RemoteVolume(n.File) as IRemoteVolume).ToList();
             Logging.Log.WriteInformationMessage(LOGTAG, "RebuildStarted", "Rebuild database started, downloading {0} filelists", filelistWork.Count);
+
+            // The newest filelist is the authority for version labels, even if it does not
+            // contain a labels.json file. A first backup that was interrupted has no filelist
+            // at all, and then there is no name to match and no labels to apply either.
+            var newestFilelistName = filelists.FirstOrDefault()?.File.Name;
+            IReadOnlyDictionary<DateTime, string> remoteLabels = null;
 
             var progress = 0;
 
@@ -225,17 +284,18 @@ namespace Duplicati.Library.Main.Operation
                 foreach (var n in filelists)
                     if (volumeIds[n.File.Name] == -1)
                         volumeIds[n.File.Name] = await restoredb
-                            .RegisterRemoteVolume(n.File.Name, n.FileType, RemoteVolumeState.Uploaded, n.File.Size, new TimeSpan(0), m_result.TaskControl.ProgressToken)
+                            .RegisterRemoteVolumeAsync(n.File.Name, n.FileType, RemoteVolumeState.Uploaded, n.File.Size, new TimeSpan(0), m_result.TaskControl.ProgressToken)
                             .ConfigureAwait(false);
             }
 
             var isFirstFilelist = true;
-            await foreach (var (tmpfile, hash, size, name) in backendManager.GetFilesOverlappedAsync(filelistWork, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+            // At this point, we do not know the hashing used to verify the files, so we need to use direct download, and manually decrypt the files
+            // so we can calculate the hash AFTER we have read the manifest content and updated the options
+            await foreach (var (tmpencfile, name) in backendManager.GetFilesOverlappedDirectAsync(filelistWork, allowParityRepair: true, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
             {
-                var entry = new RemoteVolume(name, hash, size);
                 try
                 {
-                    if (!await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                    if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                     {
                         await backendManager.WaitForEmptyAsync(restoredb, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
                         m_result.EndTime = DateTime.UtcNow;
@@ -257,16 +317,10 @@ namespace Duplicati.Library.Main.Operation
                         Logging.Log.WriteVerboseMessage(LOGTAG, "ProcessingFilelistVolumes", "Processing filelist volume {0} of {1}", progress, filelistWork.Count);
                     }
 
-                    using (tmpfile)
+                    using (var tmpfile = backendManager.DecryptFile(tmpencfile, name, m_options, dispose: false))
                     {
                         isFirstFilelist = false;
-
-                        if (!string.IsNullOrWhiteSpace(hash) && size > 0)
-                            await restoredb
-                                .UpdateRemoteVolume(entry.Name, RemoteVolumeState.Verified, size, hash, m_result.TaskControl.ProgressToken)
-                                .ConfigureAwait(false);
-
-                        var parsed = VolumeBase.ParseFilename(entry.Name);
+                        var parsed = VolumeBase.ParseFilename(name);
 
                         using var stream = new FileStream(tmpfile, FileMode.Open, FileAccess.Read, FileShare.Read);
                         using var compressor = DynamicLoader.CompressionLoader.GetModule(parsed.CompressionModule, stream, ArchiveMode.Read, m_options.RawOptions);
@@ -279,18 +333,35 @@ namespace Duplicati.Library.Main.Operation
                             hasUpdatedOptions = true;
                         }
 
+                        var size = new FileInfo(tmpencfile).Length;
+                        string hash;
+                        using (var fs = File.OpenRead(tmpencfile))
+                        using (var hasher = HashFactory.CreateHasher(m_options.FileHashAlgorithm))
+                            hash = Convert.ToBase64String(hasher.ComputeHash(fs));
+
+                        if (!string.IsNullOrWhiteSpace(hash) && size > 0)
+                            await restoredb
+                                .UpdateRemoteVolumeAsync(name, RemoteVolumeState.Verified, size, hash, m_result.TaskControl.ProgressToken)
+                                .ConfigureAwait(false);
+
+
                         // Create timestamped operations based on the file timestamp
                         var filesetid = await restoredb
-                            .CreateFileset(volumeIds[entry.Name], parsed.Time, m_result.TaskControl.ProgressToken)
+                            .CreateFilesetAsync(volumeIds[name], parsed.Time, m_result.TaskControl.ProgressToken)
                             .ConfigureAwait(false);
 
-                        await RecreateFilesetFromRemoteList(restoredb, compressor, filesetid, m_options, filter, m_result.TaskControl.ProgressToken)
+                        await RecreateFilesetFromRemoteListAsync(restoredb, compressor, filesetid, m_options, filter, m_result.TaskControl.ProgressToken)
                             .ConfigureAwait(false);
+
+                        // Grab the labels from the newest filelist volume;
+                        // they are applied as the final step of the recreate
+                        if (string.Equals(name, newestFilelistName, StringComparison.Ordinal))
+                            remoteLabels = VolumeReaderBase.GetLabelsData(compressor);
                     }
                 }
                 catch (Exception ex)
                 {
-                    Logging.Log.WriteWarningMessage(LOGTAG, "FileProcessingFailed", ex, "Failed to process file: {0}", entry.Name);
+                    Logging.Log.WriteWarningMessage(LOGTAG, "FileProcessingFailed", ex, "Failed to process file: {0}", name);
                     if (ex.IsAbortException())
                     {
                         m_result.EndTime = DateTime.UtcNow;
@@ -324,7 +395,7 @@ namespace Duplicati.Library.Main.Operation
 
             //Make sure we write the config if it has been read from a manifest
             if (hasUpdatedOptions)
-                await Utility.VerifyOptionsAndUpdateDatabase(restoredb, m_options, m_result.TaskControl.ProgressToken)
+                await Utility.VerifyOptionsAndUpdateDatabaseAsync(restoredb, m_options, m_result.TaskControl.ProgressToken)
                     .ConfigureAwait(false);
 
             using (new Logging.Timer(LOGTAG, "CommitUpdateFilesetFromRemote", "CommitUpdateFilesetFromRemote"))
@@ -352,11 +423,11 @@ namespace Duplicati.Library.Main.Operation
 
                     progress = 0;
 
-                    await foreach (var (tmpfile, hash, size, name) in backendManager.GetFilesOverlappedAsync(indexfiles, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                    await foreach (var (tmpfile, hash, size, name) in backendManager.GetFilesOverlappedAsync(indexfiles, allowParityRepair: true, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                     {
                         try
                         {
-                            if (!await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                            if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                             {
                                 await backendManager.WaitForEmptyAsync(restoredb, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
                                 m_result.EndTime = DateTime.UtcNow;
@@ -375,7 +446,7 @@ namespace Duplicati.Library.Main.Operation
                             {
                                 if (!string.IsNullOrWhiteSpace(hash) && size > 0)
                                     await restoredb
-                                        .UpdateRemoteVolume(name, RemoteVolumeState.Verified, size, hash, m_result.TaskControl.ProgressToken)
+                                        .UpdateRemoteVolumeAsync(name, RemoteVolumeState.Verified, size, hash, m_result.TaskControl.ProgressToken)
                                         .ConfigureAwait(false);
 
                                 using (var svr = new IndexVolumeReader(RestoreHandler.GetCompressionModule(name), tmpfile, m_options, hashsize))
@@ -384,13 +455,13 @@ namespace Duplicati.Library.Main.Operation
                                     {
                                         var filename = a.Filename;
                                         var volumeID = await restoredb
-                                            .GetRemoteVolumeID(filename, m_result.TaskControl.ProgressToken)
+                                            .GetRemoteVolumeIDAsync(filename, m_result.TaskControl.ProgressToken)
                                             .ConfigureAwait(false);
 
                                         // No such file
                                         if (volumeID < 0)
                                             (volumeID, filename) =
-                                                await ProbeForMatchingFilename(filename, restoredb, m_result.TaskControl.ProgressToken)
+                                                await ProbeForMatchingFilenameAsync(filename, restoredb, m_result.TaskControl.ProgressToken)
                                                     .ConfigureAwait(false);
 
                                         var missing = false;
@@ -403,7 +474,7 @@ namespace Duplicati.Library.Main.Operation
                                             Logging.Log.WriteWarningMessage(LOGTAG, "MissingFileDetected", null, "Remote file referenced as {0} by {1}, but not found in list, registering a missing remote file", filename, name);
                                             missing = true;
                                             volumeID = await restoredb
-                                                .RegisterRemoteVolume(filename, p.FileType, RemoteVolumeState.Temporary, m_result.TaskControl.ProgressToken)
+                                                .RegisterRemoteVolumeAsync(filename, p.FileType, RemoteVolumeState.Temporary, m_result.TaskControl.ProgressToken)
                                                 .ConfigureAwait(false);
                                         }
 
@@ -411,15 +482,15 @@ namespace Duplicati.Library.Main.Operation
                                         //Add all block/volume mappings
                                         foreach (var b in a.Blocks)
                                         {
-                                            anyChange |= (await restoredb.UpdateBlock(b.Key, b.Value, volumeID, m_result.TaskControl.ProgressToken).ConfigureAwait(false)).Item1;
+                                            anyChange |= (await restoredb.UpdateBlockAsync(b.Key, b.Value, volumeID, m_result.TaskControl.ProgressToken).ConfigureAwait(false)).Item1;
                                         }
 
                                         await restoredb
-                                            .UpdateRemoteVolume(filename, missing ? RemoteVolumeState.Temporary : RemoteVolumeState.Verified, a.Length, a.Hash, m_result.TaskControl.ProgressToken)
+                                            .UpdateRemoteVolumeAsync(filename, missing ? RemoteVolumeState.Temporary : RemoteVolumeState.Verified, a.Length, a.Hash, m_result.TaskControl.ProgressToken)
                                             .ConfigureAwait(false);
                                         await restoredb
-                                            .AddIndexBlockLink(
-                                                await restoredb.GetRemoteVolumeID(name, m_result.TaskControl.ProgressToken).ConfigureAwait(false),
+                                            .AddIndexBlockLinkAsync(
+                                                await restoredb.GetRemoteVolumeIDAsync(name, m_result.TaskControl.ProgressToken).ConfigureAwait(false),
                                                 volumeID,
                                                 m_result.TaskControl.ProgressToken
                                             )
@@ -438,7 +509,7 @@ namespace Duplicati.Library.Main.Operation
                                             // done before we add it to the database, since we do not have nested transactions
                                             var list = b.Blocklist.ToList();
                                             await restoredb
-                                                .AddTempBlockListHash(b.Hash, list, m_result.TaskControl.ProgressToken)
+                                                .AddTempBlockListHashAsync(b.Hash, list, m_result.TaskControl.ProgressToken)
                                                 .ConfigureAwait(false);
                                         }
                                         catch (System.IO.InvalidDataException e)
@@ -488,18 +559,18 @@ namespace Duplicati.Library.Main.Operation
                     // if we are lucky and pick the right ones
                 }
 
-                await restoredb.CleanupMissingVolumes(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+                await restoredb.CleanupMissingVolumesAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
 
                 // Update the real tables from the temp tables
                 if (expRecreateDb)
                     // add missing blocks and blocksetentry data (at this point
                     // we have not yet anything in the blocksetentry table)
                     await restoredb
-                        .AddBlockAndBlockSetEntryFromTemp(hashsize, m_options.Blocksize, false, m_result.TaskControl.ProgressToken)
+                        .AddBlockAndBlockSetEntryFromTempAsync(hashsize, m_options.Blocksize, false, m_result.TaskControl.ProgressToken)
                         .ConfigureAwait(false);
                 else
                     await restoredb
-                        .FindMissingBlocklistHashes(hashsize, m_options.Blocksize, m_result.TaskControl.ProgressToken)
+                        .FindMissingBlocklistHashesAsync(hashsize, m_options.Blocksize, m_result.TaskControl.ProgressToken)
                         .ConfigureAwait(false);
 
                 // We have now grabbed as much information as possible,
@@ -509,7 +580,7 @@ namespace Duplicati.Library.Main.Operation
                 {
                     // Grab the list matching the pass type
                     var lst = await restoredb
-                        .GetMissingBlockListVolumes(i, m_options.Blocksize, hashsize, m_options.RepairForceBlockUse, m_result.TaskControl.ProgressToken)
+                        .GetMissingBlockListVolumesAsync(i, m_options.Blocksize, hashsize, m_options.RepairForceBlockUse, m_result.TaskControl.ProgressToken)
                         .ToListAsync()
                         .ConfigureAwait(false);
 
@@ -534,14 +605,14 @@ namespace Duplicati.Library.Main.Operation
                     }
 
                     progress = 0;
-                    await foreach (var (tmpfile, hash, size, name) in backendManager.GetFilesOverlappedAsync(lst, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                    await foreach (var (tmpfile, hash, size, name) in backendManager.GetFilesOverlappedAsync(lst, allowParityRepair: true, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                     {
                         try
                         {
                             using (tmpfile)
                             using (var rd = new BlockVolumeReader(RestoreHandler.GetCompressionModule(name), tmpfile, m_options))
                             {
-                                if (!await m_result.TaskControl.ProgressRendevouz().ConfigureAwait(false))
+                                if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
                                 {
                                     await backendManager.WaitForEmptyAsync(restoredb, m_result.TaskControl.ProgressToken).ConfigureAwait(false);
                                     m_result.EndTime = DateTime.UtcNow;
@@ -557,26 +628,26 @@ namespace Duplicati.Library.Main.Operation
                                 Logging.Log.WriteVerboseMessage(LOGTAG, "ProcessingBlocklistVolumes", "Pass {0} of 3, processing blocklist volume {1} of {2}", (i + 1), progress, lst.Count);
 
                                 var volumeid = await restoredb
-                                    .GetRemoteVolumeID(name, m_result.TaskControl.ProgressToken)
+                                    .GetRemoteVolumeIDAsync(name, m_result.TaskControl.ProgressToken)
                                     .ConfigureAwait(false);
 
                                 await restoredb
-                                    .UpdateRemoteVolume(name, RemoteVolumeState.Uploaded, size, hash, m_result.TaskControl.ProgressToken)
+                                    .UpdateRemoteVolumeAsync(name, RemoteVolumeState.Uploaded, size, hash, m_result.TaskControl.ProgressToken)
                                     .ConfigureAwait(false);
 
                                 bool anyChange = false;
                                 // Update the block table so we know about the block/volume map
                                 foreach (var h in rd.Blocks)
                                 {
-                                    anyChange |= (await restoredb.UpdateBlock(h.Key, h.Value, volumeid, m_result.TaskControl.ProgressToken).ConfigureAwait(false)).Item1;
+                                    anyChange |= (await restoredb.UpdateBlockAsync(h.Key, h.Value, volumeid, m_result.TaskControl.ProgressToken).ConfigureAwait(false)).Item1;
                                 }
 
                                 // now that we have the blocks/volume relationships, we can go from the (already known from dlist step) blocklisthashes
                                 // to the needed list blocks in the volume, so grab them from the database
                                 // read the blocks list hashes from the volume data (the handled file) and insert them into the temp blocklisthash table
-                                await foreach (var blocklisthash in restoredb.GetBlockLists(volumeid, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                                await foreach (var blocklisthash in restoredb.GetBlockListsAsync(volumeid, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                                 {
-                                    if (await restoredb.AddTempBlockListHash(blocklisthash, rd.ReadBlocklist(blocklisthash, hashsize), m_result.TaskControl.ProgressToken).ConfigureAwait(false))
+                                    if (await restoredb.AddTempBlockListHashAsync(blocklisthash, rd.ReadBlocklist(blocklisthash, hashsize), m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                                     {
                                         anyChange = true;
                                     }
@@ -595,11 +666,11 @@ namespace Duplicati.Library.Main.Operation
                                     }
                                     if (expRecreateDb)
                                         await restoredb
-                                            .AddBlockAndBlockSetEntryFromTemp(hashsize, m_options.Blocksize, false, m_result.TaskControl.ProgressToken)
+                                            .AddBlockAndBlockSetEntryFromTempAsync(hashsize, m_options.Blocksize, false, m_result.TaskControl.ProgressToken)
                                             .ConfigureAwait(false);
                                     else
                                         await restoredb
-                                            .FindMissingBlocklistHashes(hashsize, m_options.Blocksize, m_result.TaskControl.ProgressToken)
+                                            .FindMissingBlocklistHashesAsync(hashsize, m_options.Blocksize, m_result.TaskControl.ProgressToken)
                                             .ConfigureAwait(false);
                                 }
 
@@ -636,10 +707,26 @@ namespace Duplicati.Library.Main.Operation
                 // All blocks are collected and added into the Block table
                 // Find out which blocks are deleted and move them into DeletedBlock,
                 // so that compact can calculate the unused space
-                await restoredb.CleanupDeletedBlocks(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+                await restoredb.CleanupDeletedBlocksAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
             }
 
-            await restoredb.CleanupMissingVolumes(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+            await restoredb.CleanupMissingVolumesAsync(m_result.TaskControl.ProgressToken).ConfigureAwait(false);
+
+            // Apply the labels from the newest filelist as the final step of the recreate
+            await ApplyLabelsFromFilelistAsync(restoredb, remoteLabels, m_result.TaskControl.ProgressToken)
+                .ConfigureAwait(false);
+
+            if (!m_options.RepairOnlyPaths && m_options.StoreMetadataContentInDatabase)
+            {
+                await RestoreMetadataContentAsync(backendManager, restoredb, m_result.TaskControl.ProgressToken)
+                    .ConfigureAwait(false);
+
+                // The metadata content restore is executed after the main recreate commits.
+                // Ensure the restored Metadataset.Content values are persisted.
+                await restoredb.Transaction
+                    .CommitAsync(m_result.TaskControl.ProgressToken)
+                    .ConfigureAwait(false);
+            }
 
             if (m_options.RepairOnlyPaths)
             {
@@ -657,7 +744,7 @@ namespace Duplicati.Library.Main.Operation
                 await using (var lbfdb = await LocalListBrokenFilesDatabase.CreateAsync(restoredb, null, m_result.TaskControl.ProgressToken).ConfigureAwait(false))
                 {
                     var broken = await lbfdb
-                        .GetBrokenFilesets(new DateTime(0), null, m_result.TaskControl.ProgressToken)
+                        .GetBrokenFilesetsAsync(new DateTime(0), null, ignoreReplaceableMetadata: false, m_result.TaskControl.ProgressToken)
                         .CountAsync(cancellationToken: m_result.TaskControl.ProgressToken)
                         .ConfigureAwait(false);
 
@@ -665,16 +752,239 @@ namespace Duplicati.Library.Main.Operation
                         throw new UserInformationException(string.Format("Recreated database has missing blocks and {0} broken filelists. Consider using \"{1}\" and \"{2}\" to purge broken data from the remote store and the database.", broken, "list-broken-files", "purge-broken-files"), "DatabaseIsBrokenConsiderPurge");
                 }
 
-                await restoredb
-                    .VerifyConsistency(m_options.Blocksize, m_options.BlockhashSize, true, m_result.TaskControl.ProgressToken)
-                    .ConfigureAwait(false);
+                // When a filelist filter is applied, we are intentionally only recreating a subset
+                // of the database (e.g., restoring a specific version with --no-local-db).
+                // In this case, we need to use the lax consistency check that allows volumes
+                // without filesets, as only the selected filesets are being recreated.
+                if (filelistfilter != null)
+                {
+                    await restoredb
+                        .VerifyConsistencyForRepairAsync(m_options.Blocksize, m_options.BlockhashSize, true, m_result.TaskControl.ProgressToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await restoredb
+                        .VerifyConsistencyAsync(m_options.Blocksize, m_options.BlockhashSize, true, m_result.TaskControl.ProgressToken)
+                        .ConfigureAwait(false);
+                }
 
                 Logging.Log.WriteInformationMessage(LOGTAG, "RecreateCompleted", "Recreate completed, and consistency checks completed, marking database as complete");
 
-                await restoredb.RepairInProgress(m_result.TaskControl.ProgressToken, false).ConfigureAwait(false);
+                await restoredb.RepairInProgressAsync(m_result.TaskControl.ProgressToken, false).ConfigureAwait(false);
             }
 
             m_result.EndTime = DateTime.UtcNow;
+        }
+
+        /// <summary>
+        /// The maximum time a fileset timestamp may be newer than the label timestamp
+        /// and still be considered a match. Filelist timestamps can drift slightly
+        /// when the remote filename is probed or recreated, so an exact match is
+        /// not guaranteed.
+        /// </summary>
+        private static readonly TimeSpan MAX_LABEL_TIMESTAMP_DRIFT = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// Applies the labels found in the newest filelist volume to the recreated database.
+        /// The labels are matched to filesets by timestamp; as filelist timestamps can
+        /// drift slightly, the nearest fileset with a timestamp that is the same or newer
+        /// than the label timestamp, within <see cref="MAX_LABEL_TIMESTAMP_DRIFT"/>, is used.
+        /// </summary>
+        /// <param name="restoredb">The database being recreated.</param>
+        /// <param name="labels">The labels read from the newest filelist volume, or null if the newest filelist was not processed.</param>
+        /// <param name="token">Cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task that completes when the labels have been applied.</returns>
+        private static async Task ApplyLabelsFromFilelistAsync(LocalRecreateDatabase restoredb, IReadOnlyDictionary<DateTime, string> labels, CancellationToken token)
+        {
+            if (labels == null || labels.Count == 0)
+                return;
+
+            var filesets = await restoredb
+                .FilesetTimesAsync(token)
+                .ToArrayAsync(cancellationToken: token)
+                .ConfigureAwait(false);
+
+            var updated = 0;
+            foreach (var (labeltime, label) in labels)
+            {
+                var labeltimeUtc = labeltime.ToUniversalTime();
+
+                // Find the fileset with the nearest timestamp that is the same or
+                // newer than the label timestamp, within the allowed drift
+                var best = filesets
+                    .Select(x => new { FilesetId = x.Key, Drift = x.Value.ToUniversalTime() - labeltimeUtc })
+                    .Where(x => x.Drift >= TimeSpan.Zero && x.Drift <= MAX_LABEL_TIMESTAMP_DRIFT)
+                    .OrderBy(x => x.Drift)
+                    .FirstOrDefault();
+
+                if (best == null)
+                {
+                    Logging.Log.WriteWarningMessage(LOGTAG, "LabelWithoutMatchingFileset", null, "No fileset found matching the label \"{0}\" with timestamp {1:u}", label, labeltimeUtc);
+                    continue;
+                }
+
+                await restoredb
+                    .UpdateFilesetLabelAsync(best.FilesetId, label, token)
+                    .ConfigureAwait(false);
+                updated++;
+            }
+
+            if (updated > 0)
+            {
+                Logging.Log.WriteInformationMessage(LOGTAG, "LabelsRestoredFromFilelist", "Restored {0} version labels from the filelist volume", updated);
+                await restoredb.Transaction
+                    .CommitAsync(token)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        private sealed record MetadataBlockRef(long MetadataId, long BlockIndex, string BlockHash, long BlockSize);
+
+        private sealed class MetadataRecreateState
+        {
+            public long MetadataId { get; }
+            public long MetaLength { get; }
+            public int ExpectedBlockCount { get; set; }
+
+            // Index -> block bytes
+            public SortedDictionary<long, byte[]> Blocks { get; } = new();
+
+            public MetadataRecreateState(long metadataId, long metaLength)
+            {
+                MetadataId = metadataId;
+                MetaLength = metaLength;
+            }
+        }
+
+        private async Task RestoreMetadataContentAsync(IBackendManager backendManager, LocalRecreateDatabase restoredb, CancellationToken cancellationToken)
+        {
+            // Metadata content restoration requires the block structure to be present.
+            if (m_options.RepairOnlyPaths)
+                return;
+
+            // Gather block references for each metadataset that is missing content.
+            var volumeBlocks = new Dictionary<string, List<MetadataBlockRef>>(StringComparer.Ordinal);
+            var volumeInfo = new Dictionary<string, RemoteVolume>(StringComparer.Ordinal);
+            var metaStates = new Dictionary<long, MetadataRecreateState>();
+
+            await foreach (var info in restoredb.GetMissingMetadataBlocksAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var metadataId = info.MetadataId;
+                var metaLength = info.MetaLength;
+                var blockIndex = info.BlockIndex;
+                var blockHash = info.BlockHash;
+                var blockSize = info.BlockSize;
+                var volumeName = info.VolumeName;
+                var volumeHash = info.VolumeHash;
+                var volumeSize = info.VolumeSize;
+
+                if (string.IsNullOrEmpty(volumeName) || string.IsNullOrEmpty(blockHash) || blockSize <= 0)
+                    continue;
+
+                if (!metaStates.TryGetValue(metadataId, out var state))
+                    metaStates[metadataId] = state = new MetadataRecreateState(metadataId, metaLength);
+                state.ExpectedBlockCount++;
+
+                if (!volumeBlocks.TryGetValue(volumeName, out var list))
+                    volumeBlocks[volumeName] = list = new List<MetadataBlockRef>();
+                list.Add(new MetadataBlockRef(metadataId, blockIndex, blockHash, blockSize));
+
+                if (!volumeInfo.ContainsKey(volumeName))
+                    volumeInfo[volumeName] = new RemoteVolume(volumeName, volumeHash, volumeSize);
+            }
+
+            if (volumeInfo.Count == 0)
+                return;
+
+            Logging.Log.WriteInformationMessage(LOGTAG, "RestoringMetadataContent", "Restoring metadata content into the database by downloading {0} block volume(s)", volumeInfo.Count);
+
+            // Download all required block volumes and extract metadata blocks.
+            var volumesToDownload = volumeInfo.Values.Cast<IRemoteVolume>().ToList();
+            await foreach (var (tmpfile, hash, size, name) in backendManager.GetFilesOverlappedAsync(volumesToDownload, allowParityRepair: true, cancellationToken).ConfigureAwait(false))
+            {
+                using (tmpfile)
+                {
+                    if (!await m_result.TaskControl.ProgressRendevouzAsync().ConfigureAwait(false))
+                        return;
+
+                    if (!volumeBlocks.TryGetValue(name, out var blocksForVolume) || blocksForVolume.Count == 0)
+                        continue;
+
+                    try
+                    {
+                        using var reader = new BlockVolumeReader(RestoreHandler.GetCompressionModule(name), tmpfile, m_options);
+
+                        foreach (var bref in blocksForVolume)
+                        {
+                            if (!metaStates.TryGetValue(bref.MetadataId, out var state))
+                                continue;
+
+                            // Already captured
+                            if (state.Blocks.ContainsKey(bref.BlockIndex))
+                                continue;
+
+                            if (bref.BlockSize > int.MaxValue)
+                            {
+                                Logging.Log.WriteWarningMessage(LOGTAG, "MetadataBlockTooLarge", null, "Skipping metadata block {0} for metadataset {1} because block size {2} exceeds supported range", bref.BlockHash, bref.MetadataId, bref.BlockSize);
+                                continue;
+                            }
+
+                            var buf = new byte[(int)bref.BlockSize];
+                            var read = reader.ReadBlock(bref.BlockHash, buf);
+                            if (read != buf.Length)
+                            {
+                                // Trim buffer to actual read length.
+                                Array.Resize(ref buf, read);
+                            }
+
+                            state.Blocks[bref.BlockIndex] = buf;
+
+                            // If we have all blocks for this metadataset, assemble and store content now.
+                            if (state.Blocks.Count == state.ExpectedBlockCount)
+                            {
+                                try
+                                {
+                                    var ms = new MemoryStream(checked((int)Math.Min(state.MetaLength, int.MaxValue)));
+                                    foreach (var kvp in state.Blocks.OrderBy(x => x.Key))
+                                    {
+                                        if (ms.Length >= state.MetaLength)
+                                            break;
+
+                                        var remaining = state.MetaLength - ms.Length;
+                                        var take = (int)Math.Min(remaining, kvp.Value.LongLength);
+                                        await ms.WriteAsync(kvp.Value, 0, take);
+                                    }
+
+                                    if (ms.Length != state.MetaLength)
+                                    {
+                                        Logging.Log.WriteWarningMessage(LOGTAG, "MetadataContentIncomplete", null, "Failed to restore metadataset content for {0}: expected {1} bytes, got {2} bytes", state.MetadataId, state.MetaLength, ms.Length);
+                                    }
+                                    else
+                                    {
+                                        var content = Library.Utility.Utility.GetStringWithoutBOM(ms, false);
+                                        await restoredb.SetMetadataContentAsync(state.MetadataId, content, cancellationToken).ConfigureAwait(false);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Logging.Log.WriteWarningMessage(LOGTAG, "MetadataContentRestoreFailed", ex, "Failed to restore metadataset content for {0}", state.MetadataId);
+                                }
+                                finally
+                                {
+                                    metaStates.Remove(state.MetadataId);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logging.Log.WriteWarningMessage(LOGTAG, "MetadataVolumeProcessingFailed", ex, "Failed to process block volume {0} for metadata content restore", name);
+                        if (ex.IsAbortException())
+                            throw;
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -687,7 +997,7 @@ namespace Duplicati.Library.Main.Operation
         /// <param name="filter">The filter to apply to the files.</param>
         /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
         /// <returns>A task that completes when the fileset has been recreated.</returns>
-        public static async Task RecreateFilesetFromRemoteList(LocalRecreateDatabase restoredb, ICompression compressor, long filesetid, Options options, IFilter filter, CancellationToken cancellationToken)
+        public static async Task RecreateFilesetFromRemoteListAsync(LocalRecreateDatabase restoredb, ICompression compressor, long filesetid, Options options, IFilter filter, CancellationToken cancellationToken)
         {
             var blocksize = options.Blocksize;
             var hashes_pr_block = blocksize / options.BlockhashSize;
@@ -697,11 +1007,20 @@ namespace Duplicati.Library.Main.Operation
 
             // update fileset using filesetData
             await restoredb
-                .UpdateFullBackupStateInFileset(filesetid, filesetData.IsFullBackup, cancellationToken)
+                .UpdateFullBackupStateInFilesetAsync(filesetid, filesetData.IsFullBackup, cancellationToken)
                 .ConfigureAwait(false);
 
+            // The fileset was created from the time in the filename. A dlist file that
+            // replaced an earlier one has a new name, and therefore a new time, so it
+            // records the time of the fileset it describes. Use that when it is present.
+            var recordedTime = filesetData.GetFilesetTime();
+            if (recordedTime.HasValue)
+                await restoredb
+                    .UpdateFilesetTimestampAsync(filesetid, recordedTime.Value, cancellationToken)
+                    .ConfigureAwait(false);
+
             // clear any existing fileset entries
-            await restoredb.ClearFilesetEntries(filesetid, cancellationToken).ConfigureAwait(false);
+            await restoredb.ClearFilesetEntriesAsync(filesetid, cancellationToken).ConfigureAwait(false);
 
             using (var filelistreader = new FilesetVolumeReader(compressor, options))
                 foreach (var fe in filelistreader.Files.Where(x => Library.Utility.FilterExpression.Matches(filter, x.Path)))
@@ -712,20 +1031,47 @@ namespace Duplicati.Library.Main.Operation
                         var expectedmetablocklisthashes = (expectedmetablocks + hashes_pr_block - 1) / hashes_pr_block;
                         if (expectedmetablocks <= 1) expectedmetablocklisthashes = 0;
 
+                        if (!options.AllowRestoreOutsideTargetDirectory)
+                        {
+                            // Check for cross-platform rooted paths
+                            var isAbsolute =
+                                (fe.Path.Length > 0 && fe.Path[0] == '/') ||
+                                (fe.Path.Length > 2 && fe.Path[1] == ':' && (fe.Path[2] == '\\' || fe.Path[2] == '/')) ||
+                                fe.Path.StartsWith("\\\\");
+
+                            // Check for relative path segments (accounting for mixed path separators)
+                            var normalizedPath = fe.Path.Replace('\\', '/');
+                            var hasRelativeSegments = normalizedPath.Contains("/../")
+                                || normalizedPath.EndsWith("/..")
+                                || normalizedPath.StartsWith("../");
+
+                            if (hasRelativeSegments)
+                            {
+                                Logging.Log.WriteWarningMessage(LOGTAG, "PathTraversalDetected", null, "Path traversal detected in path: {0}", fe.Path);
+                                continue;
+                            }
+
+                            if (!Path.IsPathFullyQualified(fe.Path) && !isAbsolute)
+                            {
+                                Logging.Log.WriteWarningMessage(LOGTAG, "InvalidPath", null, "Invalid path: {0}", fe.Path);
+                                continue;
+                            }
+                        }
+
                         var metadataid = long.MinValue;
                         var split = LocalDatabase.SplitIntoPrefixAndName(fe.Path);
                         var prefixid = await restoredb
-                            .GetOrCreatePathPrefix(split.Key, cancellationToken)
+                            .GetOrCreatePathPrefixAsync(split.Key, cancellationToken)
                             .ConfigureAwait(false);
 
                         switch (fe.Type)
                         {
                             case FilelistEntryType.Folder:
                                 metadataid = await restoredb
-                                    .AddMetadataset(fe.Metahash, fe.Metasize, fe.MetaBlocklistHashes, expectedmetablocklisthashes, cancellationToken)
+                                    .AddMetadatasetAsync(fe.Metahash, fe.Metasize, fe.MetaBlocklistHashes, expectedmetablocklisthashes, cancellationToken)
                                     .ConfigureAwait(false);
                                 await restoredb
-                                    .AddDirectoryEntry(filesetid, prefixid, split.Value, fe.Time, metadataid, cancellationToken)
+                                    .AddDirectoryEntryAsync(filesetid, prefixid, split.Value, fe.Time, metadataid, cancellationToken)
                                     .ConfigureAwait(false);
 
                                 break;
@@ -735,36 +1081,36 @@ namespace Duplicati.Library.Main.Operation
                                 if (expectedblocks <= 1) expectedblocklisthashes = 0;
 
                                 var blocksetid = await restoredb
-                                    .AddBlockset(fe.Hash, fe.Size, fe.BlocklistHashes, expectedblocklisthashes, cancellationToken)
+                                    .AddBlocksetAsync(fe.Hash, fe.Size, fe.BlocklistHashes, expectedblocklisthashes, cancellationToken)
                                     .ConfigureAwait(false);
                                 metadataid = await restoredb
-                                    .AddMetadataset(fe.Metahash, fe.Metasize, fe.MetaBlocklistHashes, expectedmetablocklisthashes, cancellationToken)
+                                    .AddMetadatasetAsync(fe.Metahash, fe.Metasize, fe.MetaBlocklistHashes, expectedmetablocklisthashes, cancellationToken)
                                     .ConfigureAwait(false);
                                 await restoredb
-                                    .AddFileEntry(filesetid, prefixid, split.Value, fe.Time, blocksetid, metadataid, cancellationToken)
+                                    .AddFileEntryAsync(filesetid, prefixid, split.Value, fe.Time, blocksetid, metadataid, cancellationToken)
                                     .ConfigureAwait(false);
 
-                                if (fe.Size <= blocksize)
+                                if (fe.Size <= blocksize && fe.Size > 0)
                                 {
                                     if (!string.IsNullOrWhiteSpace(fe.Blockhash))
                                         await restoredb
-                                            .AddSmallBlocksetLink(fe.Hash, fe.Blockhash, fe.Blocksize, cancellationToken)
+                                            .AddSmallBlocksetLinkAsync(fe.Hash, fe.Blockhash, fe.Blocksize, cancellationToken)
                                             .ConfigureAwait(false);
                                     else if (options.BlockHashAlgorithm == options.FileHashAlgorithm)
                                         await restoredb
-                                            .AddSmallBlocksetLink(fe.Hash, fe.Hash, fe.Size, cancellationToken)
+                                            .AddSmallBlocksetLinkAsync(fe.Hash, fe.Hash, fe.Size, cancellationToken)
                                             .ConfigureAwait(false);
-                                    else if (fe.Size > 0)
+                                    else
                                         Logging.Log.WriteWarningMessage(LOGTAG, "MissingBlockHash", null, "No block hash found for file: {0}", fe.Path);
                                 }
 
                                 break;
                             case FilelistEntryType.Symlink:
                                 metadataid = await restoredb
-                                    .AddMetadataset(fe.Metahash, fe.Metasize, fe.MetaBlocklistHashes, expectedmetablocklisthashes, cancellationToken)
+                                    .AddMetadatasetAsync(fe.Metahash, fe.Metasize, fe.MetaBlocklistHashes, expectedmetablocklisthashes, cancellationToken)
                                     .ConfigureAwait(false);
                                 await restoredb
-                                    .AddSymlinkEntry(filesetid, prefixid, split.Value, fe.Time, metadataid, cancellationToken)
+                                    .AddSymlinkEntryAsync(filesetid, prefixid, split.Value, fe.Time, metadataid, cancellationToken)
                                     .ConfigureAwait(false);
                                 break;
                             default:
@@ -776,11 +1122,11 @@ namespace Duplicati.Library.Main.Operation
                         {
                             if (!string.IsNullOrWhiteSpace(fe.Metablockhash))
                                 await restoredb
-                                    .AddSmallBlocksetLink(fe.Metahash, fe.Metablockhash, fe.Metasize, cancellationToken)
+                                    .AddSmallBlocksetLinkAsync(fe.Metahash, fe.Metablockhash, fe.Metasize, cancellationToken)
                                     .ConfigureAwait(false);
                             else if (options.BlockHashAlgorithm == options.FileHashAlgorithm)
                                 await restoredb
-                                    .AddSmallBlocksetLink(fe.Metahash, fe.Metahash, fe.Metasize, cancellationToken)
+                                    .AddSmallBlocksetLinkAsync(fe.Metahash, fe.Metahash, fe.Metasize, cancellationToken)
                                     .ConfigureAwait(false);
                             else
                                 Logging.Log.WriteWarningMessage(LOGTAG, "MissingMetadataBlockHash", null, "No block hash found for file metadata: {0}", fe.Path);
@@ -802,7 +1148,7 @@ namespace Duplicati.Library.Main.Operation
         /// <param name="restoredb">The database to query.</param>
         /// <param name="cancellationToken">A cancellation token to cancel the operation.</param>
         /// <returns>The volume id of the item.</returns>
-        public static async Task<(long, string)> ProbeForMatchingFilename(string filename, LocalRecreateDatabase restoredb, CancellationToken cancellationToken)
+        public static async Task<(long, string)> ProbeForMatchingFilenameAsync(string filename, LocalRecreateDatabase restoredb, CancellationToken cancellationToken)
         {
             var p = VolumeBase.ParseFilename(filename);
             if (p != null)
@@ -812,7 +1158,7 @@ namespace Duplicati.Library.Main.Operation
                     {
                         var testfilename = VolumeBase.GenerateFilename(p.FileType, p.Prefix, p.Guid, p.Time, compmodule, encmodule);
                         var tvid = await restoredb
-                            .GetRemoteVolumeID(testfilename, cancellationToken)
+                            .GetRemoteVolumeIDAsync(testfilename, cancellationToken)
                             .ConfigureAwait(false);
 
                         if (tvid >= 0)

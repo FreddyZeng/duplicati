@@ -22,6 +22,9 @@ trim_trailing_whitespace = true
 [*.sln]
 indent_style = tab
 
+[*.slnx]
+indent_style = tab
+
 # Visual Studio XML Project Files
 [*.{csproj,vbproj,vcxproj.filters,proj,projitems,shproj}]
 indent_size = 2
@@ -64,3 +67,8 @@ end_of_line = crlf
 
 [*.js]
 indent_size = 2
+
+[Duplicati/Library/Main/**.cs]
+# The database queries must go through the extension overloads that register with
+# SlowQueryMonitor; see BannedSymbols.txt in that project.
+dotnet_diagnostic.RS0030.severity = error

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -19,8 +19,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
 // DEALINGS IN THE SOFTWARE.
 using System.CommandLine;
-using System.CommandLine.Builder;
-using System.CommandLine.Parsing;
+using Duplicati.Library.AutoUpdater;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
 
@@ -36,7 +35,7 @@ public static class Program
     /// </summary>
     /// <param name="args">The arguments</param>
     /// <returns>The return code</returns>
-    public static Task<int> Main(string[] args)
+    public static Task<int> MainAsync(string[] args)
     {
         Library.AutoUpdater.PreloadSettingsLoader.ConfigurePreloadSettings(ref args, Library.AutoUpdater.PackageHelper.NamedExecutable.ServerUtil);
 
@@ -46,25 +45,38 @@ public static class Program
                 Commands.Upgrade.Create(),
                 Commands.List.Create(),
                 Commands.Execute.Create(),
+                Commands.Verify.Create(),
+                Commands.Cleanup.Create(),
+                Commands.WipeEncryption.Create(),
             };
 
-        return new CommandLineBuilder(rootCmd)
-            .UseDefaults()
-            .UseExceptionHandler((ex, context) =>
+        // Registered so the option is accepted and shown in help; the value is read directly
+        // from the process arguments/environment by DataFolderManager/Util.
+        rootCmd.Options.Add(new Option<bool>(
+            $"--{DataFolderManager.ALLOW_INSECURE_DATAFOLDER_OPTION}")
+        {
+            Description = "Allow the data folder to have insecure permissions instead of rejecting it",
+            DefaultValueFactory = _ => false
+        });
+
+        rootCmd.UseAdditionalHelpAliases();
+
+        try
+        {
+            return rootCmd.Parse(args).InvokeAsync(new InvocationConfiguration
             {
-                if (ex is UserInformationException uie)
-                {
-                    Console.WriteLine(uie.Message);
-                    context.ExitCode = 2;
-                }
-                else
-                {
-                    Console.WriteLine(ex.ToString());
-                    context.ExitCode = 1;
-                }
-            })
-            .UseAdditionalHelpAliases()
-            .Build()
-            .InvokeAsync(args);
+                EnableDefaultExceptionHandler = false
+            });
+        }
+        catch (UserInformationException uie)
+        {
+            Console.WriteLine(uie.Message);
+            return Task.FromResult(2);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex.ToString());
+            return Task.FromResult(1);
+        }
     }
 }

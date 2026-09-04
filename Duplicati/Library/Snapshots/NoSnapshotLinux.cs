@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -35,7 +35,7 @@ namespace Duplicati.Library.Snapshots
     /// </summary>
     [SupportedOSPlatform("linux")]
     [SupportedOSPlatform("macOS")]
-    public sealed class NoSnapshotLinux : SnapshotBase
+    public class NoSnapshotLinux : SnapshotBase
     {
         /// <summary>
         /// PInvoke methods
@@ -98,9 +98,9 @@ namespace Duplicati.Library.Snapshots
             foreach (var folder in m_sources)
             {
                 if (DirectoryExists(folder) || folder.EndsWith(Path.DirectorySeparatorChar))
-                    yield return new SnapshotSourceFileEntry(this, Util.AppendDirSeparator(folder), true, true);
+                    yield return new SnapshotSourceFileEntry(this, Util.AppendDirSeparator(folder), true, true, false);
                 else
-                    yield return new SnapshotSourceFileEntry(this, folder, false, true);
+                    yield return new SnapshotSourceFileEntry(this, folder, false, true, false);
             }
         }
 

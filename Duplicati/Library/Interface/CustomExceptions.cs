@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -272,5 +272,36 @@ namespace Duplicati.Library.Interface
         public TestAfterConnectException(string message, string helpId, Exception innerException)
             : base(message, helpId, innerException)
         { }
+    }
+
+    /// <summary>
+    /// Exception indicating that the backup database is currently locked by another running operation
+    /// and cannot be accessed concurrently.
+    /// </summary>
+    [Serializable]
+    public class DatabaseLockedException : UserInformationException
+    {
+        /// <summary>
+        /// The path to the database file that is locked.
+        /// </summary>
+        public readonly string DatabasePath;
+
+        public DatabaseLockedException(string databasePath)
+            : base(LC.L($"The backup database is currently in use by another operation and cannot be accessed concurrently. Please wait for the running operation to finish and try again."), "DatabaseLocked")
+        {
+            DatabasePath = databasePath;
+        }
+
+        public DatabaseLockedException(string databasePath, Exception innerException)
+            : base(LC.L($"The backup database is currently in use by another operation and cannot be accessed concurrently. Please wait for the running operation to finish and try again."), "DatabaseLocked", innerException)
+        {
+            DatabasePath = databasePath;
+        }
+
+        public DatabaseLockedException(string message, string helpId, Exception innerException)
+            : base(message, helpId, innerException)
+        {
+            DatabasePath = string.Empty;
+        }
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -36,7 +36,6 @@ namespace Duplicati.Library.Utility.Power
         {
             IPowerSupplyState state;
 
-            // Since IsClientLinux returns true when on Mac OS X, we need to check IsClientOSX first.
             if (System.OperatingSystem.IsMacOS())
             {
                 state = new MacOSPowerSupplyState();

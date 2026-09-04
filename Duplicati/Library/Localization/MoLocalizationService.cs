@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -27,6 +27,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using NGettext;
+using Duplicati.Library.Logging;
 
 namespace Duplicati.Library.Localization
 {
@@ -35,6 +36,11 @@ namespace Duplicati.Library.Localization
     /// </summary>
     public class MoLocalizationService : ILocalizationService
     {
+        /// <summary>
+        /// The log tag used for logging from this class
+        /// </summary>
+        private static readonly string LOGTAG = Log.LogTagFromType<MoLocalizationService>();
+
         /// <summary>
         /// The catalog containing the translations
         /// </summary>
@@ -76,14 +82,7 @@ namespace Duplicati.Library.Localization
         public MoLocalizationService(CultureInfo ci)
         {
             Culture = ci;
-            var filenames = new string[] { 
-                // Load the specialized version first
-                string.Format("localization-{0}.mo", ci.Name.Replace('-', '_')), 
-                // Then try the generic language version
-                string.Format("localization-{0}.mo", ci.TwoLetterISOLanguageName)
-            };
-
-            foreach (var fn in filenames)
+            foreach (var fn in GetCandidateFilenames(ci))
             {
                 // search first in external files
                 foreach (var sp in SearchPaths)
@@ -119,6 +118,24 @@ namespace Duplicati.Library.Localization
         }
 
         /// <summary>
+        /// Returns the catalog filenames probed for a culture, most specific first.
+        /// Catalog files exist under two naming conventions: the underscored form
+        /// produced by older Transifex language codes (e.g. <c>localization-zh_CN.mo</c>)
+        /// and the hyphenated BCP 47 form produced by current ones
+        /// (e.g. <c>localization-zh-Hans.mo</c>), so both are probed.
+        /// </summary>
+        /// <param name="ci">The culture to find catalog files for.</param>
+        /// <returns>The candidate filenames, in probing order.</returns>
+        public static IEnumerable<string> GetCandidateFilenames(CultureInfo ci)
+            => new string[] {
+                // Load the specialized version first, under either naming convention
+                string.Format("localization-{0}.mo", ci.Name),
+                string.Format("localization-{0}.mo", ci.Name.Replace('-', '_')),
+                // Then try the generic language version
+                string.Format("localization-{0}.mo", ci.TwoLetterISOLanguageName)
+            }.Distinct();
+
+        /// <summary>
         /// Gets the culture of the localization
         /// </summary>
         public CultureInfo Culture { get; }
@@ -138,7 +155,15 @@ namespace Duplicati.Library.Localization
         /// <returns>The localized string</returns>
         public string Localize(string message)
         {
-            return catalog.GetString(PreFormat(message));
+            try
+            {
+                return catalog.GetString(PreFormat(message));
+            }
+            catch (Exception ex)
+            {
+                Log.WriteWarningMessage(LOGTAG, "StringTranslationError", ex, "Failed to translate string: {0}", message);
+            }
+            return message;
         }
 
         /// <summary>
@@ -149,7 +174,16 @@ namespace Duplicati.Library.Localization
         /// <returns>The localized string</returns>
         public string Localize(string message, object arg0)
         {
-            return catalog.GetString(PreFormat(message), arg0);
+            try
+            {
+                return catalog.GetString(PreFormat(message), arg0);
+            }
+            catch (Exception ex)
+            {
+                Log.WriteWarningMessage(LOGTAG, "StringTranslationError", ex, "Failed to translate string: {0}", message);
+            }
+
+            return string.Format(PreFormat(message), arg0);
         }
 
         /// <summary>
@@ -161,7 +195,16 @@ namespace Duplicati.Library.Localization
         /// <returns>The localized string</returns>
         public string Localize(string message, object arg0, object arg1)
         {
-            return catalog.GetString(PreFormat(message), arg0, arg1);
+            try
+            {
+                return catalog.GetString(PreFormat(message), arg0, arg1);
+            }
+            catch (Exception ex)
+            {
+                Log.WriteWarningMessage(LOGTAG, "StringTranslationError", ex, "Failed to translate string: {0}", message);
+            }
+
+            return string.Format(PreFormat(message), arg0, arg1);
         }
 
         /// <summary>
@@ -174,7 +217,16 @@ namespace Duplicati.Library.Localization
         /// <returns>The localized string</returns>
         public string Localize(string message, object arg0, object arg1, object arg2)
         {
-            return catalog.GetString(PreFormat(message), arg0, arg1, arg2);
+            try
+            {
+                return catalog.GetString(PreFormat(message), arg0, arg1, arg2);
+            }
+            catch (Exception ex)
+            {
+                Log.WriteWarningMessage(LOGTAG, "StringTranslationError", ex, "Failed to translate string: {0}", message);
+            }
+
+            return string.Format(PreFormat(message), arg0, arg1, arg2);
         }
 
         /// <summary>
@@ -184,7 +236,16 @@ namespace Duplicati.Library.Localization
         /// <param name="args">The arguments</param>
         public string Localize(string message, params object[] args)
         {
-            return catalog.GetString(PreFormat(message), args);
+            try
+            {
+                return catalog.GetString(PreFormat(message), args);
+            }
+            catch (Exception ex)
+            {
+                Log.WriteWarningMessage(LOGTAG, "StringTranslationError", ex, "Failed to translate string: {0}", message);
+            }
+
+            return string.Format(PreFormat(message), args);
         }
 
         private static IEnumerable<CultureInfo> m_supportedcultures = null;

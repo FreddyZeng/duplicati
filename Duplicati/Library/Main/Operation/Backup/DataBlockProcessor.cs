@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -34,7 +34,9 @@ namespace Duplicati.Library.Main.Operation.Backup
     /// </summary>
     internal static class DataBlockProcessor
     {
-        public static Task Run(Channels channels, BackupDatabase database, IBackendManager backendManager, Options options, ITaskReader taskreader)
+        private static readonly string LOGTAG = Logging.Log.LogTagFromType(typeof(DataBlockProcessor));
+
+        public static Task RunAsync(Channels channels, BackupDatabase database, IBackendManager backendManager, Options options, ITaskReader taskreader)
         {
             return AutomationExtensions.RunTask(
             new
@@ -59,7 +61,7 @@ namespace Duplicati.Library.Main.Operation.Backup
                 {
                     while (true)
                     {
-                        var b = await self.Input.ReadAsync();
+                        using var b = await self.Input.ReadAsync();
 
                         // Check if the process has spent more than allowed workload time
                         if (options.CPUIntensity < 10 && sw_workload.ElapsedMilliseconds > allowed_workload_ms)
@@ -114,7 +116,7 @@ namespace Duplicati.Library.Main.Operation.Backup
 
                         if (newBlock)
                         {
-                            await blockvolume.AddBlock(b.HashKey, b.Data, b.Offset, (int)b.Size, b.Hint)
+                            await blockvolume.AddBlockAsync(b.HashKey, b.Data, b.Offset, (int)b.Size, b.Hint)
                                 .ConfigureAwait(false);
                             if (indexvolume != null)
                                 indexvolume.AddBlock(b.HashKey, b.Size);
@@ -133,7 +135,7 @@ namespace Duplicati.Library.Main.Operation.Backup
                                 {
                                     // TODO: It is much easier to let the BackendManager deal with index files,
                                     // but it adds a bit of strain to the database
-                                    indexVolumeCopy = await indexvolume.CreateVolume(blockvolume.RemoteFilename, options, database, taskreader.ProgressToken).ConfigureAwait(false);
+                                    indexVolumeCopy = await indexvolume.CreateVolumeAsync(blockvolume.RemoteFilename, options, database, taskreader.ProgressToken).ConfigureAwait(false);
                                     // Create link before upload is started, it will be removed later if upload fails
                                     await database.AddIndexBlockLinkAsync(indexVolumeCopy.VolumeID, blockvolume.VolumeID, taskreader.ProgressToken).ConfigureAwait(false);
                                 }
@@ -142,15 +144,22 @@ namespace Duplicati.Library.Main.Operation.Backup
                                 blockvolume = null;
                                 indexvolume = null;
 
-                                await database.CommitTransactionAsync("CommitAddBlockToOutputFlush", true, taskreader.ProgressToken).ConfigureAwait(false);
-                                await backendManager.PutAsync(blockVolumeCopy, indexVolumeCopy, null, false, () => database.FlushBackendMessagesAndCommitAsync(backendManager, taskreader.ProgressToken), taskreader.ProgressToken).ConfigureAwait(false);
+                                if (options.Dryrun)
+                                {
+                                    Logging.Log.WriteDryrunMessage(LOGTAG, "WouldUploadFile", "Would upload file: {0}", blockVolumeCopy.RemoteFilename);
+                                }
+                                else
+                                {
+                                    await database.CommitTransactionAsync("CommitAddBlockToOutputFlush", true, taskreader.ProgressToken).ConfigureAwait(false);
+                                    await backendManager.PutAsync(blockVolumeCopy, indexVolumeCopy, null, false, () => database.FlushBackendMessagesAndCommitAsync(backendManager, taskreader.ProgressToken), taskreader.ProgressToken).ConfigureAwait(false);
+                                }
 
                             }
 
                         }
 
                         // We ignore the stop signal, but not the pause and terminate
-                        await taskreader.ProgressRendevouz().ConfigureAwait(false);
+                        await taskreader.ProgressRendevouzAsync().ConfigureAwait(false);
 
                         sw_workload.Stop();
                     }

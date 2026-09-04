@@ -1,22 +1,22 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a 
-// copy of this software and associated documentation files (the "Software"), 
-// to deal in the Software without restriction, including without limitation 
-// the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-// and/or sell copies of the Software, and to permit persons to whom the 
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
 // Software is furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in 
+//
+// The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
 #nullable enable
@@ -33,11 +33,22 @@ using Duplicati.Server.Database;
 using Duplicati.Server.Serialization.Interface;
 using Duplicati.WebserverCore.Abstractions;
 using System.Threading;
+using System.Text.Json;
+using System.Globalization;
+using CoCoL;
+using System.ComponentModel;
 
 namespace Duplicati.Server
 {
     public static class Runner
     {
+        /// <summary>
+        /// The tag used for logging
+        /// </summary>
+        private static readonly string LOGTAG = Library.Logging.Log.LogTagFromType(typeof(Runner));
+
+        public const string TaskSetupFilename = "task-setup.json";
+
         public interface IRunnerData : Serialization.Interface.IQueuedTask
         {
             Serialization.Interface.IBackup? Backup { get; }
@@ -46,7 +57,10 @@ namespace Duplicati.Server
             string[]? ExtraArguments { get; }
             int PageSize { get; }
             int PageOffset { get; }
-            void SetController(Library.Main.Controller? controller);
+            bool ReturnExtendedData { get; }
+            bool CaseSensitiveSearch { get; }
+            bool SearchMetadata { get; }
+            void SetController(Library.Main.IController? controller);
         }
 
         private class RunnerData : IRunnerData
@@ -73,41 +87,48 @@ namespace Duplicati.Server
             public string[]? ExtraArguments { get; internal set; }
             public int PageSize { get; internal set; } = 0;
             public int PageOffset { get; internal set; } = 0;
+            public bool ReturnExtendedData { get; internal set; } = false;
+            public bool CaseSensitiveSearch { get; internal set; } = false;
+            public bool SearchMetadata { get; internal set; } = false;
 
             public DateTime? TaskStarted { get; set; }
             public DateTime? TaskFinished { get; set; }
 
-            internal Library.Main.Controller? Controller { get; set; }
+            internal Library.Main.IController? Controller { get; set; }
 
-            public void SetController(Library.Main.Controller? controller)
+            public void SetController(Library.Main.IController? controller)
             {
                 Controller = controller;
             }
 
-            public void Stop()
+            public async Task StopAsync()
             {
-                Controller?.Stop();
+                if (Controller != null)
+                    await Controller.StopAsync().ConfigureAwait(false);
             }
 
-            public void Abort()
+            public async Task AbortAsync()
             {
-                Controller?.Abort();
+                if (Controller != null)
+                    await Controller.AbortAsync().ConfigureAwait(false);
             }
 
-            public void Pause(bool alsoTransfers)
+            public async Task PauseAsync(bool alsoTransfers)
             {
-                Controller?.Pause(alsoTransfers);
+                if (Controller != null)
+                    await Controller.PauseAsync(alsoTransfers).ConfigureAwait(false);
             }
 
-            public void Resume()
+            public async Task ResumeAsync()
             {
-                Controller?.Resume();
+                if (Controller != null)
+                    await Controller.ResumeAsync().ConfigureAwait(false);
             }
 
             public long OriginalUploadSpeed { get; set; }
             public long OriginalDownloadSpeed { get; set; }
 
-            public void UpdateThrottleSpeeds(string? uploadSpeed, string? downloadSpeed)
+            public async Task UpdateThrottleSpeedsAsync(string? uploadSpeed, string? downloadSpeed)
             {
                 var controller = this.Controller;
                 if (controller == null)
@@ -124,14 +145,20 @@ namespace Duplicati.Server
                     if (!string.IsNullOrWhiteSpace(uploadSpeed))
                         server_upload_throttle = Sizeparser.ParseSize(uploadSpeed, "kb");
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Library.Logging.Log.WriteErrorMessage(LOGTAG, "ParseUploadLimitError", ex, "Failed to parse upload limit: {0}", uploadSpeed);
+                }
 
                 try
                 {
                     if (!string.IsNullOrWhiteSpace(downloadSpeed))
                         server_download_throttle = Sizeparser.ParseSize(downloadSpeed, "kb");
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Library.Logging.Log.WriteErrorMessage(LOGTAG, "ParseDownloadLimitError", ex, "Failed to parse download limit: {0}", downloadSpeed);
+                }
 
                 var upload_throttle = Math.Min(job_upload_throttle, server_upload_throttle);
                 var download_throttle = Math.Min(job_download_throttle, server_download_throttle);
@@ -142,7 +169,7 @@ namespace Duplicati.Server
                 if (download_throttle <= 0 || download_throttle == long.MaxValue)
                     download_throttle = 0;
 
-                controller.SetThrottleSpeeds(upload_throttle, download_throttle);
+                await controller.SetThrottleSpeedsAsync(upload_throttle, download_throttle).ConfigureAwait(false);
             }
 
             private readonly long m_taskID;
@@ -173,7 +200,66 @@ namespace Duplicati.Server
             return new CustomRunnerTask(runner);
         }
 
-        public static IRunnerData CreateTask(DuplicatiOperation operation, IBackup backup, IDictionary<string, string?>? extraOptions = null, string[]? filterStrings = null, string[]? extraArguments = null, int pageSize = 0, int pageOffset = 0)
+        /// <summary>
+        /// Parses the raw option value into a <see cref="StoreTaskConfigMode"/>.
+        /// For backwards compatibility, boolean true is treated as <see cref="StoreTaskConfigMode.Self"/>,
+        /// boolean false as <see cref="StoreTaskConfigMode.None"/>, and null/whitespace as <see cref="StoreTaskConfigMode.Auto"/>.
+        /// </summary>
+        /// <param name="rawValue">The raw option value.</param>
+        /// <returns>The parsed mode.</returns>
+        public static StoreTaskConfigMode ParseStoreTaskConfigMode(string? rawValue)
+        {
+            if (string.IsNullOrWhiteSpace(rawValue))
+                return StoreTaskConfigMode.Auto;
+
+            // Handle boolean values for backwards compatibility, use a lambda capture to see if we hit the default case
+            var usedDefault = false;
+            var parsedBool = Utility.ParseBool(rawValue, () => { usedDefault = true; return false; });
+            if (!usedDefault)
+                return parsedBool ? StoreTaskConfigMode.Self : StoreTaskConfigMode.None;
+
+            return Utility.ParseEnum(rawValue, StoreTaskConfigMode.Auto);
+        }
+
+        /// <summary>
+        /// Determines whether the backup is configured to use encryption.
+        /// </summary>
+        /// <param name="options">The backup options dictionary.</param>
+        /// <returns>True if encryption is enabled; otherwise, false.</returns>
+        private static bool IsBackupEncryptionEnabled(Dictionary<string, string?> options)
+        {
+            // In principle, this check should be enough
+            if (Utility.ParseBoolOption(options, "no-encryption"))
+                return false;
+
+            // But since we explicitly set the encryption module, we also check that this is set
+            if (string.IsNullOrWhiteSpace(options.GetValueOrDefault("encryption-module")))
+                return false;
+
+            // Also, we need a passphrase
+            if (string.IsNullOrWhiteSpace(options.GetValueOrDefault("passphrase")))
+                return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Prepares a backup for export, optionally removing sensitive information.
+        /// </summary>
+        /// <param name="databaseConnection">The database connection.</param>
+        /// <param name="backup">The backup to export.</param>
+        /// <param name="removeSecrets">Whether to remove secrets in the export.</param>
+        /// <returns>The import/export structure.</returns>
+        private static Serializable.ImportExportStructure PrepareBackupForExport(Connection databaseConnection, IBackup backup, bool removeSecrets)
+        {
+            var prepped = ((Backup)backup).Clone();
+            if (removeSecrets)
+                prepped.RemoveSensitiveInformation();
+
+            return databaseConnection.PrepareBackupForExport(prepped);
+        }
+
+        public static IRunnerData CreateTask(DuplicatiOperation operation, IBackup backup, IDictionary<string, string?>? extraOptions = null, string[]? filterStrings = null, string[]? extraArguments = null, int pageSize = 0, int pageOffset = 0, bool returnExtended = false, bool caseSensitiveSearch = false, bool includeMetadata = false)
         {
             return new RunnerData()
             {
@@ -183,7 +269,10 @@ namespace Duplicati.Server
                 FilterStrings = filterStrings,
                 ExtraArguments = extraArguments,
                 PageSize = pageSize,
-                PageOffset = pageOffset
+                PageOffset = pageOffset,
+                ReturnExtendedData = returnExtended,
+                CaseSensitiveSearch = caseSensitiveSearch,
+                SearchMetadata = includeMetadata
             };
         }
 
@@ -225,7 +314,28 @@ namespace Duplicati.Server
                 extraOptions ?? new Dictionary<string, string?>());
         }
 
-        public static IRunnerData CreateListFolderContents(IBackup backup, string[]? folders, DateTime time, int pageSize, int pageOffset)
+        /// <summary>
+        /// Creates a task that updates the label of a backup version.
+        /// </summary>
+        /// <param name="backup">The backup to update the version label for</param>
+        /// <param name="version">The version to update</param>
+        /// <param name="label">The label to set, or null to clear the label</param>
+        /// <returns>The runner task</returns>
+        public static IRunnerData CreateSetVersionLabelTask(IBackup backup, long version, string? label)
+        {
+            var dict = new Dictionary<string, string?>
+            {
+                ["version"] = version.ToString(CultureInfo.InvariantCulture),
+                ["version-name"] = label ?? ""
+            };
+
+            return CreateTask(
+                DuplicatiOperation.SetVersionLabel,
+                backup,
+                dict);
+        }
+
+        public static IRunnerData CreateListFolderContents(IBackup backup, string[]? folders, DateTime time, int pageSize, int pageOffset, bool returnExtended)
         {
             var dict = new Dictionary<string, string?>();
             if (time.Ticks > 0)
@@ -237,7 +347,8 @@ namespace Duplicati.Server
                 dict,
                 extraArguments: folders,
                 pageSize: pageSize,
-                pageOffset: pageOffset);
+                pageOffset: pageOffset,
+                returnExtended: returnExtended);
         }
 
         public static IRunnerData ListFileVersionsTask(IBackup backup, string[]? filepaths, int pageSize, int pageOffset)
@@ -252,11 +363,13 @@ namespace Duplicati.Server
                 pageOffset: pageOffset);
         }
 
-        public static IRunnerData CreateSearchEntriesTask(IBackup backup, string[]? filters, string[]? folders, DateTime time, int pageSize, int pageOffset)
+        public static IRunnerData CreateSearchEntriesTask(IBackup backup, string[]? filters, bool caseSensitive, string[]? folders, DateTime time, long[]? version, int pageSize, int pageOffset, bool returnExtendedData, bool searchMetadata)
         {
             var dict = new Dictionary<string, string?>();
             if (time.Ticks > 0)
                 dict["time"] = Utility.SerializeDateTime(time.ToUniversalTime());
+            if (version != null)
+                dict["version"] = string.Join(",", version.Select(v => v.ToString(CultureInfo.InvariantCulture)));
 
             return CreateTask(
                 DuplicatiOperation.SearchEntries,
@@ -265,22 +378,107 @@ namespace Duplicati.Server
                 filters,
                 extraArguments: folders,
                 pageSize: pageSize,
-                pageOffset: pageOffset);
+                pageOffset: pageOffset,
+                returnExtended: returnExtendedData,
+                caseSensitiveSearch: caseSensitive,
+                includeMetadata: searchMetadata);
+        }
+
+        /// <summary>
+        /// Creates a task that deletes the specified backup versions from the remote storage.
+        /// </summary>
+        /// <param name="backup">The backup to delete versions from</param>
+        /// <param name="versions">The versions to delete</param>
+        /// <param name="extraOptions">Optional extra options</param>
+        /// <returns>The runner task</returns>
+        public static IRunnerData CreateDeleteVersionsTask(IBackup backup, long[] versions, IDictionary<string, string?>? extraOptions = null)
+        {
+            var dict = extraOptions ?? new Dictionary<string, string?>();
+            if (versions != null && versions.Length > 0)
+                dict["version"] = string.Join(",", versions.Select(v => v.ToString(CultureInfo.InvariantCulture)));
+
+            return CreateTask(
+                DuplicatiOperation.DeleteVersions,
+                backup,
+                dict);
+        }
+
+        /// <summary>
+        /// Creates a task that lists broken files in the backup.
+        /// </summary>
+        /// <param name="backup">The backup to list broken files for</param>
+        /// <param name="filterStrings">Optional filter strings to apply</param>
+        /// <param name="extraOptions">Optional extra options</param>
+        /// <returns>The runner task</returns>
+        public static IRunnerData CreateListBrokenFilesTask(IBackup backup, string[]? filterStrings, IDictionary<string, string?>? extraOptions = null)
+        {
+            var dict = extraOptions ?? new Dictionary<string, string?>();
+
+            return CreateTask(
+                DuplicatiOperation.ListBrokenFiles,
+                backup,
+                dict,
+                filterStrings);
+        }
+
+        /// <summary>
+        /// Creates a task that purges broken files from the backup.
+        /// </summary>
+        /// <param name="backup">The backup to purge broken files from</param>
+        /// <param name="filterStrings">Optional filter strings to apply</param>
+        /// <param name="extraOptions">Optional extra options</param>
+        /// <returns>The runner task</returns>
+        public static IRunnerData CreatePurgeBrokenFilesTask(IBackup backup, string[]? filterStrings, IDictionary<string, string?>? extraOptions = null)
+        {
+            var dict = extraOptions ?? new Dictionary<string, string?>();
+
+            return CreateTask(
+                DuplicatiOperation.PurgeBrokenFiles,
+                backup,
+                dict,
+                filterStrings);
+        }
+
+        /// <summary>
+        /// Creates a task that purges files matching the filters from the backup.
+        /// </summary>
+        /// <param name="backup">The backup to purge files from</param>
+        /// <param name="filterStrings">The filter strings selecting the files to purge</param>
+        /// <param name="versions">The versions to purge from, or null to purge from all versions</param>
+        /// <param name="extraOptions">Optional extra options</param>
+        /// <returns>The runner task</returns>
+        public static IRunnerData CreatePurgeFilesTask(IBackup backup, string[]? filterStrings, long[]? versions, IDictionary<string, string?>? extraOptions = null)
+        {
+            var dict = extraOptions ?? new Dictionary<string, string?>();
+            if (versions != null && versions.Length > 0)
+                dict["version"] = string.Join(",", versions.Select(v => v.ToString(CultureInfo.InvariantCulture)));
+
+            return CreateTask(
+                DuplicatiOperation.PurgeFiles,
+                backup,
+                dict,
+                filterStrings);
         }
 
 
         public static IRunnerData CreateRestoreTask(IBackup backup, string[]? filters,
-                                                    DateTime time, string? restoreTarget, bool overwrite, bool restore_permissions,
-                                                    bool skip_metadata, string? passphrase)
+                                                    DateTime time, string? restoreTarget, bool? overwrite, bool? restore_permissions,
+                                                    bool? skip_metadata, string? passphrase)
         {
             var dict = new Dictionary<string, string?>
             {
                 ["time"] = Utility.SerializeDateTime(time.ToUniversalTime()),
-                ["overwrite"] = overwrite ? bool.TrueString : bool.FalseString,
-                ["restore-permissions"] = restore_permissions ? bool.TrueString : bool.FalseString,
-                ["skip-metadata"] = skip_metadata ? bool.TrueString : bool.FalseString,
                 ["allow-passphrase-change"] = bool.TrueString
             };
+
+            // An unset value is not written, so the backup settings and the server's
+            // default options apply; an explicit value overrides them
+            if (overwrite.HasValue)
+                dict["overwrite"] = overwrite.Value ? bool.TrueString : bool.FalseString;
+            if (restore_permissions.HasValue)
+                dict["restore-permissions"] = restore_permissions.Value ? bool.TrueString : bool.FalseString;
+            if (skip_metadata.HasValue)
+                dict["skip-metadata"] = skip_metadata.Value ? bool.TrueString : bool.FalseString;
             if (!string.IsNullOrWhiteSpace(restoreTarget))
                 dict["restore-path"] = SpecialFolders.ExpandEnvironmentVariables(restoreTarget);
             if (!(passphrase is null))
@@ -291,6 +489,20 @@ namespace Duplicati.Server
                 backup,
                 dict,
                 filters);
+        }
+
+        public static IRunnerData CreateRestoreControlFilesTask(IBackup backup, string restorePath, string[] files)
+        {
+            var dict = new Dictionary<string, string?>
+            {
+                ["restore-path"] = restorePath
+            };
+
+            return CreateTask(
+                DuplicatiOperation.RestoreControlFiles,
+                backup,
+                dict,
+                files);
         }
         private class MessageSink : Library.Main.IMessageSink
         {
@@ -320,6 +532,10 @@ namespace Duplicati.Server
                 internal long m_totalFileCount;
                 internal long m_totalFileSize;
                 internal bool m_stillCounting;
+
+                internal int m_remoteSyncDestinationIndex;
+                internal int m_remoteSyncDestinationCount;
+                internal TimeSpan? m_estimatedTimeToCompletion;
 
                 public ProgressState(long taskId, string? backupId)
                 {
@@ -355,6 +571,9 @@ namespace Duplicati.Server
                 public long TotalFileSize { get { return m_totalFileSize; } }
                 public bool StillCounting { get { return m_stillCounting; } }
                 public ActiveTransfer[] ActiveTransfers => m_activeTransfers;
+                public int RemoteSyncDestinationIndex { get { return m_remoteSyncDestinationIndex; } }
+                public int RemoteSyncDestinationCount { get { return m_remoteSyncDestinationCount; } }
+                public TimeSpan? EstimatedTimeToCompletion { get { return m_estimatedTimeToCompletion; } }
 
                 #endregion
             }
@@ -411,6 +630,8 @@ namespace Duplicati.Server
                     {
                         m_operationProgress.UpdateFile(out m_state.m_currentFilename, out m_state.m_currentFilesize, out m_state.m_currentFileoffset, out m_state.m_currentFilecomplete);
                         m_operationProgress.UpdateOverall(out m_state.m_phase, out m_state.m_overallProgress, out m_state.m_processedFileCount, out m_state.m_processedFileSize, out m_state.m_totalFileCount, out m_state.m_totalFileSize, out m_state.m_stillCounting);
+                        m_operationProgress.UpdateRemoteSyncDestination(out m_state.m_remoteSyncDestinationIndex, out m_state.m_remoteSyncDestinationCount);
+                        m_state.m_estimatedTimeToCompletion = m_operationProgress.EstimatedTimeToCompletion;
                     }
 
                     return m_state.Clone();
@@ -470,7 +691,7 @@ namespace Duplicati.Server
             if (backup == null)
                 throw new ArgumentNullException(nameof(backup));
 
-            var options = ApplyOptions(databaseConnection, backup, GetCommonOptions(databaseConnection));
+            var options = ApplyOptions(databaseConnection, backup, GetCommonOptions(databaseConnection), out var url);
             if (data.ExtraOptions != null)
                 foreach (var k in data.ExtraOptions)
                     options[k.Key] = k.Value;
@@ -490,7 +711,13 @@ namespace Duplicati.Server
             );
 
             var cmd = new System.Text.StringBuilder();
-            cmd.Append(Utility.WrapAsCommandLine([exe, "backup", backup.TargetURL], false));
+            var mainOp = backup.OperationType switch
+            {
+                OperationType.Backup => "backup",
+                OperationType.Sync => "sync",
+                _ => throw new InvalidEnumArgumentException(nameof(backup.OperationType), (int)backup.OperationType, typeof(OperationType))
+            };
+            cmd.Append(Utility.WrapAsCommandLine([exe, mainOp, url], false));
 
             cmd.Append(" ");
             cmd.Append(Utility.WrapAsCommandLine(sources, true));
@@ -516,7 +743,7 @@ namespace Duplicati.Server
             if (backup == null)
                 throw new ArgumentNullException(nameof(backup));
 
-            var options = ApplyOptions(databaseConnection, backup, GetCommonOptions(databaseConnection));
+            var options = ApplyOptions(databaseConnection, backup, GetCommonOptions(databaseConnection), out var url);
             if (data.ExtraOptions != null)
                 foreach (var k in data.ExtraOptions)
                     options[k.Key] = k.Value;
@@ -532,7 +759,7 @@ namespace Duplicati.Server
 
             var parts = new List<string>
             {
-                backup.TargetURL
+                url
             };
             parts.AddRange(sources);
 
@@ -550,15 +777,15 @@ namespace Duplicati.Server
             return parts.ToArray();
         }
 
-        public static IBasicResults? Run(Connection databaseConnection, EventPollNotify eventPollNotify, INotificationUpdateService notificationUpdateService, IProgressStateProviderService progressStateProviderService, IApplicationSettings applicationSettings, IQueuedTask data, bool fromQueue)
+        public static Task<IBasicResults?> RunAsync(Connection databaseConnection, EventPollNotify eventPollNotify, INotificationUpdateService notificationUpdateService, IProgressStateProviderService progressStateProviderService, IApplicationSettings applicationSettings, IQueuedTask data, bool fromQueue)
         {
             if (data is IRunnerData runnerData)
-                return RunInternal(databaseConnection, eventPollNotify, notificationUpdateService, progressStateProviderService, applicationSettings, runnerData, fromQueue);
+                return RunInternalAsync(databaseConnection, eventPollNotify, notificationUpdateService, progressStateProviderService, applicationSettings, runnerData, fromQueue);
 
             throw new ArgumentException("Invalid task type", nameof(data));
         }
 
-        private static IBasicResults? RunInternal(Connection databaseConnection, EventPollNotify eventPollNotify, INotificationUpdateService notificationUpdateService, IProgressStateProviderService progressStateProviderService, IApplicationSettings applicationSettings, IRunnerData data, bool fromQueue)
+        private static async Task<IBasicResults?> RunInternalAsync(Connection databaseConnection, EventPollNotify eventPollNotify, INotificationUpdateService notificationUpdateService, IProgressStateProviderService progressStateProviderService, IApplicationSettings applicationSettings, IRunnerData data, bool fromQueue)
         {
             data.TaskStarted = DateTime.Now;
             if (data is CustomRunnerTask task)
@@ -586,7 +813,7 @@ namespace Duplicati.Server
                             if (!cts.IsCancellationRequested)
                                 eventPollNotify.SignalProgressUpdate(sink.Copy);
                         }
-                    });
+                    }).FireAndForget();
 
                     task.Run(sink);
                     eventPollNotify.SignalProgressUpdate(sink.Copy);
@@ -633,17 +860,23 @@ namespace Duplicati.Server
                             if (!cts.IsCancellationRequested)
                                 eventPollNotify.SignalProgressUpdate(sink.Copy);
                         }
-                    });
+                    }).FireAndForget();
                 }
 
-                var options = ApplyOptions(databaseConnection, backup, GetCommonOptions(databaseConnection));
+                var options = ApplyOptions(databaseConnection, backup, GetCommonOptions(databaseConnection), out var url);
                 if (data.ExtraOptions != null)
                     foreach (var k in data.ExtraOptions)
                         options[k.Key] = k.Value;
 
+                // Map AdditionalTargetURLs to remote-sync-json-config option for backup operations
+                if (data.Operation == DuplicatiOperation.BackupOrSync)
+                    ApplyAdditionalTargetUrls(backup, options);
+
                 // Pack in the system or task config for easy restore
-                if (data.Operation == DuplicatiOperation.Backup && options.ContainsKey("store-task-config"))
+                if (data.Operation == DuplicatiOperation.BackupOrSync)
                     tempfolder = StoreTaskConfigAndGetTempFolder(databaseConnection, data, options);
+
+                var useOutOfProcess = databaseConnection.ApplicationSettings.UseOutOfProcessController;
 
                 // Attach a log scope that tags all messages to relay the TaskID and BackupID
                 using (Library.Logging.Log.StartScope(log =>
@@ -651,40 +884,45 @@ namespace Duplicati.Server
                     log[ILogWriteHandler.LiveLogEntry.LOG_EXTRA_TASKID] = data.TaskID.ToString();
                     log[ILogWriteHandler.LiveLogEntry.LOG_EXTRA_BACKUPID] = data.BackupID;
                 }))
-
                 using (tempfolder)
-                using (var controller = new Duplicati.Library.Main.Controller(backup.TargetURL, options, sink))
+                using (var controller = await CreateControllerAsync(url, options, sink, useOutOfProcess).ConfigureAwait(false))
                 {
                     try
                     {
                         if (options.ContainsKey("throttle-upload"))
                             ((RunnerData)data).OriginalUploadSpeed = Duplicati.Library.Utility.Sizeparser.ParseSize(options["throttle-upload"], "kb");
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Library.Logging.Log.WriteWarningMessage(LOGTAG, "ParseUploadThrottleError", ex, "Failed to parse throttle-upload, continuing without it: {0}", options["throttle-upload"]);
+                    }
 
                     try
                     {
                         if (options.ContainsKey("throttle-download"))
                             ((RunnerData)data).OriginalDownloadSpeed = Duplicati.Library.Utility.Sizeparser.ParseSize(options["throttle-download"], "kb");
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Library.Logging.Log.WriteWarningMessage(LOGTAG, "ParseDownloadThrottleError", ex, "Failed to parse throttle-download, continuing without it: {0}", options["throttle-download"]);
+                    }
 
                     ((RunnerData)data).Controller = controller;
                     var appSettings = databaseConnection.ApplicationSettings;
-                    data.UpdateThrottleSpeeds(appSettings.UploadSpeedLimit, appSettings.DownloadSpeedLimit);
+                    await data.UpdateThrottleSpeedsAsync(appSettings.UploadSpeedLimit, appSettings.DownloadSpeedLimit).ConfigureAwait(false);
 
                     // Pass on the provider, will be replaced if configured in the backup
-                    controller.SetSecretProvider(applicationSettings.SecretProvider);
+                    await controller.SetSecretProviderAsync(applicationSettings.SecretProvider).ConfigureAwait(false);
 
                     if (backup.Metadata.ContainsKey("LastCompactFinished"))
-                        controller.LastCompact = Utility.DeserializeDateTime(backup.Metadata["LastCompactFinished"]);
+                        await controller.SetLastCompactAsync(Utility.DeserializeDateTime(backup.Metadata["LastCompactFinished"])).ConfigureAwait(false);
 
                     if (backup.Metadata.ContainsKey("LastVacuumFinished"))
-                        controller.LastVacuum = Utility.DeserializeDateTime(backup.Metadata["LastVacuumFinished"]);
+                        await controller.SetLastVacuumAsync(Utility.DeserializeDateTime(backup.Metadata["LastVacuumFinished"])).ConfigureAwait(false);
 
                     switch (data.Operation)
                     {
-                        case DuplicatiOperation.Backup:
+                        case DuplicatiOperation.BackupOrSync:
                             {
                                 var filter = ApplyFilter(backup, GetCommonFilter(databaseConnection));
                                 var sources = backup.Sources
@@ -692,49 +930,58 @@ namespace Duplicati.Server
                                     .WhereNotNullOrWhiteSpace()
                                     .ToArray();
 
-                                var r = controller.Backup(sources, filter);
+                                IBasicResults r;
+                                if (backup.OperationType == OperationType.Sync)
+                                    r = await controller.SyncAsync(sources, filter).ConfigureAwait(false);
+                                else
+                                    r = await controller.BackupAsync(sources, filter).ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
                         case DuplicatiOperation.List:
                             {
-                                var r = controller.List(data.FilterStrings, null);
+                                var r = await controller.ListAsync(data.FilterStrings, null).ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
                         case DuplicatiOperation.Repair:
                             {
-                                var r = controller.Repair(data.FilterStrings == null ? null : new Library.Utility.FilterExpression(data.FilterStrings));
+                                var r = await controller.RepairAsync(data.FilterStrings == null ? null : new Library.Utility.FilterExpression(data.FilterStrings)).ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
                         case DuplicatiOperation.RepairUpdate:
                             {
-                                var r = controller.UpdateDatabaseWithVersions();
+                                var r = await controller.UpdateDatabaseWithVersionsAsync().ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
                         case DuplicatiOperation.Remove:
                             {
-                                var r = controller.Delete();
+                                var r = await controller.DeleteAsync().ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
                         case DuplicatiOperation.Restore:
                             {
-                                var r = controller.Restore(data.FilterStrings);
+                                var r = await controller.RestoreAsync(data.FilterStrings).ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
+                                return r;
+                            }
+                        case DuplicatiOperation.RestoreControlFiles:
+                            {
+                                var r = await controller.RestoreControlFilesAsync(data.FilterStrings).ConfigureAwait(false);
                                 return r;
                             }
                         case DuplicatiOperation.Verify:
                             {
-                                var r = controller.Test();
+                                var r = await controller.TestAsync().ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
                         case DuplicatiOperation.Compact:
                             {
-                                var r = controller.Compact();
+                                var r = await controller.CompactAsync().ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
@@ -742,7 +989,7 @@ namespace Duplicati.Server
                             {
                                 using (var tf = new Library.Utility.TempFile())
                                 {
-                                    var r = controller.CreateLogDatabase(tf);
+                                    var r = await controller.CreateLogDatabaseAsync(tf).ConfigureAwait(false);
                                     var tempid = databaseConnection.RegisterTempFile("create-bug-report", r.TargetPath, DateTime.Now.AddDays(3));
 
                                     if (string.Equals(tf, r.TargetPath, Utility.ClientFilenameStringComparison))
@@ -767,7 +1014,7 @@ namespace Duplicati.Server
 
                         case DuplicatiOperation.ListRemote:
                             {
-                                var r = controller.ListRemote();
+                                var r = await controller.ListRemoteAsync().ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
@@ -777,7 +1024,7 @@ namespace Duplicati.Server
                                 if (data.ExtraOptions != null)
                                 {
                                     if (Utility.ParseBoolOption(data.ExtraOptions.AsReadOnly(), "delete-remote-files"))
-                                        controller.DeleteAllRemoteFiles();
+                                        await controller.DeleteAllRemoteFilesAsync().ConfigureAwait(false);
 
                                     if (Utility.ParseBoolOption(data.ExtraOptions.AsReadOnly(), "delete-local-db"))
                                     {
@@ -793,31 +1040,69 @@ namespace Duplicati.Server
                             }
                         case DuplicatiOperation.Vacuum:
                             {
-                                var r = controller.Vacuum();
+                                var r = await controller.VacuumAsync().ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
 
                         case DuplicatiOperation.ListFilesets:
                             {
-                                var r = controller.ListFilesets();
+                                var r = await controller.ListFilesetsAsync().ConfigureAwait(false);
+                                UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
+                                return r;
+                            }
+                        case DuplicatiOperation.SetVersionLabel:
+                            {
+                                var r = await controller.SetVersionLabelAsync().ConfigureAwait(false);
                                 UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
                                 return r;
                             }
                         case DuplicatiOperation.ListFolderContents:
                             {
-                                return controller.ListFolder(data.ExtraArguments, data.PageOffset * data.PageSize, data.PageSize);
+                                return await controller.ListFolderAsync(data.ExtraArguments, data.PageOffset * data.PageSize, data.PageSize, data.ReturnExtendedData).ConfigureAwait(false);
                             }
 
                         case DuplicatiOperation.ListFileVersions:
                             {
-                                return controller.ListFileVersions(data.ExtraArguments, data.PageOffset * data.PageSize, data.PageSize);
+                                return await controller.ListFileVersionsAsync(data.ExtraArguments, data.PageOffset * data.PageSize, data.PageSize).ConfigureAwait(false);
                             }
                         case DuplicatiOperation.SearchEntries:
                             {
                                 var parsedfilter = new FilterExpression(data.FilterStrings);
-                                return controller.SearchEntries(data.ExtraArguments, parsedfilter, data.PageOffset * data.PageSize, data.PageSize);
+                                return await controller.SearchEntriesAsync(data.ExtraArguments, parsedfilter, data.CaseSensitiveSearch, data.PageOffset * data.PageSize, data.PageSize, data.ReturnExtendedData, data.SearchMetadata).ConfigureAwait(false);
                             }
+
+                        case DuplicatiOperation.DeleteVersions:
+                            {
+                                var r = await controller.DeleteAsync().ConfigureAwait(false);
+                                UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
+                                return r;
+                            }
+
+                        case DuplicatiOperation.ListBrokenFiles:
+                            {
+                                var filter = data.FilterStrings == null ? null : new FilterExpression(data.FilterStrings);
+                                var r = await controller.ListBrokenFilesAsync(filter).ConfigureAwait(false);
+                                UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
+                                return r;
+                            }
+
+                        case DuplicatiOperation.PurgeBrokenFiles:
+                            {
+                                var filter = data.FilterStrings == null ? null : new FilterExpression(data.FilterStrings);
+                                var r = await controller.PurgeBrokenFilesAsync(filter).ConfigureAwait(false);
+                                UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
+                                return r;
+                            }
+
+                        case DuplicatiOperation.PurgeFiles:
+                            {
+                                var filter = data.FilterStrings == null ? null : new FilterExpression(data.FilterStrings);
+                                var r = await controller.PurgeFilesAsync(filter).ConfigureAwait(false);
+                                UpdateMetadataBase(databaseConnection, eventPollNotify, notificationUpdateService, backup, r);
+                                return r;
+                            }
+
                         default:
                             //TODO: Log this
                             return null;
@@ -841,44 +1126,56 @@ namespace Duplicati.Server
             }
         }
 
+        private static async Task<Library.Main.IController> CreateControllerAsync(string url, Dictionary<string, string?> options, MessageSink sink, bool useOutOfProcess)
+        {
+            if (useOutOfProcess)
+                return await Library.Main.IPC.ControllerRpcProxy.CreateProxyAsync(url, options, sink);
+            return new Library.Main.Controller(url, options, sink);
+        }
+
         private static TempFolder? StoreTaskConfigAndGetTempFolder(Connection databaseConnection, IRunnerData data, Dictionary<string, string?> options)
         {
             if (data.Backup == null)
                 throw new ArgumentNullException(nameof(data.Backup));
 
-            var all_tasks = string.Equals(options["store-task-config"], "all", StringComparison.OrdinalIgnoreCase) || string.Equals(options["store-task-config"], "*", StringComparison.OrdinalIgnoreCase);
-            var this_task = Utility.ParseBool(options["store-task-config"], false);
+            var mode = ParseStoreTaskConfigMode(options.GetValueOrDefault("store-task-config"));
+            var encryptionEnabled = IsBackupEncryptionEnabled(options);
+            var effectiveMode = mode.ResolvedTaskConfigMode(encryptionEnabled);
 
             options.Remove("store-task-config");
 
-            TempFolder? tempfolder = null;
-            if (all_tasks || this_task)
+            if (effectiveMode == null)
+                return null;
+
+            var tempfolder = new TempFolder();
+            var temppath = System.IO.Path.Combine(tempfolder, TaskSetupFilename);
+            using (var tempfile = Library.Utility.TempFile.WrapExistingFile(temppath))
             {
-                tempfolder = new TempFolder();
-                var temppath = System.IO.Path.Combine(tempfolder, "task-setup.json");
-                using (var tempfile = Library.Utility.TempFile.WrapExistingFile(temppath))
+                IEnumerable<Serializable.ImportExportStructure>? taskdata = null;
+                if (effectiveMode.IncludeAllTasks)
                 {
-                    object? taskdata = null;
-                    if (all_tasks)
-                        taskdata = databaseConnection.Backups.Where(x => !x.IsTemporary).Select(x => databaseConnection.PrepareBackupForExport(databaseConnection.GetBackup(x.ID)!));
-                    else
-                        taskdata = new[] { databaseConnection.PrepareBackupForExport(data.Backup) };
-
-                    using (var fs = System.IO.File.OpenWrite(tempfile))
-                    using (var sw = new System.IO.StreamWriter(fs, System.Text.Encoding.UTF8))
-                        Serializer.SerializeJson(sw, taskdata, true);
-
-                    tempfile.Protected = true;
-
-                    options.TryGetValue("control-files", out var controlfiles);
-
-                    if (string.IsNullOrWhiteSpace(controlfiles))
-                        controlfiles = tempfile;
-                    else
-                        controlfiles += System.IO.Path.PathSeparator + tempfile;
-
-                    options["control-files"] = controlfiles;
+                    taskdata = databaseConnection.Backups
+                        .Where(x => !x.IsTemporary)
+                        .Select(x => PrepareBackupForExport(databaseConnection, databaseConnection.GetBackup(x.ID)!, effectiveMode.RemoveSecrets));
                 }
+                else
+                {
+                    taskdata = [PrepareBackupForExport(databaseConnection, data.Backup, effectiveMode.RemoveSecrets)];
+                }
+
+                using (var fs = System.IO.File.OpenWrite(tempfile))
+                using (var sw = new System.IO.StreamWriter(fs, System.Text.Encoding.UTF8))
+                    Serializer.SerializeJson(sw, taskdata, true);
+
+                options.TryGetValue("control-files", out var controlfiles);
+
+                // Append this to any other control files
+                options["control-files"] = string.IsNullOrWhiteSpace(controlfiles)
+                    ? controlfiles = tempfile
+                    : controlfiles += System.IO.Path.PathSeparator + tempfile;
+
+                // Don't delete the file now, leave it for when the folder is deleted
+                tempfile.Protected = true;
             }
             return tempfolder;
         }
@@ -934,9 +1231,19 @@ namespace Duplicati.Server
             }
         }
 
-        private static void UpdateMetadataStatistics(IBackup backup, IParsedBackendStatistics r)
+        private static void UpdateMetadataLastSync(IBackup backup, ISyncResults r)
         {
             if (r != null)
+            {
+                backup.Metadata["LastSyncDuration"] = r.Duration.ToString();
+                backup.Metadata["LastSyncStarted"] = Utility.SerializeDateTime(r.BeginTime.ToUniversalTime());
+                backup.Metadata["LastSyncFinished"] = Utility.SerializeDateTime(r.EndTime.ToUniversalTime());
+            }
+        }
+
+        private static void UpdateMetadataStatistics(IBackup backup, IParsedBackendStatistics r)
+        {
+            if (r != null && r.RemoteCalls > 0)
             {
                 backup.Metadata["LastBackupDate"] = Utility.SerializeDateTime(r.LastBackupDate.ToUniversalTime());
                 backup.Metadata["BackupListCount"] = r.BackupListCount.ToString();
@@ -982,6 +1289,21 @@ namespace Duplicati.Server
             if (result is IVacuumResults r5 && !result.Interrupted)
             {
                 UpdateMetadataLastVacuum(backup, r5);
+            }
+
+            if (result is ISyncResults r6)
+            {
+                UpdateMetadataLastSync(backup, r6);
+            }
+
+            if (result is IDeleteResults r7)
+            {
+                if (r7.CompactResults != null)
+                {
+                    UpdateMetadataLastCompact(backup, r7.CompactResults);
+                    if (!r7.CompactResults.Interrupted && r7.CompactResults.DeletedFileCount > 0 && r7.CompactResults.BackendStatistics is IParsedBackendStatistics p)
+                        UpdateMetadataStatistics(backup, p);
+                }
             }
 
             if (result is IBackupResults r)
@@ -1117,8 +1439,127 @@ namespace Duplicati.Server
             options["disable-module"] = string.Join(",", mods.Union(new string[] { module }).Distinct(StringComparer.OrdinalIgnoreCase));
         }
 
-        internal static Dictionary<string, string?> ApplyOptions(Connection databaseConnection, Serialization.Interface.IBackup backup, Dictionary<string, string?> options)
+        /// <summary>
+        /// Maps the backup's AdditionalTargetURLs to the remote-sync-json-config option
+        /// so the RemoteSynchronizationModule can pick them up.
+        /// </summary>
+        /// <param name="backup">The backup containing additional target URLs.</param>
+        /// <param name="options">The options dictionary to update.</param>
+        private static void ApplyAdditionalTargetUrls(IBackup backup, Dictionary<string, string?> options)
         {
+            if (backup.AdditionalTargetURLs == null)
+                return;
+
+            var additionalTargets = backup.AdditionalTargetURLs.ToList();
+            if (additionalTargets.Count == 0)
+                return;
+
+            var destinations = new List<Dictionary<string, object?>>();
+            foreach (var target in additionalTargets)
+            {
+                var dest = new Dictionary<string, object?>
+                {
+                    ["url"] = target.TargetUrl,
+                    ["mode"] = target.Mode
+                };
+
+                if (!string.IsNullOrWhiteSpace(target.Interval))
+                    dest["interval"] = target.Interval;
+
+                // Add options from the Options dictionary
+                if (target.Options != null)
+                {
+                    foreach (var opt in target.Options)
+                    {
+                        // Skip null values and already-handled properties
+                        if (opt.Value == null)
+                            continue;
+                        if (opt.Key.Equals("url", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (opt.Key.Equals("mode", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (opt.Key.Equals("interval", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        dest[opt.Key] = opt.Value;
+                    }
+                }
+
+                destinations.Add(dest);
+            }
+
+            var config = new Dictionary<string, object>
+            {
+                ["sync-on-warnings"] = true,
+                ["destinations"] = destinations
+            };
+
+            var jsonOptions = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.KebabCaseLower
+            };
+            options["remote-sync-json-config"] = JsonSerializer.Serialize(config, jsonOptions);
+        }
+
+        /// <summary>
+        /// Returns the effective local database path for an <see cref="IQueuedTask"/> instance.
+        /// In production, all queued tasks are <see cref="IRunnerData"/> instances created by the
+        /// <c>Runner.Create*</c> factories, so this delegates to
+        /// <see cref="GetEffectiveDBPath(IRunnerData?)"/>. If the task is not an
+        /// <see cref="IRunnerData"/> (only possible in tests with mock <see cref="IQueuedTask"/>
+        /// implementations), the result is <c>null</c>.
+        /// </summary>
+        /// <returns>The effective path, or <c>null</c></returns>
+        public static string? GetEffectiveDBPath(IQueuedTask? runnerData)
+            => GetEffectiveDBPath(runnerData as IRunnerData);
+
+        /// <summary>
+        /// Returns the effective local database path for a <see cref="IRunnerData"/> instance.
+        /// The precedence mirrors <see cref="ApplyOptions"/>: the <c>dbpath</c> extra option takes
+        /// priority, then the backup's <c>--dbpath</c> advanced setting, then the stored
+        /// <see cref="Serialization.Interface.IBackup.DBPath"/>. If <c>no-local-db</c> is set
+        /// (either as an extra option or as a backup advanced setting), the result is <c>null</c>.
+        /// </summary>
+        /// <returns>The effective path, or <c>null</c></returns>
+        public static string? GetEffectiveDBPath(IRunnerData? runnerData)
+        {
+            if (runnerData == null)
+                return null;
+
+            if (runnerData.ExtraOptions != null)
+            {
+                if (runnerData.ExtraOptions.ContainsKey("no-local-db") && Utility.ParseBoolOption(runnerData.ExtraOptions.AsReadOnly(), "no-local-db"))
+                    return null;
+                if (runnerData.ExtraOptions.TryGetValue("dbpath", out var dbpath) && !string.IsNullOrWhiteSpace(dbpath))
+                    return dbpath;
+            }
+
+            if (runnerData.Backup == null)
+                return null;
+
+            var setting = runnerData.Backup.Settings?.FirstOrDefault(s => s.Name.Equals($"--no-local-db", StringComparison.OrdinalIgnoreCase));
+            if (setting != null && Utility.ParseBool(setting.Value, true))
+                return null;
+
+            return GetEffectiveDBPath(runnerData.Backup);
+        }
+
+        /// <summary>
+        /// Returns the effective local database path for a backup: the "--dbpath" advanced option if
+        /// it is set, otherwise the stored <see cref="Serialization.Interface.IBackup.DBPath"/>. This
+        /// mirrors the precedence applied by <see cref="ApplyOptions"/> so that every operation agrees
+        /// on which database file to use (see issue #1698).
+        /// </summary>
+        public static string GetEffectiveDBPath(Serialization.Interface.IBackup backup)
+        {
+            var dbpath = backup.Settings?
+                .FirstOrDefault(s => s.Name.Equals("--dbpath", StringComparison.OrdinalIgnoreCase))?.Value;
+            return string.IsNullOrWhiteSpace(dbpath) ? backup.DBPath : dbpath;
+        }
+
+        internal static Dictionary<string, string?> ApplyOptions(Connection databaseConnection, Serialization.Interface.IBackup backup, Dictionary<string, string?> options, out string url)
+        {
+            url = backup.TargetURL;
             options["backup-name"] = backup.Name;
             options["dbpath"] = backup.DBPath;
             options["backup-id"] = $"DB-{backup.ID}";
@@ -1132,6 +1573,15 @@ namespace Duplicati.Server
             foreach (var o in backup.Settings)
                 if (o.Name.StartsWith("--", StringComparison.Ordinal) && TestIfOptionApplies())
                     options[o.Name.Substring(2)] = o.Value;
+
+            // Enable metadata storage if any of the backup's sources require it,
+            // even if the current operation is not a backup
+            var sources =
+                (from n in backup.Sources
+                 let p = SpecialFolders.ExpandEnvironmentVariables(n)
+                 where !string.IsNullOrWhiteSpace(p)
+                 select p).ToArray();
+            Library.Main.Operation.Common.SourceProviderFactory.EnableMetadataStorageIfRequiredBySources(sources, options);
 
             // The server hangs if the module is enabled as there is no console attached
             DisableModule("console-password-input", options);
@@ -1147,6 +1597,27 @@ namespace Duplicati.Server
                     }.Where(x => !string.IsNullOrWhiteSpace(x))
                 );
             }
+
+            // Patch in additional activity urls
+            var additionalActivityUrl = databaseConnection.ApplicationSettings.AdditionalActivityUrl;
+            if (!string.IsNullOrWhiteSpace(additionalActivityUrl))
+            {
+                options["http-report-status-url"] = string.Join(";",
+                    new[] {
+                        options.GetValueOrDefault("http-report-status-url"),
+                        additionalActivityUrl
+                    }.Where(x => !string.IsNullOrWhiteSpace(x))
+                );
+            }
+
+            var uri = new Library.Utility.RelaxedUri(backup.TargetURL);
+            if (uri.Scheme.Equals(Library.Backend.Duplicati.DuplicatiBackend.PROTOCOL, StringComparison.OrdinalIgnoreCase))
+                url = Library.Backend.Duplicati.DuplicatiBackend.MergeArgsIntoUrl(
+                    url,
+                    databaseConnection.ApplicationSettings.RemoteControlStorageApiId,
+                    databaseConnection.ApplicationSettings.RemoteControlStorageApiKey,
+                    databaseConnection.ApplicationSettings.RemoteControlStorageEndpointUrl
+                );
 
             return options;
         }

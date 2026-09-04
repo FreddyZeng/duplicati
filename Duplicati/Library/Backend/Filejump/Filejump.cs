@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,6 +26,8 @@ using System.Text.Json;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
 using Duplicati.Library.Utility.Options;
+
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
 
 namespace Duplicati.Library.Backend
 {
@@ -129,7 +131,7 @@ namespace Duplicati.Library.Backend
 
         public Filejump(string url, Dictionary<string, string?> options)
         {
-            var u = new Utility.Uri(url);
+            var u = new Utility.RelaxedUri(url);
             m_path = u.HostAndPath.Trim('/');
             if (string.IsNullOrWhiteSpace(m_path))
                 m_path = "/";
@@ -137,7 +139,7 @@ namespace Duplicati.Library.Backend
                 m_path = $"/{m_path}/";
 
             m_api_token = options.GetValueOrDefault(API_TOKEN_OPTION);
-            m_authOptions = AuthOptionsHelper.Parse(options, u);
+            m_authOptions = AuthOptionsHelper.Parse(options, u.Username, u.Password);
             if (string.IsNullOrWhiteSpace(m_api_token) && (!m_authOptions.HasUsername || !m_authOptions.HasPassword))
                 throw new ArgumentException("Either an API token, or username/password are required for filejump authentication.");
 
@@ -151,6 +153,27 @@ namespace Duplicati.Library.Backend
             m_client = HttpClientHelper.CreateClient();
             m_client.Timeout = Timeout.InfiniteTimeSpan;
             m_client.BaseAddress = new System.Uri(DEFAULT_API_URL);
+        }
+
+        /// <summary>
+        /// Constructor that takes a preconfigured message handler, used for testing
+        /// </summary>
+        /// <param name="url">The backend url</param>
+        /// <param name="options">The options to use</param>
+        /// <param name="handler">The message handler to send requests through</param>
+        internal Filejump(string url, Dictionary<string, string?> options, HttpMessageHandler handler)
+            : this(url, options)
+        {
+            m_client?.Dispose();
+            m_client = new HttpClient(handler)
+            {
+                Timeout = Timeout.InfiniteTimeSpan,
+                BaseAddress = new System.Uri(m_apiUrl)
+            };
+
+            // GetClient hands back the client it has while the token is still good, so
+            // dating the token forward keeps the login round-trip out of the tests
+            m_tokenExpiration = DateTime.UtcNow.Add(TOKEN_EXPIRATION);
         }
 
         ///<inheritdoc/>
@@ -202,12 +225,22 @@ namespace Duplicati.Library.Backend
             var content = new StringContent(JsonSerializer.Serialize(data), Encoding.UTF8, "application/json");
             using var request = new HttpRequestMessage(HttpMethod.Post, "auth/login") { Content = content };
             request.Headers.Add("Accept", "application/json");
-            var response = await Utility.Utility.WithTimeout(m_timeoutOptions.ShortTimeout, cancelToken, ct => client.SendAsync(request, ct));
+            using var response = await Utility.Utility.WithTimeout(m_timeoutOptions.ShortTimeout, cancelToken, ct => client.SendAsync(request, ct));
 
             var body = await response.Content.ReadAsStringAsync(cancelToken);
-            var result = JsonSerializer.Deserialize<AuthResponseOuter>(body, m_jsonOptions);
+
+            // A failing gateway answers with html, which is not the shape expected here
+            AuthResponseOuter? result = null;
+            try
+            {
+                result = JsonSerializer.Deserialize<AuthResponseOuter>(body, m_jsonOptions);
+            }
+            catch (JsonException)
+            {
+            }
+
             if (result == null || !string.Equals(result.Status, "success", StringComparison.OrdinalIgnoreCase))
-                throw new UserInformationException($"Failed to authenticate: {result?.Message}", "LoginFailed");
+                throw new UserInformationException($"Failed to authenticate: {result?.Message ?? $"the server returned {(int)response.StatusCode} {response.StatusCode}"}", "LoginFailed");
             if (!string.IsNullOrWhiteSpace(result?.User?.Banned_At))
                 throw new UserInformationException($"User is banned: {result.User.Banned_At}", "UserBanned");
             response.EnsureSuccessStatusCode();
@@ -250,7 +283,9 @@ namespace Duplicati.Library.Backend
             using var request = new HttpRequestMessage(HttpMethod.Post, "uploads") { Content = content };
             request.Headers.Add("Accept", "application/json");
 
-            var response = await client.SendAsync(request, token);
+            using var response = await client.SendAsync(request, token);
+            await EnsureSuccessStatusCode(response);
+
             var body = await response.Content.ReadAsStringAsync(token);
             var result = JsonSerializer.Deserialize<FileEntryOuter>(body, m_jsonOptions);
             if (result == null || !string.Equals(result.Status, "success", StringComparison.OrdinalIgnoreCase))
@@ -258,7 +293,6 @@ namespace Duplicati.Library.Backend
 
             if (string.IsNullOrWhiteSpace(result?.FileEntry?.Id.ToString()))
                 throw new InvalidOperationException($"Failed to upload file: {result?.Message}");
-            await EnsureSuccessStatusCode(response);
 
             cache[result.FileEntry.Name] = new(result.FileEntry.Id, result.FileEntry.Url);
         }
@@ -466,8 +500,23 @@ namespace Duplicati.Library.Backend
             using var request = new HttpRequestMessage(HttpMethod.Post, "file-entries/delete") { Content = json };
             request.Headers.Add("Accept", "application/json");
 
-            var response = await Utility.Utility.WithTimeout(m_timeoutOptions.ShortTimeout, token, ct => client.SendAsync(request, ct));
-            await EnsureSuccessStatusCode(response);
+            try
+            {
+                var response = await Utility.Utility.WithTimeout(m_timeoutOptions.ShortTimeout, token, ct => client.SendAsync(request, ct));
+                await EnsureSuccessStatusCode(response);
+            }
+            catch
+            {
+                // The request may have reached the server even though the answer did not
+                // reach us, which leaves the cache holding an id that no longer resolves.
+                // Drop the whole table rather than the one name, because an upload takes
+                // the table itself from GetCacheTable and would keep reading the old one.
+                m_fileEntryIdCache = null;
+                throw;
+            }
+
+            // The entry is gone, so the id must not be handed out again
+            m_fileEntryIdCache?.Remove(remotename);
         }
 
         ///<inheritdoc/>
@@ -517,8 +566,8 @@ namespace Duplicati.Library.Backend
         }
 
         ///<inheritdoc/>
-        public Task TestAsync(CancellationToken token)
-            => this.TestReadWritePermissionsAsync(token);
+        public Task TestAsync(bool alsoWrite, CancellationToken token)
+            => this.TestBackendAsync(alsoWrite, token);
 
         ///<inheritdoc/>
         public Task<string[]> GetDNSNamesAsync(CancellationToken token)
@@ -553,17 +602,39 @@ namespace Duplicati.Library.Backend
         /// </summary>
         /// <param name="response">The HTTP response to check</param>
         /// <returns>An awaitable task</returns>
-        private static async Task EnsureSuccessStatusCode(HttpResponseMessage response)
+        internal static async Task EnsureSuccessStatusCode(HttpResponseMessage response)
         {
             if (response.IsSuccessStatusCode)
                 return;
 
             var body = await response.Content.ReadAsStringAsync();
-            var result = JsonSerializer.Deserialize<ResponseEnvelope>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            if (result == null || !string.IsNullOrWhiteSpace(result.Message))
-                throw new InvalidOperationException($"Request failed: {result?.Message}");
 
-            await EnsureSuccessStatusCode(response);
+            // The body is not always the shape this backend expects; a gateway in
+            // front of the API answers with html, and some errors carry no message
+            string? message = null;
+            ResponseEnvelope? envelope = null;
+            try
+            {
+                envelope = JsonSerializer.Deserialize<ResponseEnvelope>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                message = envelope?.Message;
+            }
+            catch (JsonException)
+            {
+            }
+
+            // Deleting an entry that is no longer there is reported as a validation
+            // failure on the ids rather than as a 404, and entryIds is only ever sent
+            // by DeleteAsync. BackendManager confirms this against a listing before it
+            // accepts the delete, so report the file as missing rather than deciding
+            // here that the delete succeeded.
+            if (envelope?.Errors?.ContainsKey("entryIds") == true)
+                throw new FileMissingException();
+
+            if (!string.IsNullOrWhiteSpace(message))
+                throw new InvalidOperationException($"Request failed: {message}");
+
+            // Nothing to report beyond the status, so let the framework say it
+            response.EnsureSuccessStatusCode();
         }
 
         /// <summary>
@@ -652,6 +723,10 @@ namespace Duplicati.Library.Backend
             /// The status of the response.
             /// </summary>
             public string? Status { get; set; }
+            /// <summary>
+            /// The validation errors, one list of messages per field.
+            /// </summary>
+            public Dictionary<string, string[]>? Errors { get; set; }
         }
 
         /// <summary>

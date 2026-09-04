@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2025, The Duplicati Team
+﻿// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,12 +25,16 @@ using Microsoft.Data.Sqlite;
 using NUnit.Framework;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace Duplicati.UnitTest
@@ -40,7 +44,7 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Targeted")]
-        public void Issue5023ReferencedFileMissing([Values] bool compactBeforeRecreate)
+        public async Task Issue5023ReferencedFileMissingAsync([Values] bool compactBeforeRecreate)
         {
             // Reproduction for part of issue #5023
             // Error during repair: "Remote file referenced as x by y, but not found in list, registering a missing remote file"
@@ -63,10 +67,8 @@ namespace Duplicati.UnitTest
             string file1 = Path.Combine(DATAFOLDER, "f1");
             TestUtils.WriteTestFile(file1, filesize);
             using (var c = new Library.Main.Controller(target, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync(new[] { DATAFOLDER }));
+
             // Sleep to ensure timestamps are different
             Thread.Sleep(1000);
             // Fail after index file put
@@ -85,12 +87,10 @@ namespace Duplicati.UnitTest
             BackendLoader.AddBackend(new DeterministicErrorBackend());
             string file2 = Path.Combine(DATAFOLDER, "f2");
             TestUtils.WriteTestFile(file2, filesize);
-            var uploadEx = Assert.Catch(() =>
+            var uploadEx = Assert.CatchAsync(async () =>
             {
                 using (var c = new Library.Main.Controller(target, testopts, null))
-                {
-                    IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                }
+                    await c.BackupAsync(new[] { DATAFOLDER });
             });
 
             while (uploadEx is AggregateException && uploadEx.InnerException is not null)
@@ -104,10 +104,8 @@ namespace Duplicati.UnitTest
             // Complete upload
             target = "file://" + TARGETFOLDER;
             using (var c = new Library.Main.Controller(target, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync(new[] { DATAFOLDER }));
+
             // At this point there are two index files for the last dblock
             Console.WriteLine("Target folder contents (expect extra index file):");
             Console.WriteLine(string.Join("\n", from v in Directory.EnumerateFiles(TARGETFOLDER) select Path.GetFileName(v)));
@@ -124,9 +122,9 @@ namespace Duplicati.UnitTest
                 File.Delete(file2);
                 using (var c = new Controller(target, testopts, null))
                 {
-                    var backupResults = c.Backup(new[] { DATAFOLDER });
+                    var backupResults = await c.BackupAsync(new[] { DATAFOLDER });
                     TestUtils.AssertResults(backupResults);
-                    ICompactResults compactResults = c.Compact();
+                    ICompactResults compactResults = await c.CompactAsync();
                     TestUtils.AssertResults(compactResults);
                     Assert.Greater(compactResults.DeletedFileCount, 0);
                 }
@@ -138,16 +136,13 @@ namespace Duplicati.UnitTest
             // Database recreate should work (fails after compact)
             File.Delete(DBFILE);
             using (var c = new Library.Main.Controller(target, testopts, null))
-            {
-                IRepairResults repairResults = c.Repair();
-                TestUtils.AssertResults(repairResults);
-            }
+                TestUtils.AssertResults(await c.RepairAsync());
         }
 
 
         [Test]
         [Category("Restore"), Category("Bug")]
-        public void Issue5825RestoreNoOverwrite([Values] bool legacy, [Values] bool local_blocks)
+        public async Task Issue5825RestoreNoOverwriteAsync([Values] bool legacy, [Values] bool local_blocks)
         {
             // Reproduction of Issue #5825
             // The logic in the previous version was to create a timestamped version of the file being restored to, if it already exists.
@@ -170,16 +165,13 @@ namespace Duplicati.UnitTest
 
             // Backup the files
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
 
             // Attempt to restore the file
             testopts["restore-path"] = RESTOREFOLDER;
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f0]);
+                var restoreResults = await c.RestoreAsync([f0]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored");
             }
 
@@ -194,7 +186,7 @@ namespace Duplicati.UnitTest
             testopts["overwrite"] = "true";
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f0]);
+                var restoreResults = await c.RestoreAsync([f0]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored");
             }
 
@@ -214,7 +206,7 @@ namespace Duplicati.UnitTest
             // Restore the file again, with overwrite, should restore the timestamp of the file
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f0]);
+                var restoreResults = await c.RestoreAsync([f0]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(0), "File should not have been restored, only the metadata.");
             }
 
@@ -230,7 +222,7 @@ namespace Duplicati.UnitTest
             testopts["overwrite"] = "false";
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f0]);
+                var restoreResults = await c.RestoreAsync([f0]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored");
             }
 
@@ -249,7 +241,7 @@ namespace Duplicati.UnitTest
             // Restore the file again, without overwrite.
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f0]);
+                var restoreResults = await c.RestoreAsync([f0]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored");
             }
 
@@ -271,7 +263,7 @@ namespace Duplicati.UnitTest
             // Restore the file again, without overwrite.
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f0]);
+                var restoreResults = await c.RestoreAsync([f0]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(0), "File should not have been restored");
             }
 
@@ -282,7 +274,35 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Restore"), Category("Bug")]
-        public void Issue5826RestoreMissingFolder([Values] bool compressRestorePaths, [Values] bool restoreLegacy)
+        public async Task Issue3340PreserveSelectedFolderAsync([Values] bool restoreLegacy)
+        {
+            var testopts = new Dictionary<string, string>(TestOptions)
+            {
+                ["restore-legacy"] = restoreLegacy.ToString().ToLower()
+            };
+
+            var selectedFolder = Path.Combine(DATAFOLDER, "selected-folder");
+            var nestedFolder = Path.Combine(selectedFolder, "nested-folder");
+            Directory.CreateDirectory(nestedFolder);
+            var sourceFile = Path.Combine(nestedFolder, "file.txt");
+            File.WriteAllText(sourceFile, "Issue #3340");
+
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
+
+            testopts["restore-path"] = RESTOREFOLDER;
+            var selectedFolderFilter = $"[{Regex.Escape(selectedFolder + Path.DirectorySeparatorChar)}.*]";
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
+                TestUtils.AssertResults(await c.RestoreAsync([selectedFolderFilter]));
+
+            var restoredFile = Path.Combine(RESTOREFOLDER, "selected-folder", "nested-folder", "file.txt");
+            Assert.That(File.Exists(restoredFile), Is.True, "The explicitly selected folder should be retained below the restore destination");
+            Assert.That(File.ReadAllText(restoredFile), Is.EqualTo("Issue #3340"));
+        }
+
+        [Test]
+        [Category("Restore"), Category("Bug")]
+        public async Task Issue5826RestoreMissingFolderAsync([Values] bool compressRestorePaths, [Values] bool restoreLegacy)
         {
             // Reproduction of Issue #5826
             // With the new restore engine, it looks like a file will not be restored if the folder is not selected for restore.
@@ -301,16 +321,13 @@ namespace Duplicati.UnitTest
 
             // Backup the files
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
 
             // Attempt to restore a file without selecting its parent folder
             testopts["restore-path"] = RESTOREFOLDER;
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f]);
+                var restoreResults = await c.RestoreAsync([f]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored.");
                 Assert.That(restoreResults.Warnings.Count(), Is.EqualTo(compressRestorePaths ? 0 : 1), "Warning should be generated for missing folder");
             }
@@ -319,7 +336,7 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Restore"), Category("Bug")]
-        public void Issue5886RestoreModifiedMiddleBlock()
+        public async Task Issue5886RestoreModifiedMiddleBlockAsync()
         {
             var blocksize = 1024;
             var n_blocks = 5;
@@ -336,10 +353,7 @@ namespace Duplicati.UnitTest
 
             // Backup the files
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
 
             var original_contents = File.ReadAllBytes(f);
             var new_block = new byte[blocksize];
@@ -371,7 +385,7 @@ namespace Duplicati.UnitTest
                     // Attempt to restore the file
                     using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
                     {
-                        var restoreResults = c.Restore([f]);
+                        var restoreResults = await c.RestoreAsync([f]);
                         Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored.");
                     }
 
@@ -384,7 +398,7 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Restore"), Category("Bug")]
-        public void Issue5957RestoreModifiedBlockUseLocalBlocks([Values] bool use_local, [Values] bool overwrite)
+        public async Task Issue5957RestoreModifiedBlockUseLocalBlocksAsync([Values] bool use_local, [Values] bool overwrite)
         {
             var blocksize = 1024;
             var testopts = new Dictionary<string, string>(TestOptions)
@@ -401,21 +415,19 @@ namespace Duplicati.UnitTest
 
             // Backup the files
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
 
             var original_contents = File.ReadAllBytes(f);
 
             using (var stream = File.Open(f, FileMode.Open, FileAccess.ReadWrite))
             {
                 stream.Seek(0, SeekOrigin.Begin);
-                byte[] buffer = new byte[1];
-                stream.Read(buffer, 0, 1);
+                var buffer = new byte[1];
+                if (await stream.ReadAsync(buffer, 0, 1) < 1)
+                    throw new InvalidOperationException("Failed to read from test file");
                 buffer[0] = (byte)~buffer[0];
                 stream.Seek(0, SeekOrigin.Begin);
-                stream.Write(buffer, 0, 1);
+                await stream.WriteAsync(buffer, 0, 1);
             }
 
             var restored_contents = File.ReadAllBytes(f);
@@ -424,7 +436,7 @@ namespace Duplicati.UnitTest
             // Attempt to restore the file
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([f]);
+                var restoreResults = await c.RestoreAsync([f]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored.");
             }
 
@@ -447,7 +459,7 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Restore"), Category("Bug")]
-        public void Issue6068FolderMetadata([Values] bool restoreLegacy)
+        public async Task Issue6068FolderMetadataAsync([Values] bool restoreLegacy)
         {
             // Reproduction of Issue #6068
             // The folder metadata is not restored
@@ -460,21 +472,19 @@ namespace Duplicati.UnitTest
             Directory.CreateDirectory(original_dir);
 
             // Backup the files
+            // The source contains only an empty folder, so the NoFilesInBackup warning is expected
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]), ignoredWarnings: ["NoFilesInBackup"]);
 
             // Sleep to ensure timestamps are different
-            System.Threading.Tasks.Task.Delay(1000).Wait();
+            await Task.Delay(1000);
 
             // Attempt to restore to another folder
             testopts["restore-path"] = RESTOREFOLDER;
             testopts["restore-legacy"] = restoreLegacy.ToString().ToLower();
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                var restoreResults = c.Restore([]);
+                var restoreResults = await c.RestoreAsync([]);
                 Assert.That(restoreResults.RestoredFiles, Is.EqualTo(0), "No files should have been restored.");
             }
 
@@ -488,7 +498,7 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Test"), Category("Bug")]
-        public void Issue6459HashNullInTest()
+        public async Task Issue6459HashNullInTestAsync()
         {
             // Reproduction of the issue outlined in https://forum.duplicati.com/t/value-cannot-be-null-parameter-hash-cannot-be-null/20958
             // This test is to ensure that a null hash in the database does not cause issues during backup and repair operations.
@@ -505,47 +515,38 @@ namespace Duplicati.UnitTest
 
             // Backup the files
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
 
             // Set one of the hashes in the database to null
             {
                 using var con = new SqliteConnection($"Data source={DBFILE};Pooling=false");
-                con.Open();
+                await con.OpenAsync();
                 using var cmd = con.CreateCommand();
                 using var transaction = con.BeginTransaction();
                 cmd.Transaction = transaction;
                 cmd.CommandText = @"UPDATE Remotevolume SET Hash = NULL WHERE Name LIKE '%.dblock.%'";
-                cmd.ExecuteNonQuery();
-                transaction.Commit();
+                await cmd.ExecuteNonQueryAsync();
+                await transaction.CommitAsync();
             }
 
             // Add another file and perform the backup again.
             // This would fail prior to the fix.
             TestUtils.WriteTestFile($"{f}_1.txt", 1024);
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
 
             // Delete and recreate the database to ensure the null hash is not present anymore
             File.Delete(DBFILE);
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-            {
-                IRepairResults repairResults = c.Repair();
-                TestUtils.AssertResults(repairResults);
-            }
+                TestUtils.AssertResults(await c.RepairAsync());
 
             // Double check that the null hash is not present anymore
             {
                 using var con = new SqliteConnection($"Data source={DBFILE};Pooling=false");
-                con.Open();
+                await con.OpenAsync();
                 using var cmd = con.CreateCommand();
                 cmd.CommandText = @"SELECT COUNT(*) FROM Remotevolume WHERE Hash IS NULL";
-                var count = (long)cmd.ExecuteScalar();
+                var count = (long)await cmd.ExecuteScalarAsync();
                 Assert.That(count, Is.EqualTo(0), "There should be no null hashes in the database.");
             }
 
@@ -553,7 +554,7 @@ namespace Duplicati.UnitTest
             TestUtils.WriteTestFile($"{f}_2.txt", 1024);
             using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
             {
-                IBackupResults backupResults = c.Backup([DATAFOLDER]);
+                IBackupResults backupResults = await c.BackupAsync([DATAFOLDER]);
                 TestUtils.AssertResults(backupResults);
             }
         }
@@ -561,7 +562,7 @@ namespace Duplicati.UnitTest
 
         [Test]
         [Category("Restore"), Category("Bug")]
-        public void Issue6068FileAndFolderAttributesAndPermissions([Values] bool restorePermissions, [Values] bool restoreLegacy, [Values] bool skip_metadata)
+        public async Task Issue6068FileAndFolderAttributesAndPermissionsAsync([Values] bool restorePermissions, [Values] bool restoreLegacy, [Values] bool skip_metadata)
         {
             // This test is to verify that permissions are restored correctly
             // if the restore-permissions option is set, and that the
@@ -620,18 +621,15 @@ namespace Duplicati.UnitTest
 
             if (OperatingSystem.IsWindows())
             {
-                // Set only the current user to have access to both the file and the directory
+                // Use protected ACLs so inherited runner-specific permissions do not affect the comparison.
                 var dir_info = new DirectoryInfo(os_special_dir);
                 var rules_dir = dir_info.GetAccessControl();
-                rules_dir.GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount));
-                rules_dir.AddAccessRule(new FileSystemAccessRule(Environment.UserName, FileSystemRights.FullControl, AccessControlType.Allow));
-                rules_dir.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+                SetDeterministicWindowsAccessRules(rules_dir);
                 dir_info.SetAccessControl(rules_dir);
 
                 var file_info = new FileInfo(os_special_file);
                 var rules_file = file_info.GetAccessControl();
-                rules_file.AddAccessRule(new FileSystemAccessRule(Environment.UserName, FileSystemRights.FullControl, AccessControlType.Allow));
-                rules_file.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+                SetDeterministicWindowsAccessRules(rules_file);
                 file_info.SetAccessControl(rules_file);
             }
             else // Mac and Linux
@@ -651,17 +649,12 @@ namespace Duplicati.UnitTest
             {
                 // Backup the files
                 using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-                {
-                    IBackupResults backupResults = c.Backup([DATAFOLDER]);
-                    TestUtils.AssertResults(backupResults);
-                }
+                    TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
 
                 // Restore the files
                 testopts["restore-path"] = RESTOREFOLDER;
                 using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
-                {
-                    var restoreResults = c.Restore([]);
-                }
+                    await c.RestoreAsync([]);
 
                 // Check the folder attributes
                 foreach (var dir in dirs.Skip(1))
@@ -696,47 +689,35 @@ namespace Duplicati.UnitTest
                 {
                     var original_dir_info = new DirectoryInfo(os_special_dir);
                     var restored_dir_info = new DirectoryInfo(os_special_dir.Replace(DATAFOLDER, RESTOREFOLDER));
-                    var original_dir_rules = original_dir_info.GetAccessControl().GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount));
-                    var restored_dir_rules = restored_dir_info.GetAccessControl().GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount));
-
-                    // Disable only on Windows warning, as the if ensures this.
-#pragma warning disable CA1416
-                    static bool cmp_elem(FileSystemAccessRule a, FileSystemAccessRule b) =>
-                        a.IdentityReference.Value == b.IdentityReference.Value &&
-                        a.FileSystemRights == b.FileSystemRights &&
-                        a.AccessControlType == b.AccessControlType;
-#pragma warning restore CA1416
-
-                    static bool cmp_coll(AuthorizationRuleCollection a, AuthorizationRuleCollection b) =>
-                        a.Count == b.Count &&
-                        a.Cast<FileSystemAccessRule>().Zip(b.Cast<FileSystemAccessRule>(), cmp_elem).All(x => x);
+                    var original_dir_rules = original_dir_info.GetAccessControl().GetAccessRules(true, false, typeof(SecurityIdentifier));
+                    var restored_dir_rules = restored_dir_info.GetAccessControl().GetAccessRules(true, false, typeof(SecurityIdentifier));
 
                     if (skip_metadata && original_dir_info.Attributes != default_dir_attrs)
                         Assert.That(original_dir_info.Attributes, Is.Not.EqualTo(restored_dir_info.Attributes), "Directory attributes should not be equal");
                     else
                         Assert.That(original_dir_info.Attributes, Is.EqualTo(restored_dir_info.Attributes), "Directory attributes should be equal");
 
-                    var dir_permissions_equal = cmp_coll(original_dir_rules, restored_dir_rules);
+                    var dir_permissions_equal = CompareCollection(original_dir_rules, restored_dir_rules);
                     if (restorePermissions && !skip_metadata)
-                        Assert.That(dir_permissions_equal, Is.True, "Directory permissions should be equal");
+                        Assert.That(dir_permissions_equal, Is.True, $"Directory permissions should be equal{Environment.NewLine}{DescribeRuleComparison(original_dir_rules, restored_dir_rules)}");
                     else
-                        Assert.That(dir_permissions_equal, Is.False, "Directory permissions should not be equal");
+                        Assert.That(dir_permissions_equal, Is.False, $"Directory permissions should not be equal{Environment.NewLine}{DescribeRuleComparison(original_dir_rules, restored_dir_rules)}");
 
                     var original_file_info = new FileInfo(os_special_file);
                     var restored_file_info = new FileInfo(os_special_file.Replace(DATAFOLDER, RESTOREFOLDER));
-                    var original_file_rules = original_file_info.GetAccessControl().GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount));
-                    var restored_file_rules = restored_file_info.GetAccessControl().GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount));
+                    var original_file_rules = original_file_info.GetAccessControl().GetAccessRules(true, false, typeof(SecurityIdentifier));
+                    var restored_file_rules = restored_file_info.GetAccessControl().GetAccessRules(true, false, typeof(SecurityIdentifier));
 
                     if (skip_metadata && original_file_info.Attributes != default_file_attrs)
                         Assert.That(original_file_info.Attributes, Is.Not.EqualTo(restored_file_info.Attributes), "File attributes should not be equal");
                     else
                         Assert.That(original_file_info.Attributes, Is.EqualTo(restored_file_info.Attributes), "File attributes should be equal");
 
-                    var file_permissions_equal = cmp_coll(original_file_rules, restored_file_rules);
+                    var file_permissions_equal = CompareCollection(original_file_rules, restored_file_rules);
                     if (restorePermissions && !skip_metadata)
-                        Assert.That(file_permissions_equal, Is.True, "File permissions should be equal");
+                        Assert.That(file_permissions_equal, Is.True, $"File permissions should be equal{Environment.NewLine}{DescribeRuleComparison(original_file_rules, restored_file_rules)}");
                     else
-                        Assert.That(file_permissions_equal, Is.False, "File permissions should not be equal");
+                        Assert.That(file_permissions_equal, Is.False, $"File permissions should not be equal{Environment.NewLine}{DescribeRuleComparison(original_file_rules, restored_file_rules)}");
                 }
                 else
                 {
@@ -799,10 +780,48 @@ namespace Duplicati.UnitTest
             }
         }
 
+        [SupportedOSPlatform("windows")]
+        static void SetDeterministicWindowsAccessRules(FileSystemSecurity rules)
+        {
+            rules.SetAccessRuleProtection(true, false);
+            foreach (var rule in rules.GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToArray())
+                rules.RemoveAccessRuleSpecific(rule);
+
+            var currentUser = WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("Unable to determine current Windows user");
+            rules.AddAccessRule(new FileSystemAccessRule(currentUser, FileSystemRights.FullControl, AccessControlType.Allow));
+            rules.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+        }
+
+        [SupportedOSPlatform("windows")]
+        static bool CompareElement(FileSystemAccessRule a, FileSystemAccessRule b) =>
+            a.IdentityReference.Value == b.IdentityReference.Value &&
+            a.FileSystemRights == b.FileSystemRights &&
+            a.AccessControlType == b.AccessControlType &&
+            a.InheritanceFlags == b.InheritanceFlags &&
+            a.PropagationFlags == b.PropagationFlags &&
+            a.IsInherited == b.IsInherited;
+
+        // Use order-independent comparison since ACL rules may be returned in different orders
+        [SupportedOSPlatform("windows")]
+        static bool CompareCollection(AuthorizationRuleCollection a, AuthorizationRuleCollection b) =>
+            a.Count == b.Count &&
+            a.Cast<FileSystemAccessRule>().All(ruleA =>
+                b.Cast<FileSystemAccessRule>().Any(ruleB => CompareElement(ruleA, ruleB)));
+
+        [SupportedOSPlatform("windows")]
+        static string DescribeRuleComparison(AuthorizationRuleCollection original, AuthorizationRuleCollection restored) =>
+            $"Original:{Environment.NewLine}{DescribeRules(original)}{Environment.NewLine}Restored:{Environment.NewLine}{DescribeRules(restored)}";
+
+        [SupportedOSPlatform("windows")]
+        static string DescribeRules(AuthorizationRuleCollection rules) =>
+            string.Join(Environment.NewLine, rules.Cast<FileSystemAccessRule>().Select(rule =>
+                $"{rule.IdentityReference.Value}: {rule.FileSystemRights}, {rule.AccessControlType}, inherited={rule.IsInherited}, inheritance={rule.InheritanceFlags}, propagation={rule.PropagationFlags}"));
+
+
 
         [Test]
         [Category("Disruption"), Category("Bug")]
-        public void TestSystematicErrors5023()
+        public async Task TestSystematicErrors5023Async()
         {
             // Attempt to recreate other bugs from #5023, but not successful
             var testopts = new Dictionary<string, string>(TestOptions)
@@ -839,10 +858,8 @@ namespace Duplicati.UnitTest
             }
             // Initial backup
             using (var c = new Library.Main.Controller(target, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync(new[] { DATAFOLDER }));
+
             while (errorIdx < (maxFiles + 2))
             {
                 if (errorIdx % 10 == 0)
@@ -853,10 +870,7 @@ namespace Duplicati.UnitTest
                 try
                 {
                     using (var c = new Library.Main.Controller(targetError, testopts, null))
-                    {
-                        IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                        TestUtils.AssertResults(backupResults);
-                    }
+                        TestUtils.AssertResults(await c.BackupAsync(new[] { DATAFOLDER }));
                 }
                 catch (AssertionException) { throw; }
                 catch { }
@@ -864,23 +878,31 @@ namespace Duplicati.UnitTest
                 try
                 {
                     using (var c = new Library.Main.Controller(target, testopts, null))
-                    {
-                        IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                        TestUtils.AssertResults(backupResults);
-                    }
+                        TestUtils.AssertResults(await c.BackupAsync(new[] { DATAFOLDER }));
                 }
                 catch (UserInformationException e)
                 {
-                    TestContext.WriteLine("Error at index {0}: {1}", errorIdx, e.Message);
-                    if (e.HelpID == "MissingRemoteFiles" || e.HelpID == "ExtraRemoteFiles")
+                    TestContext.WriteLine("Error at index {0}: HelpID={1}, Message={2}", errorIdx, e.HelpID, e.Message);
+                    if (e.HelpID == "MissingRemoteFiles" || e.HelpID == "ExtraRemoteFiles" || e.HelpID == "DatabaseRepairInProgress")
                     {
+                        // If a database repair failed, we need to delete the database file
+                        if (e.HelpID == "DatabaseRepairInProgress")
+                            File.Delete(DBFILE);
+
                         using (var c = new Library.Main.Controller(target, testopts, null))
-                        {
-                            IRepairResults repairResults = c.Repair();
-                            TestUtils.AssertResults(repairResults);
-                        }
+                            TestUtils.AssertResults(await c.RepairAsync());
                     }
-                    failed = true;
+                    else if (e.HelpID == "DatabaseTimestampError")
+                    {
+                        // Clock skew detected, wait and retry - this can happen on CI due to timing issues
+                        TestContext.WriteLine("Clock skew detected at index {0}, waiting 10 seconds before continuing", errorIdx);
+                        Thread.Sleep(10000);
+                    }
+                    else
+                    {
+                        TestContext.WriteLine("Unexpected error at index {0}: HelpID={1}, Message={2}", errorIdx, e.HelpID, e.Message);
+                        failed = true;
+                    }
                 }
                 Thread.Sleep(1000);
                 foreach (string f in files)
@@ -896,7 +918,7 @@ namespace Duplicati.UnitTest
         [Test, Sequential]
         [Category("Targeted"), Category("Bug"), Category("Non-critical")]
         [TestCase(false, true), TestCase(true, true), TestCase(true, false)]
-        public void Issue5038MissingListBlocklist(bool sameVersion, bool blockFirst)
+        public async Task Issue5038MissingListBlocklistAsync(bool sameVersion, bool blockFirst)
         {
             // Backup containing the blocklist of a file BEFORE the file causes a dindex with missing blocklist entry
             // This is not critical, because it only requires extra block volume downloads
@@ -926,29 +948,141 @@ namespace Duplicati.UnitTest
             {
                 // Backup blockfile first
                 using (var c = new Library.Main.Controller(target, testopts, null))
-                {
-                    IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                    TestUtils.AssertResults(backupResults);
-                }
+                    TestUtils.AssertResults(await c.BackupAsync(new[] { DATAFOLDER }));
             }
 
             byte[] combined = block1.Concat(block2).ToArray();
             TestUtils.WriteFile(filename, combined);
             // Backup file that would produce blockfile
             using (var c = new Library.Main.Controller(target, testopts, null))
-            {
-                IBackupResults backupResults = c.Backup(new[] { DATAFOLDER });
-                TestUtils.AssertResults(backupResults);
-            }
+                TestUtils.AssertResults(await c.BackupAsync(new[] { DATAFOLDER }));
 
             // Recreate database downloads block volume
             File.Delete(DBFILE);
             using (var c = new Library.Main.Controller(target, testopts, null))
             {
-                IRepairResults repairResults = c.Repair();
+                var repairResults = await c.RepairAsync();
                 TestUtils.AssertResults(repairResults);
                 Assert.IsNull(repairResults.Messages.FirstOrDefault(v => v.Contains("ProcessingRequiredBlocklistVolumes")),
                     "Blocklist download pass was required");
+            }
+        }
+
+        [Test]
+        public async Task Issue6817DollarSignNumberInFilenameBreaksRegexAsync()
+        {
+            var filename = "~$1234567891011121314151617181920.txt";
+            var content = RandomNumberGenerator.GetBytes(1024);
+            TestUtils.WriteFile(Path.Combine(DATAFOLDER, filename), content);
+
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, TestOptions, null))
+                TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
+
+            // Delete the database
+            File.Delete(DBFILE);
+
+            // Recreate the database, which would fail if the filename is not handled correctly
+            using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, TestOptions, null))
+                TestUtils.AssertResults(await c.RepairAsync());
+        }
+
+        [Test]
+        [Category("Targeted")]
+        [Category("Bug")]
+        [SupportedOSPlatform("macOS")]
+        public async Task Issue4562MacOSAclAndFileFlagsAsync()
+        {
+            // Reproduction for issue #4562
+            // ACL and file flag "uchg" are not saved or restored on macOS
+
+            // macOS user-immutable file flag (UF_IMMUTABLE), set by "chflags uchg"
+            const uint UF_IMMUTABLE = 0x00000002;
+
+            var testopts = new Dictionary<string, string>(TestOptions)
+            {
+                ["no-encryption"] = "true",
+                ["restore-permissions"] = "true"
+            };
+
+            var sourceFile = Path.Combine(DATAFOLDER, "file.txt");
+            var restoredFile = sourceFile.Replace(DATAFOLDER, RESTOREFOLDER);
+            File.WriteAllText(sourceFile, "test content");
+
+            // Helper to run a tool and return its exit code and stderr
+            static async Task<(int ExitCode, string StdErr)> RunAsync(string fileName, string arguments)
+            {
+                using var process = new Process();
+                process.StartInfo.FileName = fileName;
+                process.StartInfo.Arguments = arguments;
+                process.StartInfo.UseShellExecute = false;
+                process.StartInfo.RedirectStandardOutput = true;
+                process.StartInfo.RedirectStandardError = true;
+                process.Start();
+                var stderr = await process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                return (process.ExitCode, stderr);
+            }
+
+            try
+            {
+                // Set ACL using chmod +a FIRST (before uchg, which would block this)
+                var chmod = await RunAsync("chmod", $"+a \"everyone allow read,write\" \"{sourceFile}\"");
+                Assert.That(chmod.ExitCode, Is.EqualTo(0), $"chmod +a failed: {chmod.StdErr}");
+
+                // Set macOS file flag "uchg" (user immutable) using chflags
+                var chflags = await RunAsync("chflags", $"uchg \"{sourceFile}\"");
+                Assert.That(chflags.ExitCode, Is.EqualTo(0), $"chflags failed: {chflags.StdErr}");
+
+                // Verify the flags and ACL are set on the source
+                var originalFlags = Duplicati.Library.Common.IO.PosixFile.GetFileFlags(sourceFile, false, true);
+                Assert.That(originalFlags.HasValue, Is.True, "Source file should have flags set");
+                Assert.That(originalFlags.Value & UF_IMMUTABLE, Is.Not.EqualTo(0), "Source file should have uchg flag set");
+
+                var originalAcl = Duplicati.Library.Common.IO.PosixFile.GetAcl(sourceFile, false, true);
+                Assert.That(originalAcl, Is.Not.Null, "Source file should have ACL set");
+                Assert.That(originalAcl, Is.Not.Empty, "Source file should have ACL set");
+
+                // Backup
+                using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, testopts, null))
+                    TestUtils.AssertResults(await c.BackupAsync([DATAFOLDER]));
+
+                // Restore
+                var restoreOpts = new Dictionary<string, string>(testopts)
+                {
+                    ["restore-path"] = RESTOREFOLDER
+                };
+                using (var c = new Library.Main.Controller("file://" + TARGETFOLDER, restoreOpts, null))
+                {
+                    var restoreResults = await c.RestoreAsync([sourceFile]);
+                    Assert.That(restoreResults.RestoredFiles, Is.EqualTo(1), "File should have been restored");
+                }
+
+                Assert.That(File.Exists(restoredFile), Is.True, "Restored file should exist");
+
+                // Verify flags are restored
+                var restoredFlags = Duplicati.Library.Common.IO.PosixFile.GetFileFlags(restoredFile, false, true);
+                Assert.That(restoredFlags.HasValue, Is.True, "Restored file should have flags");
+                Assert.That(restoredFlags.Value & UF_IMMUTABLE, Is.Not.EqualTo(0), "Restored file should have uchg flag set");
+
+                // Verify ACL is restored
+                var restoredAcl = Duplicati.Library.Common.IO.PosixFile.GetAcl(restoredFile, false, true);
+                Assert.That(restoredAcl, Is.Not.Null, "Restored file should have ACL set");
+                Assert.That(restoredAcl, Is.Not.Empty, "Restored file should have ACL set");
+                Assert.That(restoredAcl, Does.Contain("everyone"), "Restored ACL should contain 'everyone'");
+            }
+            finally
+            {
+                // Clean up: recursively clear the uchg flag on every entry under the data
+                // and restore folders so the test teardown can delete them. Doing this per
+                // existing path (and recursively) avoids leaving an immutable file behind if
+                // the test failed partway through, which would otherwise break DirectoryDelete.
+                foreach (var dir in new[] { DATAFOLDER, RESTOREFOLDER })
+                {
+                    if (!Directory.Exists(dir))
+                        continue;
+                    try { await RunAsync("chflags", $"-R nouchg \"{dir}\""); }
+                    catch { }
+                }
             }
         }
     }

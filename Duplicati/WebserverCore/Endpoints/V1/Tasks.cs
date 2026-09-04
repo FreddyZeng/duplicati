@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -34,7 +34,7 @@ public class Tasks : IEndpointV1
     {
         group.MapGet("/tasks", ([FromServices] ITaskQueueService taskQueueService) => taskQueueService.GetTaskQueue()).RequireAuthorization();
         group.MapGet("/task/{taskid}", ([FromRoute] long taskId, [FromServices] ITaskQueueService taskQueueService) => taskQueueService.GetTaskInfo(taskId)).RequireAuthorization();
-        group.MapPost("/task/{taskid}/stop", ([FromRoute] long taskId, [FromServices] ITaskQueueService taskQueueService) => taskQueueService.StopTask(taskId)).RequireAuthorization();
-        group.MapPost("/task/{taskid}/abort", ([FromRoute] long taskId, [FromServices] ITaskQueueService taskQueueService) => taskQueueService.AbortTask(taskId)).RequireAuthorization();
+        group.MapPost("/task/{taskid}/stop", ([FromRoute] long taskId, [FromServices] ITaskQueueService taskQueueService) => taskQueueService.StopTaskAsync(taskId)).RequireAuthorization();
+        group.MapPost("/task/{taskid}/abort", ([FromRoute] long taskId, [FromServices] ITaskQueueService taskQueueService) => taskQueueService.AbortTaskAsync(taskId)).RequireAuthorization();
     }
 }

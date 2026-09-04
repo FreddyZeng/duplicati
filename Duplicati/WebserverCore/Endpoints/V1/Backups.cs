@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -40,7 +40,7 @@ public class Backups : IEndpointV1
             using var tempfile = new Library.Utility.TempFile();
             File.WriteAllBytes(tempfile, Convert.FromBase64String(input.config));
 
-            return backupListService.Import(input.cmdline ?? false, input.import_metadata ?? false, input.direct ?? false, input.temporary ?? false, input.passphrase ?? "", tempfile);
+            return backupListService.Import(input.cmdline ?? false, input.import_metadata ?? false, input.direct ?? false, input.temporary ?? false, input.passphrase ?? "", tempfile, input.replace_settings);
 
         }).RequireAuthorization();
     }

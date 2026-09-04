@@ -1,4 +1,8 @@
 name: Tests
+permissions:
+  contents: read
+  issues: none
+  pull-requests: none
 
 on: [pull_request, workflow_dispatch]
 
@@ -6,6 +10,8 @@ jobs:
   unit_tests:
     name: Unit tests
     runs-on: ${{ matrix.os }}
+    env:
+      DUPLICATI__AES_V3_ITERATIONS: 10000
     strategy:
       fail-fast: false
       matrix:
@@ -13,26 +19,112 @@ jobs:
 
     steps:
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
 
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Restore NuGet dependencies
-        run: dotnet restore Duplicati.sln
+        run: dotnet restore Duplicati.slnx
 
       - name: Build Duplicati
-        run: dotnet build --no-restore Duplicati.sln
+        run: dotnet build --no-restore Duplicati.slnx
 
-      - name: Run unit tests
-        run: dotnet test --no-build --verbosity minimal Duplicati.sln
+      - name: Run unit tests with coverage
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/TestResults/unit"
+          dotnet test --no-build --verbosity minimal --filter "Category!=Integration&Category!=DiskImageLocal&Category!=ExcludedFromCLI&ClassName!~SecretProviderSetSecretTests" --collect:"XPlat Code Coverage" --results-directory "$GITHUB_WORKSPACE/TestResults/unit" Duplicati.slnx
 
-  # Disabled, as a new test needs to be written for the new UI
-  # selenium:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Selenium
-  #       run: pipeline/selenium/test.sh
+  integration_tests:
+    name: Integration tests
+    runs-on: ${{ matrix.os }}
+    env:
+      DUPLICATI__AES_V3_ITERATIONS: 10000
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Restore NuGet dependencies
+        run: dotnet restore Duplicati.slnx
+
+      - name: Build Duplicati
+        run: dotnet build --no-restore Duplicati.slnx
+
+      - name: Run integration tests with coverage
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/TestResults/integration"
+          dotnet test --no-build --verbosity minimal --filter "Category=Integration" --collect:"XPlat Code Coverage" --results-directory "$GITHUB_WORKSPACE/TestResults/integration" Duplicati.slnx
+
+  playwright_tests:
+    name: Playwright UI tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+      - uses: actions/checkout@v7
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+      - name: Publish Duplicati server
+        run: dotnet publish -c Debug -o published Duplicati.slnx
+      - name: Start server
+        run: |
+          ./published/Duplicati.Server --disable-db-encryption --webservice-password=easy1234 --webservice-suppress-welcome-page > server.log 2>&1 &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          timeout 30 bash -c 'until printf "" 2>>/dev/null >>/dev/tcp/127.0.0.1/8200; do sleep 1; echo waiting; done'
+          echo "Server started with PID: $SERVER_PID"
+      - name: Load web UI
+        run: |
+          curl -f http://localhost:8200/ngclient/index.html
+          echo "Web UI loaded successfully"
+      - name: Check server status
+        run: |
+          echo "Server process status:"
+          ps aux | grep Duplicati.Server || true
+          echo "Server log (last 50 lines):"
+          tail -n 50 server.log || true
+      - name: Run Playwright tests
+        run: npx playwright test --reporter=list,html,github
+
+      - name: Capture server logs on failure
+        if: failure()
+        run: |
+          echo "=== Full Server Log ==="
+          cat server.log || echo "No server log found"
+
+      - name: Upload Playwright test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-test-results
+          path: |
+            test-results/
+            playwright-report/
+            server.log
+          retention-days: 7
+
+      - name: Upload Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-html-report
+          path: playwright-report/
+          retention-days: 7

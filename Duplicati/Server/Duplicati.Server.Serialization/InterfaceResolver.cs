@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -45,6 +45,14 @@ namespace Duplicati.Server.Serialization
         public override Interface.INotification Create(Type objectType)
         {
             return new Implementations.Notification();
+        }
+    }
+
+    public class TargetUrlEntryCreator : CustomCreationConverter<Interface.ITargetUrlEntry>
+    {
+        public override Interface.ITargetUrlEntry Create(Type objectType)
+        {
+            return new Implementations.TargetUrlEntry();
         }
     }
 

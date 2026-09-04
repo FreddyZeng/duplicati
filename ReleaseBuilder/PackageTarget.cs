@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -74,6 +74,10 @@ public enum PackageType
     /// </summary>
     Zip,
     /// <summary>
+    /// The AppImage package
+    /// </summary>
+    AppImage,
+    /// <summary>
     /// The Windows installer format
     /// </summary>
     MSI,
@@ -100,7 +104,11 @@ public enum PackageType
     /// <summary>
     /// The synology Spk format
     /// </summary>
-    SynologySpk
+    SynologySpk,
+    /// <summary>
+    /// The QNAP Qpkg format
+    /// </summary>
+    QnapQpkg
 }
 
 /// <summary>
@@ -171,12 +179,14 @@ public record PackageTarget(OSType OS, ArchType Arch, InterfaceType Interface, P
         => package switch
         {
             PackageType.Zip => "zip",
+            PackageType.AppImage => "appimage",
             PackageType.MSI => "msi",
             PackageType.Deb => "deb",
             PackageType.RPM => "rpm",
             PackageType.DMG => "dmg",
             PackageType.MacPkg => "pkg",
             PackageType.SynologySpk => "spk",
+            PackageType.QnapQpkg => "qpkg",
             PackageType.Docker => "docker",
             _ => throw new Exception("Not supported package type")
         };

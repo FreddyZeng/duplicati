@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,6 +26,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Duplicati.Library.Common.IO;
+using Duplicati.Library.Utility;
 
 namespace Duplicati.CommandLine
 {
@@ -58,7 +59,14 @@ namespace Duplicati.CommandLine
             public bool Join(TimeSpan wait)
             {
                 if (m_task != null)
-                    return this.m_task.Wait(wait);
+                    try
+                    {
+                        this.m_task.WaitAsync(wait).Await();
+                    }
+                    catch
+                    {
+                        return false;
+                    }
 
                 return true;
             }
@@ -74,13 +82,15 @@ namespace Duplicati.CommandLine
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    float progress;
-                    long filesprocessed;
-                    long filesizeprocessed;
-                    long filecount;
-                    long filesize;
-                    bool counting;
-                    m_output.OperationProgress.UpdateOverall(out _, out progress, out filesprocessed, out filesizeprocessed, out filecount, out filesize, out counting);
+                    m_output.OperationProgress.UpdateOverall(
+                        out _,
+                        out var progress,
+                        out var filesprocessed,
+                        out var filesizeprocessed,
+                        out var filecount,
+                        out var filesize,
+                        out var counting);
+
 
                     var files = Math.Max(0, filecount - filesprocessed);
                     var size = Math.Max(0, filesize - filesizeprocessed);
@@ -119,7 +129,7 @@ namespace Duplicati.CommandLine
                         if (m_task != null)
                         {
                             m_cancellationTokenSource.Cancel();
-                            m_task.Wait(500);
+                            m_task.WaitAsync(TimeSpan.FromMilliseconds(500)).Await();
                         }
                     }
                     finally
@@ -161,7 +171,7 @@ namespace Duplicati.CommandLine
             options.TryGetValue("dbpath", out dbpath);
             if (string.IsNullOrEmpty(dbpath))
             {
-                dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(backend, new Library.Main.Options(options), false, true);
+                dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(backend, new Library.Main.Options(options), false, true, false);
                 if (dbpath != null)
                     options["dbpath"] = dbpath;
             }
@@ -179,7 +189,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller(backend, options, console))
             {
                 setup(i);
-                i.ListAffected(args, res =>
+                i.ListAffectedAsync(args, res =>
                 {
                     if (res.Filesets != null && res.Filesets.Any())
                     {
@@ -233,7 +243,7 @@ namespace Duplicati.CommandLine
 
                         outwriter.WriteLine();
                     }
-                });
+                }).Await();
 
 
 
@@ -324,7 +334,7 @@ namespace Duplicati.CommandLine
             options.TryGetValue("dbpath", out dbpath);
             if (string.IsNullOrEmpty(dbpath))
             {
-                dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(backend, new Duplicati.Library.Main.Options(options), false, true);
+                dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(backend, new Duplicati.Library.Main.Options(options), false, true, false);
                 if (dbpath != null)
                     options["dbpath"] = dbpath;
             }
@@ -375,14 +385,15 @@ namespace Duplicati.CommandLine
                     return 200;
                 }
 
-                var res = i.ListFilesets();
+                var res = i.ListFilesetsAsync().Await();
                 outwriter.WriteLine("Listing filesets:");
                 foreach (var e in res.Filesets)
                 {
+                    var label = string.IsNullOrWhiteSpace(e.Label) ? "" : $" [{e.Label}]";
                     if (e.FileCount != null && e.FileSizes != null && e.IsFullBackup != null)
-                        outwriter.WriteLine($"{e.Version}\t: {e.Time} ({e.FileCount.Value} files, {Library.Utility.Utility.FormatSizeString(e.FileSizes.Value)}){(e.IsFullBackup.Value ? "" : ", partial")}");
+                        outwriter.WriteLine($"{e.Version}\t: {e.Time}{label} ({e.FileCount.Value} files, {Library.Utility.Utility.FormatSizeString(e.FileSizes.Value)}){(e.IsFullBackup.Value ? "" : ", partial")}");
                     else
-                        outwriter.WriteLine($"{e.Version}\t: {e.Time}");
+                        outwriter.WriteLine($"{e.Version}\t: {e.Time}{label}");
                 }
             }
 
@@ -406,7 +417,7 @@ namespace Duplicati.CommandLine
                     return 200;
                 }
 
-                var res = i.ListFolder(args.ToArray(), 0, 0);
+                var res = i.ListFolderAsync(args.ToArray(), 0, 0, false).Await();
                 outwriter.WriteLine("Folder contents:");
                 foreach (var e in res.Entries.Items)
                 {
@@ -433,7 +444,7 @@ namespace Duplicati.CommandLine
 
                 HandleDbAccessWithoutPassphrase(backend, options);
 
-                var res = i.ListFileVersions(args.ToArray(), 0, 0);
+                var res = i.ListFileVersionsAsync(args.ToArray(), 0, 0).Await();
                 outwriter.WriteLine("File versions:");
                 var prevFile = string.Empty;
                 foreach (var e in res.FileVersions.Items)
@@ -466,7 +477,7 @@ namespace Duplicati.CommandLine
 
                 HandleDbAccessWithoutPassphrase(backend, options);
 
-                var res = i.SearchEntries(args.ToArray(), filter, 0, 0);
+                var res = i.SearchEntriesAsync(args.ToArray(), filter, false, 0, 0, false, false).Await();
                 outwriter.WriteLine("File versions:");
                 var prevFile = string.Empty;
                 foreach (var e in res.FileVersions.Items)
@@ -486,6 +497,17 @@ namespace Duplicati.CommandLine
             }
 
             return 0;
+        }
+
+        public static int Find(TextWriter outwriter, Action<Duplicati.Library.Main.Controller> setup, List<string> args, Dictionary<string, string> options, Library.Utility.IFilter filter)
+        {
+            // Unlike "list" (which shows only the newest version by default), "find" searches every
+            // backup version, so a file is located regardless of which version it appears in.
+            // Respect an explicit --all-versions / --version / --time supplied by the user.
+            if (!options.ContainsKey("all-versions") && !options.ContainsKey("version") && !options.ContainsKey("time"))
+                options["all-versions"] = "true";
+
+            return List(outwriter, setup, args, options, filter);
         }
 
         public static int List(TextWriter outwriter, Action<Duplicati.Library.Main.Controller> setup, List<string> args, Dictionary<string, string> options, Library.Utility.IFilter filter)
@@ -535,7 +557,7 @@ namespace Duplicati.CommandLine
                 bool controlFiles = Library.Utility.Utility.ParseBoolOption(options, "control-files");
                 options.Remove("control-files");
 
-                var res = controlFiles ? i.ListControlFiles(args, filter) : i.List(args, filter);
+                var res = controlFiles ? i.ListControlFilesAsync(args, filter).Await() : i.ListAsync(args, filter).Await();
 
                 //If there are no files matching, and we are looking for one or more files,
                 // try again with all-versions set
@@ -551,7 +573,7 @@ namespace Duplicati.CommandLine
                     options["all-versions"] = "true";
                     options.Remove("time");
                     options.Remove("version");
-                    res = i.List(args, filter);
+                    res = i.ListAsync(args, filter).Await();
                 }
 
                 if (res.Filesets.Any() && (res.Files == null || !res.Files.Any()) && compareFilter.Empty)
@@ -560,10 +582,11 @@ namespace Duplicati.CommandLine
 
                     foreach (var e in res.Filesets)
                     {
+                        var label = string.IsNullOrWhiteSpace(e.Label) ? "" : $" [{e.Label}]";
                         if (e.FileCount >= 0)
-                            outwriter.WriteLine("{0}\t: {1} ({2} files, {3})", e.Version, e.Time, e.FileCount, Library.Utility.Utility.FormatSizeString(e.FileSizes));
+                            outwriter.WriteLine("{0}\t: {1}{2} ({3} files, {4})", e.Version, e.Time, label, e.FileCount, Library.Utility.Utility.FormatSizeString(e.FileSizes));
                         else
-                            outwriter.WriteLine("{0}\t: {1}", e.Version, e.Time);
+                            outwriter.WriteLine("{0}\t: {1}{2}", e.Version, e.Time, label);
                     }
                 }
                 else if (isRequestForFiles)
@@ -621,7 +644,7 @@ namespace Duplicati.CommandLine
             {
                 setup(i);
                 args.RemoveAt(0);
-                var res = i.Delete();
+                var res = i.DeleteAsync().Await();
 
                 if (!res.DeletedSets.Any())
                 {
@@ -652,7 +675,7 @@ namespace Duplicati.CommandLine
             using (var i = new Duplicati.Library.Main.Controller(args[0], options, console))
             {
                 setup(i);
-                i.Repair(filter);
+                i.RepairAsync(filter).Await();
             }
 
             return 0;
@@ -678,7 +701,7 @@ namespace Duplicati.CommandLine
                 setup(i);
                 if (controlFiles)
                 {
-                    var res = i.RestoreControlFiles(args.ToArray(), filter);
+                    var res = i.RestoreControlFilesAsync(args.ToArray(), filter).Await();
                     output.MessageEvent("Restore control files completed:");
                     foreach (var s in res.Files)
                         outwriter.WriteLine(s);
@@ -705,6 +728,9 @@ namespace Duplicati.CommandLine
                                     periodicOutput.Join(TimeSpan.FromMilliseconds(100));
                                     output.MessageEvent("Verifying restored files ...");
                                     break;
+                                case Duplicati.Library.Main.OperationPhase.Restore_Finalize:
+                                    output.MessageEvent("Completing restore on destination ...");
+                                    break;
                                 case Duplicati.Library.Main.OperationPhase.Restore_ScanForLocalBlocks:
                                     output.MessageEvent("Scanning local files for needed data ...");
                                     break;
@@ -719,11 +745,17 @@ namespace Duplicati.CommandLine
                             output.MessageEvent(string.Format("  {0} files need to be restored ({1})", files, Library.Utility.Utility.FormatSizeString(size)));
                         };
 
-                        var res = i.Restore(args.ToArray(), filter);
+                        var res = i.RestoreAsync(args.ToArray(), filter).Await();
                         string restorePath;
                         options.TryGetValue("restore-path", out restorePath);
 
-                        output.MessageEvent(string.Format("Restored {0} ({1}) files to {2}", res.RestoredFiles, Library.Utility.Utility.FormatSizeString(res.SizeOfRestoredFiles), string.IsNullOrEmpty(restorePath) ? "original path" : restorePath));
+                        if (string.IsNullOrWhiteSpace(restorePath))
+                            restorePath = "original location";
+                        if (restorePath.StartsWith("@"))
+                            restorePath = "remote destination";
+
+
+                        output.MessageEvent(string.Format("Restored {0} ({1}) files to {2}", res.RestoredFiles, Library.Utility.Utility.FormatSizeString(res.SizeOfRestoredFiles), restorePath));
                         output.MessageEvent(string.Format("Duration of restore: {0:hh\\:mm\\:ss}", res.Duration));
 
                         if (output.FullResults)
@@ -795,7 +827,7 @@ namespace Duplicati.CommandLine
                     using (var i = new Library.Main.Controller(backend, options, output))
                     {
                         setup(i);
-                        result = i.Backup(dirs, filter);
+                        result = i.BackupAsync(dirs, filter).Await();
                     }
                 }
 
@@ -868,7 +900,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller(args[0], options, console))
             {
                 setup(i);
-                i.Compact();
+                i.CompactAsync().Await();
             }
 
             return 0;
@@ -894,7 +926,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller(args[0], options, console))
             {
                 setup(i);
-                result = i.Test(tests);
+                result = i.TestAsync(tests).Await();
             }
 
             var totalFiles = result.Verifications.Count();
@@ -965,7 +997,7 @@ namespace Duplicati.CommandLine
             if (string.IsNullOrEmpty(dbpath))
             {
                 if (args.Count > 0)
-                    dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(args[0], new Duplicati.Library.Main.Options(options), false, true);
+                    dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(args[0], new Duplicati.Library.Main.Options(options), false, true, false);
 
                 if (dbpath == null)
                 {
@@ -986,7 +1018,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller(args[0], options, console))
             {
                 setup(i);
-                i.CreateLogDatabase(args[1]);
+                i.CreateLogDatabaseAsync(args[1]).Await();
             }
 
             outwriter.WriteLine("Completed!");
@@ -1011,7 +1043,7 @@ namespace Duplicati.CommandLine
             options.TryGetValue("dbpath", out dbpath);
             if (string.IsNullOrEmpty(dbpath))
             {
-                dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(args[0], new Duplicati.Library.Main.Options(options), false, true);
+                dbpath = Library.Main.CLIDatabaseLocator.GetDatabasePathForCLI(args[0], new Duplicati.Library.Main.Options(options), false, true, false);
                 if (dbpath != null)
                     options["dbpath"] = dbpath;
             }
@@ -1131,11 +1163,28 @@ namespace Duplicati.CommandLine
             {
                 setup(i);
                 if (args.Count == 2)
-                    i.ListChanges(null, args[1], null, filter, handler);
+                    i.ListChangesAsync(null, args[1], null, filter, handler).Await();
                 else
-                    i.ListChanges(args.Count > 1 ? args[1] : null, args.Count > 2 ? args[2] : null, null, filter, handler);
+                    i.ListChangesAsync(args.Count > 1 ? args[1] : null, args.Count > 2 ? args[2] : null, null, filter, handler).Await();
             }
 
+            return 0;
+        }
+
+        public static int Sync(TextWriter outwriter, Action<Duplicati.Library.Main.Controller> setup, List<string> args, Dictionary<string, string> options, Library.Utility.IFilter filter)
+        {
+            if (args.Count < 2)
+                return PrintWrongNumberOfArguments(outwriter, args, 2);
+
+            var backendUrl = args[0];
+            var sourcePaths = args.Skip(1).ToArray();
+
+            using (var output = new ConsoleOutput(outwriter, options))
+            using (var c = new Duplicati.Library.Main.Controller(backendUrl, options, output))
+            {
+                setup(c);
+                c.SyncAsync(sourcePaths, filter).Await();
+            }
             return 0;
         }
 
@@ -1151,7 +1200,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller("dummy://", options, console))
             {
                 setup(i);
-                var result = i.TestFilter(args.ToArray(), filter);
+                var result = i.TestFilterAsync(args.ToArray(), filter).Await();
 
                 outwriter.WriteLine("Matched {0} files ({1})", result.FileCount, Duplicati.Library.Utility.Utility.FormatSizeString(result.FileSize));
             }
@@ -1171,7 +1220,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller("dummy://", options, console))
             {
                 setup(i);
-                foreach (var line in i.SystemInfo().Lines)
+                foreach (var line in i.SystemInfoAsync().Await().Lines)
                     outwriter.WriteLine(line);
             }
 
@@ -1210,7 +1259,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller(backend, options, console))
             {
                 setup(i);
-                i.PurgeFiles(filter);
+                i.PurgeFilesAsync(filter).Await();
             }
 
             return 0;
@@ -1229,7 +1278,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller(args[0], options, con))
             {
                 setup(i);
-                i.ListBrokenFiles(filter, (id, time, count, path, size) =>
+                i.ListBrokenFilesAsync(filter, (id, time, count, path, size) =>
                 {
                     if (previd != id)
                     {
@@ -1248,7 +1297,7 @@ namespace Duplicati.CommandLine
 
                     return true;
 
-                });
+                }).Await();
             }
 
             return 0;
@@ -1263,7 +1312,7 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller(args[0], options, console))
             {
                 setup(i);
-                i.PurgeBrokenFiles(filter);
+                i.PurgeBrokenFilesAsync(filter).Await();
             }
 
             return 0;
@@ -1281,8 +1330,104 @@ namespace Duplicati.CommandLine
             using (var i = new Library.Main.Controller("dummy://", options, console))
             {
                 setup(i);
-                foreach (var l in i.SendMail().Lines)
+                foreach (var l in i.SendMailAsync().Await().Lines)
                     outwriter.WriteLine(l);
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// Updates the label of a backup version.
+        /// The version and label are given as arguments;
+        /// an empty label clears the label.
+        /// </summary>
+        public static int SetVersionLabel(
+            TextWriter outwriter,
+            Action<Duplicati.Library.Main.Controller> setup,
+            List<string> args,
+            Dictionary<string, string> options,
+            Library.Utility.IFilter filter)
+        {
+            if (args.Count != 3)
+                return PrintWrongNumberOfArguments(outwriter, args, 3);
+
+            if (!long.TryParse(args[1], out var version))
+            {
+                outwriter.WriteLine("The version must be a number, got: \"{0}\"", args[1]);
+                return 200;
+            }
+
+            options["version"] = version.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            options["version-name"] = args[2];
+
+            using (var console = new ConsoleOutput(outwriter, options))
+            using (var controller = new Library.Main.Controller(args[0], options, console))
+            {
+                setup(controller);
+                var res = controller.SetVersionLabelAsync().Await();
+
+                if (console.FullResults)
+                {
+                    Library.Utility.Utility.PrintSerializeObject(res, outwriter);
+                    outwriter.WriteLine();
+                }
+                else
+                {
+                    outwriter.WriteLine("Updated label for version {0} ({1}) to \"{2}\"", res.BackupVersion, res.Time, res.Label);
+                }
+            }
+
+            return 0;
+        }
+
+        public static int SetLocks(
+            TextWriter outwriter,
+            Action<Duplicati.Library.Main.Controller> setup,
+            List<string> args,
+            Dictionary<string, string> options,
+            Library.Utility.IFilter filter)
+        {
+            if (args.Count != 1)
+                return PrintWrongNumberOfArguments(outwriter, args, 1);
+
+            using (var console = new ConsoleOutput(outwriter, options))
+            using (var controller = new Library.Main.Controller(args[0], options, console))
+            {
+                setup(controller);
+                var res = controller.SetLocksAsync().Await();
+
+                if (console.FullResults)
+                {
+                    Library.Utility.Utility.PrintSerializeObject(res, outwriter);
+                    outwriter.WriteLine();
+                }
+            }
+
+            return 0;
+        }
+
+        public static int ReadLockInfo(
+            TextWriter outwriter,
+            Action<Duplicati.Library.Main.Controller> setup,
+            List<string> args,
+            Dictionary<string, string> options,
+            Library.Utility.IFilter filter)
+        {
+            if (args.Count != 1)
+                return PrintWrongNumberOfArguments(outwriter, args, 1);
+
+            using (var console = new ConsoleOutput(outwriter, options))
+            using (var controller = new Library.Main.Controller(args[0], options, console))
+            {
+                setup(controller);
+                var res = controller.ReadLockInfoAsync().Await();
+
+                if (console.FullResults)
+                {
+                    Library.Utility.Utility.PrintSerializeObject(res, outwriter);
+                    outwriter.WriteLine();
+                }
             }
 
             return 0;
@@ -1301,7 +1446,7 @@ namespace Duplicati.CommandLine
             using (var controller = new Library.Main.Controller(args[0], options, console))
             {
                 setup(controller);
-                controller.Vacuum();
+                controller.VacuumAsync().Await();
             }
             return 0;
         }

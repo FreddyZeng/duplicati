@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -26,6 +26,7 @@ using Azure.Identity;
 using Azure.Security.KeyVault.Secrets;
 using Duplicati.Library.Interface;
 using Duplicati.Library.Utility;
+using VaultSharp.V1.SecretsEngines;
 
 namespace Duplicati.Library.SecretProvider;
 
@@ -42,6 +43,12 @@ public class AzureSecretProvider : ISecretProvider
 
     /// <inheritdoc />
     public string Description => Strings.AzureSecretProvider.Description;
+
+    /// <inheritdoc />
+    public Task<bool> IsSupported(CancellationToken cancellationToken) => Task.FromResult(true);
+
+    /// <inheritdoc />
+    public bool IsSetSupported => true;
 
     /// <inheritdoc />
     public IList<ICommandLineArgument> SupportedCommands
@@ -127,7 +134,10 @@ public class AzureSecretProvider : ISecretProvider
         {
             AuthenticationType.ClientSecret => new ClientSecretCredential(cfg.TenantId, cfg.ClientId, cfg.ClientSecret),
             AuthenticationType.ManagedIdentity => new DefaultAzureCredential(),
+            // Disable warnings for UsernamePasswordCredential being obsolete as we still want to support it
+#pragma warning disable CS0618 // Type or member is obsolete
             AuthenticationType.UsernamePassword => new UsernamePasswordCredential(cfg.Username, cfg.Password, cfg.TenantId, cfg.ClientId),
+#pragma warning restore CS0618 // Type or member is obsolete
             _ => throw new UserInformationException($"Authentication type {cfg.AuthenticationType} is not supported", "UnsupportedAuthenticationType")
         };
 
@@ -150,5 +160,27 @@ public class AzureSecretProvider : ISecretProvider
         }
 
         return secrets;
+    }
+
+    /// <inheritdoc />
+    public async Task SetSecretAsync(string key, string value, bool overwrite, CancellationToken cancellationToken)
+    {
+        if (_client is null)
+            throw new InvalidOperationException("The secret provider has not been initialized");
+
+        if (!overwrite)
+        {
+            try
+            {
+                await _client.GetSecretAsync(key, cancellationToken: cancellationToken).ConfigureAwait(false);
+                throw new UserInformationException($"The key '{key}' already exists", "KeyAlreadyExists");
+            }
+            catch (Azure.RequestFailedException ex) when (ex.Status == 404)
+            {
+                // Secret does not exist, continue
+            }
+        }
+
+        await _client.SetSecretAsync(new KeyVaultSecret(key, value), cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -29,6 +29,8 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using SP = Microsoft.SharePoint.Client;
 
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
+
 namespace Duplicati.Library.Backend
 {
 
@@ -47,13 +49,13 @@ namespace Duplicati.Library.Backend
     /// - Add auth code with access token in event ctx.ExecutingWebRequest
     ///   --> e.WebRequestExecutor.RequestHeaders[“Authorization”] = “Bearer ” + ar.AccessToken;
     /// </remarks>
-    public class SharePointBackend : IBackend, IStreamingBackend
+    public class SharePointBackend : IBackend, IStreamingBackend, IRenameEnabledBackend
     {
 
         #region [Variables and constants declarations]
 
         /// <summary> Auth-stripped HTTPS-URI as passed to constructor. </summary>
-        private readonly Utility.Uri m_orgUrl;
+        private readonly Utility.RelaxedUri m_orgUrl;
         /// <summary> Server relative path to backup folder. </summary>
         private readonly string m_serverRelPath;
         /// <summary> User's credentials to create client context </summary>
@@ -106,12 +108,65 @@ namespace Duplicati.Library.Backend
 
         public Task<string[]> GetDNSNamesAsync(CancellationToken cancelToken) => Task.FromResult(new string?[] {
             m_orgUrl.Host,
-            string.IsNullOrWhiteSpace(m_spWebUrl) ? null : new Utility.Uri(m_spWebUrl).Host
+            string.IsNullOrWhiteSpace(m_spWebUrl) ? null : new Utility.RelaxedUri(m_spWebUrl).Host
         }.WhereNotNullOrWhiteSpace().ToArray());
 
         #endregion
 
         #region [Constructors]
+
+        /// <summary>
+        /// The parts of a sharepoint url that the backend configures itself from.
+        /// </summary>
+        /// <param name="Host">The server to connect to. An IPv6 literal keeps its brackets.</param>
+        /// <param name="Port">The port, or -1 when the url does not name one.</param>
+        /// <param name="Path">The path, decoded and without a leading separator, with the double
+        /// slash that marks the end of the web left in place.</param>
+        /// <param name="ServerRelativePath">The same path rooted, ending in a separator and with
+        /// the marker taken out, which is what the requests name folders and files with.</param>
+        /// <param name="Username">The user from the url, or null when it has none.</param>
+        /// <param name="Password">The password from the url, or null when it has none.</param>
+        /// <remarks>
+        /// Both paths are returned so the constructor only has to assign them. The url is the only
+        /// input the backend has, and a test that starts from anything else cannot see what the
+        /// parser did to it on the way in.
+        /// </remarks>
+        internal readonly record struct SharePointUrl(string Host, int Port, string Path, string ServerRelativePath, string? Username, string? Password);
+
+        /// <summary>
+        /// Splits a sharepoint url into the parts the backend needs.
+        /// </summary>
+        /// <param name="url">The url to split.</param>
+        /// <returns>The parts the backend needs.</returns>
+        internal static SharePointUrl ParseSharePointUrl(string url)
+        {
+            var uri = new System.Uri(url);
+            uri.RequireHost(url);
+            uri.RequireNoFragment(url);
+
+            // The path arrives escaped and with its leading separator, where the previous parser
+            // handed it over decoded and without one. A double slash is what the user writes to
+            // say where the web ends, and it survives both the parser and the decoding.
+            var path = System.Uri.UnescapeDataString(uri.AbsolutePath);
+            if (path.StartsWith("/", StringComparison.Ordinal))
+                path = path.Substring(1);
+
+            var serverRelPath = path;
+            if (!serverRelPath.StartsWith("/", StringComparison.Ordinal))
+                serverRelPath = "/" + serverRelPath;
+            serverRelPath = Util.AppendDirSeparator(serverRelPath, "/");
+            // remove marker for SP-Web
+            serverRelPath = serverRelPath.Replace("//", "/");
+
+            // The user info is not decoded, so it is decoded here.
+            var userinfo = uri.UserInfo.Split(new[] { ':' }, 2);
+            var username = userinfo.Length > 0 && userinfo[0].Length > 0 ? System.Uri.UnescapeDataString(userinfo[0]) : null;
+            var password = userinfo.Length > 1 ? System.Uri.UnescapeDataString(userinfo[1]) : null;
+
+            // mssp is not a scheme with a registered default port, so an url without one answers
+            // -1 here, the same way the previous parser did.
+            return new SharePointUrl(uri.Host, uri.Port, path, serverRelPath, username, password);
+        }
 
         public SharePointBackend()
         {
@@ -149,21 +204,17 @@ namespace Duplicati.Library.Backend
             catch { }
 
 
-            var u = new Utility.Uri(url);
-            u.RequireHost();
+            var u = ParseSharePointUrl(url);
 
-            // Create sanitized plain https-URI (note: still has double slashes for processing web)
-            m_orgUrl = new Utility.Uri("https", u.Host, u.Path, null, null, null, u.Port);
+            // Create sanitized plain https-URI (note: still has double slashes for processing web).
+            // The builder stays as it was: FindCorrectWebPathAsync makes the candidate web urls
+            // with it and reads them back with the same parser, so the two go together.
+            m_orgUrl = new Utility.RelaxedUri("https", u.Host, u.Path, null, null, null, u.Port);
 
             // Actual path to Web will be searched for on first use. Ctor should not throw.
             m_spWebUrl = null;
 
-            m_serverRelPath = u.Path;
-            if (!m_serverRelPath.StartsWith("/", StringComparison.Ordinal))
-                m_serverRelPath = "/" + m_serverRelPath;
-            m_serverRelPath = Util.AppendDirSeparator(m_serverRelPath, "/");
-            // remove marker for SP-Web
-            m_serverRelPath = m_serverRelPath.Replace("//", "/");
+            m_serverRelPath = u.ServerRelativePath;
 
             // Authentication settings processing:
             // Default: try integrated auth (will normally not work for Office365, but maybe with on-prem SharePoint...).
@@ -175,7 +226,7 @@ namespace Duplicati.Library.Backend
 
             if (!useIntegratedAuthentication)
             {
-                var auth = AuthOptionsHelper.Parse(options, u);
+                var auth = AuthOptionsHelper.Parse(options, u.Username, u.Password);
                 // No validation here, maybe at least username should be set?
                 useUsername = auth.Username;
                 usePassword = auth.Password;
@@ -273,7 +324,7 @@ namespace Duplicati.Library.Backend
         /// If that won't help, we will try all possible paths from longest
         /// to shortest...
         /// </summary>
-        private static async Task<(string? testUrl, ClientContext? retCtx)> FindCorrectWebPathAsync(Utility.Uri orgUrl, System.Net.ICredentials userInfo, TimeSpan timeout, CancellationToken cancelToken)
+        private static async Task<(string? testUrl, ClientContext? retCtx)> FindCorrectWebPathAsync(Utility.RelaxedUri orgUrl, System.Net.ICredentials userInfo, TimeSpan timeout, CancellationToken cancelToken)
         {
             ClientContext? retCtx = null;
             int status;
@@ -284,7 +335,7 @@ namespace Duplicati.Library.Backend
             // if a hint is supplied, we will of course use this first.
             if (webIndicatorPos >= 0)
             {
-                var testUrl = new Utility.Uri(orgUrl.Scheme, orgUrl.Host, path.Substring(0, webIndicatorPos), null, null, null, orgUrl.Port).ToString();
+                var testUrl = new Utility.RelaxedUri(orgUrl.Scheme, orgUrl.Host, path.Substring(0, webIndicatorPos), null, null, null, orgUrl.Port).ToString();
                 (status, retCtx) = await TestUrlForWebAsync(testUrl, userInfo, false, timeout, cancelToken).ConfigureAwait(false);
                 if (status >= 0)
                     return (testUrl, retCtx);
@@ -296,7 +347,7 @@ namespace Duplicati.Library.Backend
             var docLibrary = Array.FindIndex(pathParts, p => StringComparer.OrdinalIgnoreCase.Equals(p, "documents"));
             if (docLibrary >= 0)
             {
-                var testUrl = new Utility.Uri(orgUrl.Scheme, orgUrl.Host,
+                var testUrl = new Utility.RelaxedUri(orgUrl.Scheme, orgUrl.Host,
                     string.Join("/", pathParts, 0, docLibrary),
                     null, null, null, orgUrl.Port).ToString();
                 (status, retCtx) = await TestUrlForWebAsync(testUrl, userInfo, false, timeout, cancelToken).ConfigureAwait(false);
@@ -309,7 +360,7 @@ namespace Duplicati.Library.Backend
             {
                 if (pi == docLibrary) continue; // already tested
 
-                var testUrl = new Utility.Uri(orgUrl.Scheme, orgUrl.Host,
+                var testUrl = new Utility.RelaxedUri(orgUrl.Scheme, orgUrl.Host,
                     string.Join("/", pathParts, 0, pi),
                     null, null, null, orgUrl.Port).ToString();
                 (status, retCtx) = await TestUrlForWebAsync(testUrl, userInfo, false, timeout, cancelToken).ConfigureAwait(false);
@@ -427,11 +478,11 @@ namespace Duplicati.Library.Backend
 
         #region [Public backend methods]
 
-        public async Task TestAsync(CancellationToken cancelToken)
+        public async Task TestAsync(bool alsoWrite, CancellationToken cancelToken)
         {
             var ctx = await GetSpClientContextAsync(true, cancelToken).ConfigureAwait(false);
             await TestContextForWebAsync(ctx, true, m_timeouts.ShortTimeout, cancelToken).ConfigureAwait(false);
-            await this.TestReadWritePermissionsAsync(cancelToken).ConfigureAwait(false);
+            await this.TestBackendAsync(alsoWrite, cancelToken).ConfigureAwait(false);
         }
 
         /// <inheritdoc />
@@ -664,7 +715,7 @@ namespace Duplicati.Library.Backend
             {
                 if (string.IsNullOrWhiteSpace(m_spWebUrl))
                     throw new HttpRequestException(Strings.SharePoint.NoSharePointWebFoundError(m_orgUrl.ToString()));
-                var pathLengthToWeb = new Utility.Uri(m_spWebUrl).Path.Split(new char[] { '/' }, StringSplitOptions.RemoveEmptyEntries).Length;
+                var pathLengthToWeb = new Utility.RelaxedUri(m_spWebUrl).Path.Split(new char[] { '/' }, StringSplitOptions.RemoveEmptyEntries).Length;
 
                 var folderNames = m_serverRelPath.Substring(0, m_serverRelPath.Length - 1).Split('/');
                 folderNames = Array.ConvertAll(folderNames, fold => System.Net.WebUtility.UrlDecode(fold));
@@ -761,6 +812,32 @@ namespace Duplicati.Library.Backend
                 m_spContext = null;
             }
             m_userInfo = null!;
+        }
+
+        public Task RenameAsync(string oldname, string newname, CancellationToken cancellationToken)
+            => DoRenameAsync(oldname, newname, false, cancellationToken);
+
+        private async Task DoRenameAsync(string oldname, string newname, bool useNewContext, CancellationToken cancellationToken)
+        {
+            var ctx = await GetSpClientContextAsync(useNewContext, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                string oldFileUrl = m_serverRelPath + System.Web.HttpUtility.UrlPathEncode(oldname);
+                string newFileUrl = m_serverRelPath + System.Web.HttpUtility.UrlPathEncode(newname);
+
+                SP.File remoteFile = ctx.Web.GetFileByServerRelativeUrl(oldFileUrl);
+                remoteFile.MoveTo(newFileUrl, MoveOperations.Overwrite);
+                await Utility.Utility.WithTimeout(m_timeouts.ShortTimeout, cancellationToken, _ => ctx.ExecuteQueryAsync()).ConfigureAwait(false);
+            }
+            catch (ServerException) { throw; /* rethrow if Server answered */ }
+            catch (FileMissingException) { throw; }
+            catch (FolderMissingException) { throw; }
+            catch
+            {
+                if (useNewContext)
+                    throw;
+                await DoRenameAsync(oldname, newname, true, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         #endregion

@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -41,6 +41,8 @@ using System.Threading.Tasks;
 using Duplicati.Library.Common.IO;
 using Duplicati.StreamUtil;
 
+[assembly: InternalsVisibleTo("Duplicati.UnitTest")]
+
 namespace Duplicati.Library.Utility
 {
     public static class Utility
@@ -64,6 +66,11 @@ namespace Duplicati.Library.Utility
         /// The attribute value used to indicate error
         /// </summary>
         public const FileAttributes ATTRIBUTE_ERROR = (FileAttributes)(1 << 30);
+
+        /// <summary>
+        /// The multiplier used to determine if there is enough free space on the temporary volume
+        /// </summary>
+        public const long VOLUME_SIZE_FREE_SPACE_MULTIPLIER = 10;
 
         /// <summary>
         /// The callback delegate type used to collecting file information
@@ -190,6 +197,33 @@ namespace Duplicati.Library.Utility
             }
 
             return streamLength;
+        }
+
+        /// <summary>
+        /// Reads a byte array and returns a string, removing any BOM if present
+        /// </summary>
+        /// <param name="s">The byte array to read from.</param>
+        /// <returns>The resulting string.</returns>
+        public static string GetStringWithoutBOM(byte[] s)
+        {
+            using var ms = new MemoryStream(s);
+            return GetStringWithoutBOM(ms, leaveOpen: false);
+        }
+
+        /// <summary>
+        /// Reads a stream and returns a string, removing any BOM if present
+        /// </summary>
+        /// <param name="stream">The stream to read from.</param>
+        /// <param name="leaveOpen">If true, the stream is not closed after reading.</param>
+        /// <returns>The resulting string.</returns>
+        public static string GetStringWithoutBOM(Stream stream, bool leaveOpen)
+        {
+            if (stream.CanSeek)
+                try { stream.Position = 0; }
+                catch { }
+
+            using var sr = new StreamReader(stream, Encoding.UTF8, true, leaveOpen: leaveOpen);
+            return sr.ReadToEnd();
         }
 
         /// <summary>
@@ -534,13 +568,13 @@ namespace Duplicati.Library.Utility
         /// <param name="buf">The buffer to read into.</param>
         /// <param name="count">The amount of bytes to read.</param>
         /// <returns>The number of bytes read</returns>
-        public static async Task<int> ForceStreamReadAsync(this System.IO.Stream stream, byte[] buf, int count)
+        public static async Task<int> ForceStreamReadAsync(this System.IO.Stream stream, byte[] buf, int count, CancellationToken cancellationToken)
         {
             int a;
             int index = 0;
             do
             {
-                a = await stream.ReadAsync(buf, index, count).ConfigureAwait(false);
+                a = await stream.ReadAsync(buf, index, count, cancellationToken).ConfigureAwait(false);
                 index += a;
                 count -= a;
             } while (a != 0 && count > 0);
@@ -781,10 +815,9 @@ namespace Duplicati.Library.Utility
                 return @default;
 
             var flags = 0;
-            foreach (var s in value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+            foreach (var s in value.Split([','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                var trimmed = s.Trim();
-                if (Enum.TryParse(trimmed, true, out T flag))
+                if (Enum.TryParse(s, true, out T flag))
                     flags = flags | (int)(object)flag;
             }
 
@@ -937,28 +970,92 @@ namespace Duplicati.Library.Utility
         /// <summary>
         /// Regexp for matching environment variables on Windows (%VAR%)
         /// </summary>
-        private static readonly Regex ENVIRONMENT_VARIABLE_MATCHER_WINDOWS = new Regex(@"\%(?<name>\w+)\%");
+        private static readonly Regex ENVIRONMENT_VARIABLE_MATCHER_WINDOWS = new Regex(@"\%(?<win>\w+)\%");
 
         /// <summary>
-        /// Expands environment variables in a RegExp safe format
+        /// Regexp for matching Windows (%VAR%) and native ($VAR or ${VAR}) environment variables in a single pass
+        /// </summary>
+        private static readonly Regex ENVIRONMENT_VARIABLE_MATCHER_COMBINED = new Regex(@"\%(?<win>\w+)\%|\$\{(?<braced>[^}]+)\}|\$(?<bare>\w+)");
+
+        /// <summary>
+        /// Regexp for matching native ($VAR or ${VAR}) environment variables only
+        /// </summary>
+        private static readonly Regex ENVIRONMENT_VARIABLE_MATCHER_NATIVE_ONLY = new Regex(@"\$\{(?<braced>[^}]+)\}|\$(?<bare>\w+)");
+
+        /// <summary>
+        /// Expands environment variables in a RegExp safe format.
+        /// Windows-style %VAR% is expanded on all platforms; native $VAR and ${VAR} are
+        /// additionally expanded on non-Windows platforms.
         /// </summary>
         /// <returns>The expanded string.</returns>
         /// <param name="str">The string to expand.</param>
         /// <param name="lookup">A lookup method that converts an environment key to an expanded string</param>
         public static string? ExpandEnvironmentVariablesRegexp(string? str, Func<string?, string?>? lookup = null)
+            => ExpandEnvironmentVariablesRegexp(str, lookup, !OperatingSystem.IsWindows());
+
+        /// <summary>
+        /// Expands environment variables in a RegExp safe format, with explicit control over native syntax.
+        /// </summary>
+        /// <returns>The expanded string.</returns>
+        /// <param name="str">The string to expand.</param>
+        /// <param name="lookup">A lookup method that converts an environment key to an expanded string</param>
+        /// <param name="expandNativeSyntax">True to also expand native $VAR and ${VAR} syntax (in addition to %VAR%)</param>
+        internal static string? ExpandEnvironmentVariablesRegexp(string? str, Func<string?, string?>? lookup, bool expandNativeSyntax)
         {
             if (string.IsNullOrWhiteSpace(str))
                 return str;
 
-            if (lookup == null)
-                lookup = x => Environment.GetEnvironmentVariable(x ?? string.Empty);
+            lookup ??= x => Environment.GetEnvironmentVariable(x ?? string.Empty);
 
-            return
+            var matcher = expandNativeSyntax ? ENVIRONMENT_VARIABLE_MATCHER_COMBINED : ENVIRONMENT_VARIABLE_MATCHER_WINDOWS;
 
-                // TODO: Should we switch to using the native format ($VAR or ${VAR}), instead of following the Windows scheme?
-                // IsClientLinux ? new Regex(@"\$(?<name>\w+)|(\{(?<name>[^\}]+)\})") : ENVIRONMENT_VARIABLE_MATCHER_WINDOWS
+            // Single pass, so a value that itself contains the other syntax is not re-expanded
+            return matcher.Replace(str, m =>
+            {
+                if (m.Groups["win"].Success)
+                    // Windows %VAR%: preserve legacy behavior - an undefined variable expands to an empty string
+                    return Regex.Escape(lookup(m.Groups["win"].Value) ?? string.Empty);
 
-                ENVIRONMENT_VARIABLE_MATCHER_WINDOWS.Replace(str, m => Regex.Escape(lookup(m.Groups["name"].Value) ?? string.Empty));
+                // Native $VAR / ${VAR}
+                var name = m.Groups["braced"].Success ? m.Groups["braced"].Value : m.Groups["bare"].Value;
+                var value = lookup(name);
+
+                // An undefined native variable is left untouched, so a literal '$'-containing
+                // string is never blanked or mangled
+                return value == null ? m.Value : Regex.Escape(value);
+            });
+        }
+
+        /// <summary>
+        /// Expands native ($VAR or ${VAR}) environment variables in a literal (non-RegExp) string.
+        /// Windows %VAR% is not touched by this method; native syntax is only expanded on non-Windows platforms.
+        /// </summary>
+        /// <returns>The expanded string.</returns>
+        /// <param name="str">The string to expand.</param>
+        /// <param name="lookup">A lookup method that converts an environment key to an expanded string</param>
+        public static string ExpandEnvironmentVariablesNative(string str, Func<string?, string?>? lookup = null)
+            => ExpandEnvironmentVariablesNative(str, lookup, !OperatingSystem.IsWindows());
+
+        /// <summary>
+        /// Expands native ($VAR or ${VAR}) environment variables in a literal string, with explicit control over native syntax.
+        /// </summary>
+        /// <returns>The expanded string.</returns>
+        /// <param name="str">The string to expand.</param>
+        /// <param name="lookup">A lookup method that converts an environment key to an expanded string</param>
+        /// <param name="expandNativeSyntax">True to expand native $VAR and ${VAR} syntax</param>
+        internal static string ExpandEnvironmentVariablesNative(string str, Func<string?, string?>? lookup, bool expandNativeSyntax)
+        {
+            if (!expandNativeSyntax || string.IsNullOrEmpty(str))
+                return str;
+
+            lookup ??= x => Environment.GetEnvironmentVariable(x ?? string.Empty);
+
+            return ENVIRONMENT_VARIABLE_MATCHER_NATIVE_ONLY.Replace(str, m =>
+            {
+                var name = m.Groups["braced"].Success ? m.Groups["braced"].Value : m.Groups["bare"].Value;
+                // An undefined native variable is left untouched (no regex escaping - this is a literal path/glob)
+                return lookup(name) ?? m.Value;
+            });
         }
 
         /// <summary>
@@ -1355,8 +1452,29 @@ namespace Duplicati.Library.Utility
         }
 
         /// <summary>
+        /// The salt used for calculating a backup Id from the remote URL.
+        /// Shared between the reporting modules so the same id is computed everywhere.
+        /// </summary>
+        public const string BACKUP_ID_SALT = "DUPL";
+
+        /// <summary>
+        /// Calculates a stable, opaque backup id from the backup's remote URL. The id is
+        /// a hex string produced by repeatedly hashing the URL with a fixed salt, so the
+        /// same remote URL always yields the same id without exposing the URL itself.
+        /// </summary>
+        /// <param name="remoteUrl">The remote backend url to compute the id for.</param>
+        /// <returns>The backup id as a hex string, or an empty string if the url is null/empty.</returns>
+        public static string CalculateBackupId(string? remoteUrl)
+        {
+            if (string.IsNullOrWhiteSpace(remoteUrl))
+                return string.Empty;
+
+            return ByteArrayAsHexString(RepeatedHashWithSalt(remoteUrl, BACKUP_ID_SALT));
+        }
+
+        /// <summary>
         /// Gets the drive letter from the given volume guid.
-        /// This method cannot be inlined since the System.Management types are not implemented in Mono
+        /// This method cannot be inlined since the Microsoft.Management.Infrastructure types are not implemented in Mono
         /// </summary>
         /// <param name="volumeGuid">Volume guid</param>
         /// <returns>Drive letter, as a single character, or null if the volume wasn't found</returns>
@@ -1366,56 +1484,44 @@ namespace Duplicati.Library.Utility
         {
             // Based on this answer:
             // https://stackoverflow.com/questions/10186277/how-to-get-drive-information-by-volume-id
-            using (var searcher = new System.Management.ManagementObjectSearcher("Select * from Win32_Volume"))
+            using var session = Microsoft.Management.Infrastructure.CimSession.Create(null);
+            string targetId = string.Format(@"\\?\Volume{{{0}}}\", volumeGuid);
+            foreach (var obj in session.QueryInstances(@"root\cimv2", "WQL", "Select DeviceID, DriveLetter from Win32_Volume"))
             {
-                string targetId = string.Format(@"\\?\Volume{{{0}}}\", volumeGuid);
-                foreach (var obj in searcher.Get())
+                var deviceId = obj.CimInstanceProperties["DeviceID"]?.Value?.ToString();
+                if (string.Equals(deviceId, targetId, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (string.Equals(obj["DeviceID"].ToString(), targetId, StringComparison.OrdinalIgnoreCase))
-                    {
-                        object driveLetter = obj["DriveLetter"];
-                        if (driveLetter != null)
-                        {
-                            return obj["DriveLetter"].ToString();
-                        }
-                        else
-                        {
-                            // The volume was found, but doesn't have a drive letter associated with it.
-                            break;
-                        }
-                    }
-                }
+                    var driveLetter = obj.CimInstanceProperties["DriveLetter"]?.Value?.ToString();
+                    if (!string.IsNullOrEmpty(driveLetter))
+                        return driveLetter;
 
-                return null;
+                    // The volume was found, but doesn't have a drive letter associated with it.
+                    break;
+                }
             }
+
+            return null;
         }
 
         /// <summary>
         /// Gets all volume guids and their associated drive letters.
-        /// This method cannot be inlined since the System.Management types are not implemented in Mono
+        /// This method cannot be inlined since the Microsoft.Management.Infrastructure types are not implemented in Mono
         /// </summary>
         /// <returns>Pairs of drive letter to volume guids</returns>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         [SupportedOSPlatform("windows")]
         public static IEnumerable<KeyValuePair<string, string>> GetVolumeGuidsAndDriveLetters()
         {
-            using (var searcher = new System.Management.ManagementObjectSearcher("Select * from Win32_Volume"))
+            using var session = Microsoft.Management.Infrastructure.CimSession.Create(null);
+            var results = new List<KeyValuePair<string, string>>();
+            foreach (var obj in session.QueryInstances(@"root\cimv2", "WQL", "Select DeviceID, DriveLetter from Win32_Volume"))
             {
-                foreach (var obj in searcher.Get())
-                {
-                    var deviceIdObj = obj["DeviceID"];
-                    var driveLetterObj = obj["DriveLetter"];
-                    if (deviceIdObj != null && driveLetterObj != null)
-                    {
-                        var deviceId = deviceIdObj.ToString();
-                        var driveLetter = driveLetterObj.ToString();
-                        if (!string.IsNullOrEmpty(deviceId) && !string.IsNullOrEmpty(driveLetter))
-                        {
-                            yield return new KeyValuePair<string, string>(driveLetter + @"\", deviceId);
-                        }
-                    }
-                }
+                var deviceId = obj.CimInstanceProperties["DeviceID"]?.Value?.ToString();
+                var driveLetter = obj.CimInstanceProperties["DriveLetter"]?.Value?.ToString();
+                if (!string.IsNullOrEmpty(deviceId) && !string.IsNullOrEmpty(driveLetter))
+                    results.Add(new KeyValuePair<string, string>(driveLetter + @"\", deviceId));
             }
+            return results;
         }
 
         /// <summary>
@@ -1435,11 +1541,22 @@ namespace Duplicati.Library.Utility
         /// <param name="allowEnvExpansion">A flag indicating if environment variables are allowed to be expanded</param>
         [return: NotNullIfNotNull("arg")]
         public static string? WrapCommandLineElement(string? arg, bool allowEnvExpansion)
+            => WrapCommandLineElement(arg, allowEnvExpansion, OperatingSystem.IsWindows());
+
+        /// <summary>
+        /// Wraps a single argument in quotes suitable for passing on a commandline.
+        /// </summary>
+        /// <returns>The wrapped commandline element.</returns>
+        /// <param name="arg">The argument to wrap.</param>
+        /// <param name="allowEnvExpansion">A flag indicating if environment variables are allowed to be expanded.</param>
+        /// <param name="isWindows">A flag indicating if Windows commandline escaping should be used.</param>
+        [return: NotNullIfNotNull("arg")]
+        internal static string? WrapCommandLineElement(string? arg, bool allowEnvExpansion, bool isWindows)
         {
             if (string.IsNullOrWhiteSpace(arg))
                 return arg;
 
-            if (!OperatingSystem.IsWindows())
+            if (!isWindows)
             {
                 // We could consider using single quotes that prevents all expansions
                 //if (!allowEnvExpansion)
@@ -1459,16 +1576,13 @@ namespace Duplicati.Library.Utility
             }
             else
             {
-                // Windows needs only needs " replaced with "",
-                // but is prone to %var% expansion when used in
-                // immediate mode (i.e. from command prompt)
+                // Windows needs " replaced with "", but is prone to %var%
+                // expansion when used in immediate mode (i.e. from command prompt)
                 // Fortunately it does not expand when processes
                 // are started from within .Net
+                if (!allowEnvExpansion)
+                    arg = arg.Replace("%", "%%");
 
-                // TODO: I have not found a way to avoid escaping %varname%,
-                // and sadly it expands only if the variable exists
-                // making it even rarer and harder to diagnose when
-                // it happens
                 arg = arg.Replace(@"""", @"""""");
 
                 // Also fix the case where the argument ends with a slash
@@ -1516,6 +1630,20 @@ namespace Duplicati.Library.Utility
         /// <param name="task">Task to await</param>
         /// <returns>Task result</returns>
         public static T Await<T>(this Task<T> task)
+        {
+            return task.ConfigureAwait(false).GetAwaiter().GetResult();
+        }
+
+        /// <summary>
+        /// Utility method that emulates C#'s built in await keyword without requiring the calling method to be async.
+        /// This method should be preferred over using Task.Result, as it doesn't wrap singular exceptions in AggregateExceptions.
+        /// (It uses Task.GetAwaiter().GetResult(), which is the same thing that await uses under the covers.)
+        /// https://stackoverflow.com/questions/17284517/is-task-result-the-same-as-getawaiter-getresult
+        /// </summary>
+        /// <typeparam name="T">Result type</typeparam>
+        /// <param name="task">Task to await</param>
+        /// <returns>Task result</returns>
+        public static T Await<T>(this ValueTask<T> task)
         {
             return task.ConfigureAwait(false).GetAwaiter().GetResult();
         }
@@ -1581,9 +1709,10 @@ namespace Duplicati.Library.Utility
             if (!File.Exists(pfxPath))
                 throw new FileNotFoundException("The specified PFX file does not exist.", pfxPath);
 
-            var collection = new X509Certificate2Collection();
-            collection.Import(pfxPath, password, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
-            return collection;
+            return X509CertificateLoader.LoadPkcs12CollectionFromFile(
+                pfxPath,
+                password,
+                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
         }
 
         /// <summary>
@@ -1617,11 +1746,113 @@ namespace Duplicati.Library.Utility
                 return null;
 
             var idx = url.IndexOf("://");
-            if (idx < 0 && idx < 15 && idx + "://".Length < url.Length)
+            if (idx < 0 || idx > 15)
                 return null;
 
-            return url.Substring(0, idx);
+            return url[..idx];
         }
+
+        /// <summary>
+        /// Regex used to extract the host from a URL.
+        /// </summary>
+        private static readonly Regex hostSuffixRegex = new Regex(@"^(?:[a-zA-Z][a-zA-Z0-9+\-.]*://)?([^/:]+)", RegexOptions.Compiled);
+
+        /// <summary>
+        /// List of host suffixes that are considered public cloud and safe to report.
+        /// </summary>
+        private static readonly IReadOnlySet<string> safeHostSuffixes = new HashSet<string>([
+            ".amazonaws.com",
+            ".impossibleapi.net",
+            ".scw.cloud",
+            ".hosteurope.de",
+            ".dunkel.de",
+            ".dreamhost.com",
+            ".dincloud.com",
+            ".polisystems.ch",
+            ".softlayer.net",
+            ".storadera.com",
+            ".wasabisys.com",
+            ".infomaniak.com",
+            ".infomaniak.cloud",
+            ".sakurastorage.jp",
+            ".lyvecloud.seagate.com",
+            ".digitaloceanspaces.com",
+            ".backblazeb2.com",
+            ".cloudian.com",
+            ".min.io",
+            ".linodeobjects.com",
+            ".bunnycdn.com",
+            ".azure.com",
+            ".googleapis.com",
+            ".ibm.com",
+            ".oracle.com",
+            ".cloudflare.com",
+            ".alibaba.com",
+            ".huawei.com",
+            ".tencent.com",
+            ".baidu.com",
+            ".jd.com",
+            ".ucloud.cn",
+            ".qiniu.com",
+            ".aliyuncs.com",
+            ".tcloud.com",
+            ".tencentcloudapi.com",
+            ".rabata.io",
+            ".internxt.com",
+            ".cloudflarestorage.com",
+            ".storage.selcloud.ru",
+            ".srvstorage.uz",
+            ".srvstorage.kz"
+        ], StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Attempts to guess a safe host suffix from a URL.
+        /// This attempts to avoid reporting private or sensitive hostnames, and only returns
+        /// known public cloud suffixes.
+        /// </summary>
+        /// <param name="url">The URL to analyze.</param>
+        /// <returns>The host suffix, or null if not found or not safe to report.</returns>
+        public static string? GuessHostSuffixSafe(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return null;
+
+            var scheme = GuessScheme(url);
+
+            // For now, only report S3 host suffixes
+            if (!string.Equals(scheme, "s3", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            try
+            {
+                var hostname = hostSuffixRegex.Match(url).Groups[1].Value;
+                if (string.IsNullOrEmpty(hostname))
+                    return null;
+
+                // Return the first matching safe suffix
+                return safeHostSuffixes.FirstOrDefault(suffix => hostname.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Matches a leading userinfo segment (user:password@, up to the last @ before
+        /// the first path separator), optionally preceded by a scheme. The scheme needs
+        /// at least two characters so a drive letter is not mistaken for one.
+        /// </summary>
+        private static readonly Regex URL_USERINFO_MATCHER = new Regex(@"^(?<scheme>[a-zA-Z][a-zA-Z0-9+._\-]+:/{0,2})??[^/\\]*@", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Removes a leading userinfo (user:password@) segment from a url-like string,
+        /// keeping any scheme prefix
+        /// </summary>
+        /// <param name="url">The url-like string to strip</param>
+        /// <returns>The string without the userinfo segment</returns>
+        internal static string StripUrlUserInfo(string url)
+            => URL_USERINFO_MATCHER.Replace(url, "${scheme}", 1);
 
         /// <summary>
         /// Returns a url that is safe to display, by removing any credentials
@@ -1635,24 +1866,26 @@ namespace Duplicati.Library.Utility
             if (string.IsNullOrWhiteSpace(url))
                 return url;
 
-            // Use a reportable url without credentials
-            var sepIndex = Math.Max(0, url.IndexOf('|')) + 1;
-            var length = url.Length - sepIndex;
-            var shown = Math.Min(length, maxShown);
-            var hidden = length - maxShown;
-            var sanitizedUrl = $"{url[sepIndex..(sepIndex + shown)]}{new string('*', hidden)}";
+            // Remove any userinfo before parsing, so a url the parser misreads
+            // (or rejects) cannot carry credentials into the displayed result
+            var target = StripUrlUserInfo(url[(url.IndexOf('|') + 1)..]);
 
             // If we can parse it, this result is better
             try
             {
-                var uri = new Uri(url[sepIndex..]);
-                sanitizedUrl = new Uri($"{uri.Scheme}://{uri.Host}").SetPath(uri.Path).ToString();
+                var uri = new RelaxedUri(target);
+                return new RelaxedUri($"{uri.Scheme}://{uri.Host}").SetPath(uri.Path).ToString();
             }
             catch
             {
             }
 
-            return sanitizedUrl;
+            // Not parseable even as a path; show a truncated prefix, without any query
+            var queryIndex = target.IndexOf('?');
+            if (queryIndex >= 0)
+                target = target[..queryIndex];
+            var shown = Math.Min(target.Length, maxShown);
+            return $"{target[..shown]}{new string('*', target.Length - shown)}";
         }
 
         /// <summary>
@@ -1971,5 +2204,170 @@ namespace Duplicati.Library.Utility
                         hasher.Dispose();
             }
         }
+        /// <summary>
+        /// Reads a secret value from the console, masking the input.
+        /// </summary>
+        /// <param name="prompt">The prompt to display.</param>
+        /// <returns>The value entered by the user.</returns>
+        /// <remarks>
+        /// Behavior:
+        /// - Input is masked with '*'.
+        /// - Backspace removes the last character and erases the mask.
+        /// - Pressing Escape cancels input and throws <see cref="Interface.CancelException"/>.
+        /// - Control characters (other than Enter/Escape/Backspace) are ignored and not added to the value.
+        /// </remarks>
+        public static string ReadSecretFromConsole(string prompt)
+        {
+            Console.Write(prompt);
+            var value = string.Empty;
+            while (true)
+            {
+                var keyInfo = Console.ReadKey(true);
+
+                // Allow cancellation with ESC
+                if (keyInfo.Key == ConsoleKey.Escape)
+                {
+                    throw new Interface.CancelException("Console secret input canceled by user.");
+                }
+
+                if (keyInfo.Key == ConsoleKey.Enter)
+                {
+                    break;
+                }
+
+                if (keyInfo.Key == ConsoleKey.Backspace)
+                {
+                    if (value.Length > 0)
+                    {
+                        value = value.Substring(0, value.Length - 1);
+                        Console.Write("\b \b");
+                    }
+                }
+                else if (keyInfo.KeyChar != '\u0000' && !char.IsControl(keyInfo.KeyChar))
+                {
+                    // Only accept printable characters; ignore other control characters
+                    value += keyInfo.KeyChar;
+                    Console.Write("*");
+                }
+            }
+
+            Console.WriteLine();
+            return value;
+        }
+
+        /// <summary>
+        /// Windows-only helper to attach the console to the parent process.
+        /// This is required if the start application is a Windows Executable (WinExe),
+        /// as this has not console attached and cannot write to the console, if launched from a command prompt.
+        /// By attaching the console, Console.Write/Read calls work as expected.
+        /// </summary>
+        [SupportedOSPlatform("windows")]
+        public static void AttachWindowsConsole()
+        {
+            // The parent process ID
+            const int ATTACH_PARENT_PROCESS = -1;
+
+            // WinExe has no console attached; when launched from a command
+            // prompt (e.g. for reset-password or help) attach to the parent
+            // console so Console.Write/Read calls work as expected.
+            if (Win32.AttachConsole(ATTACH_PARENT_PROCESS))
+            {
+                var stdout = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
+                Console.SetOut(stdout);
+                var stderr = new StreamWriter(Console.OpenStandardError()) { AutoFlush = true };
+                Console.SetError(stderr);
+                var standardInput = new StreamReader(Console.OpenStandardInput());
+                Console.SetIn(standardInput);
+            }
+        }
+
+
+
+        /// <summary>
+        /// Gets the free and total space available for the specified path.
+        /// Uses the same approach as FileBackend.GetQuotaInfoAsync.
+        /// </summary>
+        /// <param name="path">The path to check</param>
+        /// <returns>A tuple with (freeSpace, totalSpace) in bytes, or null if it could not be determined</returns>
+        public static (long FreeSpace, long TotalSpace)? GetFreeSpaceForPath(string path)
+        {
+            try
+            {
+                // Get the drive info for the path
+                var root = Path.GetPathRoot(path);
+                if (string.IsNullOrEmpty(root))
+                    return null;
+
+                // On Windows, DriveInfo is only valid for lettered drives
+                if (OperatingSystem.IsWindows() && root.Length > 0 && char.IsLetter(root[0]))
+                {
+                    try
+                    {
+                        var driveInfo = new DriveInfo(root);
+                        if (driveInfo.TotalSize > 0)
+                            return (driveInfo.AvailableFreeSpace, driveInfo.TotalSize);
+                    }
+                    catch (ArgumentException)
+                    {
+                        // Fall through to Win32 API fallback
+                    }
+
+                    // Fallback to Win32 API for UNC paths and other cases
+                    return GetDiskFreeSpaceWin32(path);
+                }
+                else if (!OperatingSystem.IsWindows())
+                {
+                    var driveInfo = new DriveInfo(path);
+                    if (driveInfo.TotalSize > 0)
+                        return (driveInfo.AvailableFreeSpace, driveInfo.TotalSize);
+                }
+                else
+                {
+                    // Windows but not a lettered drive (e.g., UNC path)
+                    return GetDiskFreeSpaceWin32(path);
+                }
+            }
+            catch
+            {
+                // Ignore errors and return null
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Gets the free and total disk space using the Win32 API's GetDiskFreeSpaceEx function.
+        /// </summary>
+        /// <param name="directory">Directory</param>
+        /// <returns>A tuple with (freeSpace, totalSpace) in bytes, or null if it could not be determined</returns>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        [SupportedOSPlatform("windows")]
+        private static (long FreeSpace, long TotalSpace)? GetDiskFreeSpaceWin32(string directory)
+        {
+            if (!OperatingSystem.IsWindows())
+                return null;
+
+            try
+            {
+                if (GetDiskFreeSpaceEx(directory, out var available, out var total, out _))
+                    return ((long)available, (long)total);
+            }
+            catch
+            {
+                // Ignore errors
+            }
+
+            return null;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        [SupportedOSPlatform("windows")]
+        private static extern bool GetDiskFreeSpaceEx(
+            string lpDirectoryName,
+            out ulong lpFreeBytesAvailable,
+            out ulong lpTotalNumberOfBytes,
+            out ulong lpTotalNumberOfFreeBytes);
+
     }
 }

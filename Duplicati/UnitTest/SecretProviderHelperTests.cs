@@ -1,4 +1,4 @@
-// Copyright (C) 2025, The Duplicati Team
+// Copyright (C) 2026, The Duplicati Team
 // https://duplicati.com, hello@duplicati.com
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a 
@@ -46,6 +46,10 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
         public IList<ICommandLineArgument> SupportedCommands => [];
 
+        public Task<bool> IsSupported(CancellationToken cancellationToken) => Task.FromResult(true);
+
+        public bool IsSetSupported => true;
+
         public bool ThrowOnInit { get; set; }
 
         public Task InitializeAsync(System.Uri config, CancellationToken cancellationToken)
@@ -62,18 +66,26 @@ public class SecretProviderHelperTests : BasicSetupHelper
             foreach (var key in keys)
             {
                 if (!Secrets.TryGetValue(key, out var value))
-                    throw new KeyNotFoundException($"The key '{key}' was not found");
+                    throw new UserInformationException($"The key '{key}' was not found", "KeyNotFound");
 
                 result[key] = value;
             }
 
             return Task.FromResult(result);
         }
+
+        public Task SetSecretAsync(string key, string value, bool overwrite, CancellationToken cancellationToken)
+        {
+            if (!overwrite && Secrets.ContainsKey(key))
+                throw new UserInformationException($"The key '{key}' already exists", "KeyAlreadyExists");
+            Secrets[key] = value;
+            return Task.CompletedTask;
+        }
     }
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceSecretsWithDefaultSettings()
+    public async Task ReplaceSecretsWithDefaultSettingsAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -91,7 +103,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=$key2&user=$key1&other=123")
+            new Library.Utility.RelaxedUri("test://host?pass=$key2&user=$key1&other=123")
         };
 
         await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
@@ -105,7 +117,52 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceSecretsWithSlashKeys()
+    public async Task ReplaceSecretsInHostlessSystemUriAsync()
+    {
+        var secretProvider = new MockedSecretProvider();
+        secretProvider.Secrets["key1"] = "secret1";
+
+        var settings = new Dictionary<string, string>();
+
+        // System.UriBuilder collapses host-less urls with schemes it does not
+        // know ("test://?..." becomes "test:/?..."); the replacement must keep
+        // the '//' intact
+        var argsSys = new[] {
+            new System.Uri("test://?pass=$key1&other=123")
+        };
+
+        var argsInternal = Array.Empty<Library.Utility.RelaxedUri>();
+
+        await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
+
+        Assert.AreEqual("test:///?pass=secret1&other=123", argsSys[0].ToString());
+    }
+
+    [Test]
+    [Category("SecretHelper")]
+    public async Task ReplaceSecretsWithIpv6HostAsync()
+    {
+        var secretProvider = new MockedSecretProvider();
+        secretProvider.Secrets["key1"] = "secret1";
+
+        var settings = new Dictionary<string, string>();
+
+        // The brackets of an IPv6 literal host must survive the round-trip
+        // through the relaxed parser, or the re-import into System.Uri fails
+        var argsSys = new[] {
+            new System.Uri("http://[::1]:8080/path?pass=$key1&other=123")
+        };
+
+        var argsInternal = Array.Empty<Library.Utility.RelaxedUri>();
+
+        await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
+
+        Assert.AreEqual("http://[::1]:8080/path?pass=secret1&other=123", argsSys[0].ToString());
+    }
+
+    [Test]
+    [Category("SecretHelper")]
+    public async Task ReplaceSecretsWithSlashKeysAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -123,7 +180,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=$key/with/slash&user=$key1&other=123")
+            new Library.Utility.RelaxedUri("test://host?pass=$key/with/slash&user=$key1&other=123")
         };
 
         await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
@@ -137,7 +194,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceSecretsWithDashKeys()
+    public async Task ReplaceSecretsWithDashKeysAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -155,7 +212,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=$key-with-dash&user=$key1&other=123")
+            new Library.Utility.RelaxedUri("test://host?pass=$key-with-dash&user=$key1&other=123")
         };
 
         await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
@@ -169,7 +226,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplacesSecretsWithUrlEscaping()
+    public async Task ReplacesSecretsWithUrlEscapingAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret 1%&+abc";
@@ -184,7 +241,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=$key1&user=user")
+            new Library.Utility.RelaxedUri("test://host?pass=$key1&user=user")
         };
 
         await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
@@ -199,7 +256,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceSecretsWithExtendedPattern()
+    public async Task ReplaceSecretsWithExtendedPatternAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -218,7 +275,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=${key2}&user=${key1}&other=123"),
+            new Library.Utility.RelaxedUri("test://host?pass=${key2}&user=${key1}&other=123"),
         };
 
         await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
@@ -232,7 +289,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceSecretsWithExtendedLongPattern()
+    public async Task ReplaceSecretsWithExtendedLongPatternAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -251,7 +308,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=:sec{key2}&user=:sec{key1}&other=123"),
+            new Library.Utility.RelaxedUri("test://host?pass=:sec{key2}&user=:sec{key1}&other=123"),
         };
 
         await SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None);
@@ -265,7 +322,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task CachedProviderRetainsPattern()
+    public async Task CachedProviderRetainsPatternAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["sec1"] = "secret1";
@@ -307,10 +364,10 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=$key2&user=$key1&other=123"),
+            new Library.Utility.RelaxedUri("test://host?pass=$key2&user=$key1&other=123"),
         };
 
-        Assert.ThrowsAsync<KeyNotFoundException>(() => SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None));
+        Assert.ThrowsAsync<UserInformationException>(() => SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None));
     }
 
     [Test]
@@ -332,7 +389,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=$key2&user=$key1&other=123"),
+            new Library.Utility.RelaxedUri("test://host?pass=$key2&user=$key1&other=123"),
         };
 
         Assert.ThrowsAsync<InvalidOperationException>(() => SecretProviderHelper.ApplySecretProviderAsync(argsSys, argsInternal, settings, null, secretProvider, CancellationToken.None));
@@ -340,7 +397,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceUsesInMemoryCache()
+    public async Task ReplaceUsesInMemoryCacheAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -370,7 +427,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceUsesPersistedCache()
+    public async Task ReplaceUsesPersistedCacheAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -401,7 +458,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceUsesPersistedCacheOnRestart()
+    public async Task ReplaceUsesPersistedCacheOnRestartAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -447,7 +504,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
 
     [Test]
     [Category("SecretHelper")]
-    public async Task ReplaceWarnsOnPartialMatches()
+    public async Task ReplaceWarnsOnPartialMatchesAsync()
     {
         var secretProvider = new MockedSecretProvider();
         secretProvider.Secrets["key1"] = "secret1";
@@ -464,7 +521,7 @@ public class SecretProviderHelperTests : BasicSetupHelper
         };
 
         var argsInternal = new[] {
-            new Library.Utility.Uri("test://host?pass=$key2&user=$key)5&other=123"),
+            new Library.Utility.RelaxedUri("test://host?pass=$key2&user=$key)5&other=123"),
         };
 
         var logCapture = new LogCapture();

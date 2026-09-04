@@ -1,15 +1,27 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <OutputType>Library</OutputType>
-    <Copyright>Copyright © 2025 Team Duplicati, MIT license</Copyright>
+    <Copyright>Copyright © 2026 Team Duplicati, MIT license</Copyright>
     <RootNamespace>Duplicati.Library.Main</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Keeps the database queries on the overloads that register with SlowQueryMonitor.
+         An extension method cannot win against the command's own methods, so the ban is
+         the only thing that stops the bare call shape from coming back. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="4.14.0" PrivateAssets="all" />
+    <AdditionalFiles Include="BannedSymbols.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="CoCoL" Version="1.8.4" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0" />
+    <!-- Important! Avalonia also depends on this package, so make sure the versions are in sync -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.94.1" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,12 +35,13 @@
     <ProjectReference Include="..\SQLiteHelper\Duplicati.Library.SQLiteHelper.csproj" />
     <ProjectReference Include="..\Localization\Duplicati.Library.Localization.csproj" />
     <ProjectReference Include="..\UsageReporter\Duplicati.Library.UsageReporter.csproj" />
-    <ProjectReference Include="..\Modules\Builtin\Duplicati.Library.Modules.Builtin.csproj" />
+    <ProjectReference Include="..\ResultSerialization\Duplicati.Library.ResultSerialization.csproj" />
     <ProjectReference Include="..\SourceProvider\Builtin\Duplicati.Library.SourceProvider.Builtin.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Database\Database schema\*.sql" />
+    <EmbeddedResource Include="Database\Local\Database schema\*.sql" />
+    <EmbeddedResource Include="Database\Sync\Database schema\*.sql" />
   </ItemGroup>
 
   <ItemGroup>
